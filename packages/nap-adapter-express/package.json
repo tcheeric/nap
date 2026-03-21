@@ -1,0 +1,17 @@
+{
+  "name": "@imani/nap-adapter-express",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@imani/nap-server": "0.1.0",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/supertest": "^6.0.3",
+    "supertest": "^7.1.0"
+  }
+}
+
