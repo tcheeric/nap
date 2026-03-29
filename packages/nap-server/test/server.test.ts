@@ -1,6 +1,6 @@
 import { finalizeEvent, getPublicKey, nip19 } from 'nostr-tools';
 import { describe, expect, it } from 'vitest';
-import { encodeBase64String, sha256Hex, utf8Bytes } from '@imani/nap-core';
+import { encodeBase64String, hexToBytes, sha256Hex, utf8Bytes } from '@imani/nap-core';
 import {
   createNapServer,
   InMemoryChallengeStore,
@@ -12,7 +12,7 @@ import {
 } from '../src/index.js';
 
 const PRIVATE_KEY_HEX = '1111111111111111111111111111111111111111111111111111111111111111';
-const PRIVATE_KEY_BYTES = Uint8Array.from(Buffer.from(PRIVATE_KEY_HEX, 'hex'));
+const PRIVATE_KEY_BYTES = hexToBytes(PRIVATE_KEY_HEX);
 const PUBKEY = getPublicKey(PRIVATE_KEY_BYTES);
 const NPUB = nip19.npubEncode(PUBKEY);
 
@@ -190,7 +190,7 @@ describe('nap-server', () => {
       return;
     }
 
-    const otherKey = Uint8Array.from(Buffer.from('2222222222222222222222222222222222222222222222222222222222222222', 'hex'));
+    const otherKey = hexToBytes('2222222222222222222222222222222222222222222222222222222222222222');
     const rawBody = utf8Bytes(JSON.stringify({ challenge_id: challenge.value.challenge_id }));
     const event = finalizeEvent(
       {

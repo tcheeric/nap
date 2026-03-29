@@ -3,6 +3,13 @@ export {
   encodeBase64String,
 } from './base64.js';
 export {
+  bytesToHex,
+  decodeBase64Bytes,
+  encodeBase64Bytes,
+  encodeBase64UrlBytes,
+  hexToBytes,
+} from './codec.js';
+export {
   failure,
   isRetryableNapError,
 } from './errors.js';

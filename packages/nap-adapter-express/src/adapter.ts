@@ -1,17 +1,25 @@
 import express, { type CookieOptions, type Request, type RequestHandler, type Response, type Router } from 'express';
 import {
+  toPublicAuthFailure,
+  toPublicAuthSuccess,
+  validatePermissionRegistry,
   issueChallenge,
   isMalformedRequestFailure,
   isVerifyFailure,
-  toPublicAuthFailure,
-  toPublicAuthSuccess,
   verifyCompletion,
   type IssueChallengeResult,
   type NapServerOptions,
+  type PermissionRegistry,
+  type SessionStore,
 } from '@imani/nap-server';
 import type { VerifyCompleteFailure } from '@imani/nap-core';
 
 const RAW_BODY_SYMBOL = Symbol.for('nap.rawBody');
+const REGISTERED_PERMISSIONS = new Set<string>();
+
+function currentEpochSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
 
 export interface NapExpressOptions {
   server: NapServerOptions;
@@ -32,6 +40,11 @@ export interface NapExpressRequest extends Request {
   [RAW_BODY_SYMBOL]?: Uint8Array;
 }
 
+export interface NapExpressGuardOptions {
+  sessionStore: SessionStore;
+  cookieName?: string;
+}
+
 function getRawBody(req: Request): Uint8Array | null {
   return (req as NapExpressRequest)[RAW_BODY_SYMBOL] ?? null;
 }
@@ -47,6 +60,65 @@ function defaultWriteFailure(res: Response): void {
 
 function normalizeBaseUrl(value: string): string {
   return value.endsWith('/') ? value.slice(0, -1) : value;
+}
+
+function unauthorized(res: Response): void {
+  const failure = toPublicAuthFailure();
+  res.status(failure.status).json(failure.body);
+}
+
+function forbidden(res: Response, reason = 'forbidden'): void {
+  res.status(403).json({
+    status: 'error',
+    message: reason,
+  });
+}
+
+function parseCookieValue(header: string | undefined, cookieName: string): string | null {
+  if (!header) {
+    return null;
+  }
+
+  for (const candidate of header.split(';')) {
+    const [name, ...rest] = candidate.trim().split('=');
+
+    if (name === cookieName) {
+      return rest.join('=');
+    }
+  }
+
+  return null;
+}
+
+async function loadSession(
+  req: Request,
+  options: NapExpressGuardOptions
+): Promise<Awaited<ReturnType<SessionStore['getByAccessToken']>>> {
+  const authorization = req.header('authorization');
+  const bearerToken = authorization?.startsWith('Bearer ')
+    ? authorization.slice('Bearer '.length).trim()
+    : null;
+  const cookieToken = parseCookieValue(
+    req.header('cookie') ?? undefined,
+    options.cookieName ?? 'session'
+  );
+  const token = bearerToken || cookieToken;
+
+  if (!token) {
+    return null;
+  }
+
+  const session = await options.sessionStore.getByAccessToken(token);
+
+  if (!session) {
+    return null;
+  }
+
+  if (session.revoked_at || session.expires_at <= currentEpochSeconds()) {
+    return null;
+  }
+
+  return session;
 }
 
 function authCompleteUrl(req: Request, options: NapExpressOptions): string {
@@ -160,6 +232,90 @@ export function createNapExpressRouter(options: NapExpressOptions): Router {
   router.post('/init', createNapExpressInitHandler(options));
   router.post('/complete', createNapExpressCompleteHandler(options));
 
+  return router;
+}
+
+export function requirePermission(
+  permission: string,
+  options: NapExpressGuardOptions
+): RequestHandler {
+  REGISTERED_PERMISSIONS.add(permission);
+
+  return async (req, res, next) => {
+    try {
+      const session = await loadSession(req, options);
+
+      if (!session) {
+        unauthorized(res);
+        return;
+      }
+
+      if (!session.permissions.includes(permission)) {
+        forbidden(res);
+        return;
+      }
+
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
+export function requireStepUp(options: NapExpressGuardOptions): RequestHandler {
+  return async (req, res, next) => {
+    try {
+      const session = await loadSession(req, options);
+
+      if (!session) {
+        unauthorized(res);
+        return;
+      }
+
+      const providedToken = req.header('x-step-up-token');
+
+      if (
+        !providedToken ||
+        !session.step_up_token ||
+        session.step_up_token !== providedToken ||
+        !session.step_up_expires_at ||
+        session.step_up_expires_at <= currentEpochSeconds()
+      ) {
+        forbidden(res, 'step-up required');
+        return;
+      }
+
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
+export function validatePermissions(registry: PermissionRegistry): void {
+  validatePermissionRegistry(registry);
+
+  const declared = new Set(registry.permissions.map((permission) => permission.key));
+  const unknown = Array.from(REGISTERED_PERMISSIONS).filter(
+    (permission) => !declared.has(permission)
+  );
+
+  if (unknown.length > 0) {
+    throw new Error(
+      `Permissions used in middleware but missing from registry: ${unknown.join(', ')}`
+    );
+  }
+}
+
+export function resetPermissionValidationState(): void {
+  REGISTERED_PERMISSIONS.clear();
+}
+
+export function createPermissionsRouter(registry: PermissionRegistry): Router {
+  const router = express.Router();
+  router.get('/permissions', (_req, res) => {
+    res.status(200).json(registry);
+  });
   return router;
 }
 

@@ -1,6 +1,7 @@
 import { finalizeEvent, type EventTemplate } from 'nostr-tools';
 import {
   encodeBase64String,
+  hexToBytes,
   sha256Hex,
   utf8Bytes,
   type AuthCompleteRequest,
@@ -33,7 +34,7 @@ export function serializeAuthCompleteBody(body: AuthCompleteRequest): Uint8Array
 }
 
 export function createPrivateKeySigner(privateKeyHex: string): EventSigner {
-  const privateKey = Uint8Array.from(Buffer.from(privateKeyHex, 'hex'));
+  const privateKey = hexToBytes(privateKeyHex);
 
   return {
     async signEvent(template: EventTemplate): Promise<Nip98Event> {
@@ -73,4 +74,3 @@ export async function buildAuthCompleteRequest(
     authorization: `Nostr ${encodeBase64String(JSON.stringify(event))}`,
   };
 }
-

@@ -1,8 +1,9 @@
+import { decodeBase64Bytes, encodeBase64Bytes } from './codec.js';
+
 export function encodeBase64String(value: string): string {
-  return Buffer.from(value, 'utf8').toString('base64');
+  return encodeBase64Bytes(new TextEncoder().encode(value));
 }
 
 export function decodeBase64String(value: string): string {
-  return Buffer.from(value, 'base64').toString('utf8');
+  return new TextDecoder().decode(decodeBase64Bytes(value));
 }
-

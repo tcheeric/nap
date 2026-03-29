@@ -6,20 +6,29 @@ import type {
   FastifyReply,
   FastifyRequest,
   RouteHandlerMethod,
+  preHandlerHookHandler,
 } from 'fastify';
 import {
+  toPublicAuthFailure,
+  toPublicAuthSuccess,
+  validatePermissionRegistry,
   issueChallenge,
   isMalformedRequestFailure,
   isVerifyFailure,
-  toPublicAuthFailure,
-  toPublicAuthSuccess,
   verifyCompletion,
   type IssueChallengeResult,
   type NapServerOptions,
+  type PermissionRegistry,
+  type SessionStore,
 } from '@imani/nap-server';
 import type { VerifyCompleteFailure } from '@imani/nap-core';
 
 const RAW_BODY_SYMBOL = Symbol.for('nap.fastify.rawBody');
+const REGISTERED_PERMISSIONS = new Set<string>();
+
+function currentEpochSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
 
 export interface NapFastifyRequest extends FastifyRequest {
   [RAW_BODY_SYMBOL]?: Uint8Array;
@@ -41,6 +50,11 @@ export interface NapFastifyOptions {
   }) => void | Promise<void>;
 }
 
+export interface NapFastifyGuardOptions {
+  sessionStore: SessionStore;
+  cookieName?: string;
+}
+
 function setRawBody(req: FastifyRequest, rawBody: Uint8Array): void {
   (req as NapFastifyRequest)[RAW_BODY_SYMBOL] = rawBody;
 }
@@ -51,6 +65,53 @@ function getRawBody(req: FastifyRequest): Uint8Array | null {
 
 function normalizeBaseUrl(value: string): string {
   return value.endsWith('/') ? value.slice(0, -1) : value;
+}
+
+function parseCookieValue(header: string | undefined, cookieName: string): string | null {
+  if (!header) {
+    return null;
+  }
+
+  for (const candidate of header.split(';')) {
+    const [name, ...rest] = candidate.trim().split('=');
+
+    if (name === cookieName) {
+      return rest.join('=');
+    }
+  }
+
+  return null;
+}
+
+async function loadSession(
+  req: FastifyRequest,
+  options: NapFastifyGuardOptions
+): Promise<Awaited<ReturnType<SessionStore['getByAccessToken']>>> {
+  const authorization = req.headers.authorization;
+  const bearerToken = authorization?.startsWith('Bearer ')
+    ? authorization.slice('Bearer '.length).trim()
+    : null;
+  const cookieToken = parseCookieValue(
+    typeof req.headers.cookie === 'string' ? req.headers.cookie : undefined,
+    options.cookieName ?? 'session'
+  );
+  const token = bearerToken || cookieToken;
+
+  if (!token) {
+    return null;
+  }
+
+  const session = await options.sessionStore.getByAccessToken(token);
+
+  if (!session) {
+    return null;
+  }
+
+  if (session.revoked_at || session.expires_at <= currentEpochSeconds()) {
+    return null;
+  }
+
+  return session;
 }
 
 function authCompleteUrl(req: FastifyRequest, options: NapFastifyOptions): string {
@@ -197,4 +258,83 @@ export const napFastifyPlugin: FastifyPluginAsync<NapFastifyOptions> = async (fa
 
   fastify.post(`${prefix}/init`, createNapFastifyInitHandler(options));
   fastify.post(`${prefix}/complete`, createNapFastifyCompleteHandler(options));
+};
+
+export function requirePermission(
+  permission: string,
+  options: NapFastifyGuardOptions
+): preHandlerHookHandler {
+  REGISTERED_PERMISSIONS.add(permission);
+
+  return async (req, reply) => {
+    const session = await loadSession(req, options);
+
+    if (!session) {
+      const failure = toPublicAuthFailure();
+      reply.status(failure.status).send(failure.body);
+      return;
+    }
+
+    if (!session.permissions.includes(permission)) {
+      reply.status(403).send({
+        status: 'error',
+        message: 'forbidden',
+      });
+      return;
+    }
+  };
+}
+
+export function requireStepUp(options: NapFastifyGuardOptions): preHandlerHookHandler {
+  return async (req, reply) => {
+    const session = await loadSession(req, options);
+
+    if (!session) {
+      const failure = toPublicAuthFailure();
+      reply.status(failure.status).send(failure.body);
+      return;
+    }
+
+    const providedToken = req.headers['x-step-up-token'];
+    const stepUpToken = Array.isArray(providedToken) ? providedToken[0] : providedToken;
+
+    if (
+      !stepUpToken ||
+      !session.step_up_token ||
+      session.step_up_token !== stepUpToken ||
+      !session.step_up_expires_at ||
+      session.step_up_expires_at <= currentEpochSeconds()
+    ) {
+      reply.status(403).send({
+        status: 'error',
+        message: 'step-up required',
+      });
+      return;
+    }
+  };
+}
+
+export function validatePermissions(registry: PermissionRegistry): void {
+  validatePermissionRegistry(registry);
+
+  const declared = new Set(registry.permissions.map((permission) => permission.key));
+  const unknown = Array.from(REGISTERED_PERMISSIONS).filter(
+    (permission) => !declared.has(permission)
+  );
+
+  if (unknown.length > 0) {
+    throw new Error(
+      `Permissions used in middleware but missing from registry: ${unknown.join(', ')}`
+    );
+  }
+}
+
+export function resetPermissionValidationState(): void {
+  REGISTERED_PERMISSIONS.clear();
+}
+
+export const permissionsFastifyPlugin = (registry: PermissionRegistry): FastifyPluginAsync => {
+  return async (fastify) => {
+    fastify.get('/permissions', async () => registry);
+  };
 };

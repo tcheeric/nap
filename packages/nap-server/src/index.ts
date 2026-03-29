@@ -1,7 +1,12 @@
 export {
+  InMemoryAclStore,
   InMemoryChallengeStore,
   InMemorySessionStore,
 } from './memory.js';
+export {
+  createRegistryAclResolver,
+  validatePermissionRegistry,
+} from './acl.js';
 export {
   createNapServer,
   createNodeRandomSource,
@@ -13,6 +18,8 @@ export {
   verifyCompletion,
 } from './server.js';
 export type {
+  AclRecord,
+  AclStore,
   AclResolver,
   AuditLogger,
   ChallengeStore,
@@ -24,10 +31,14 @@ export type {
   MalformedRequestFailure,
   NapServer,
   NapServerOptions,
+  PermissionDefinition,
+  PermissionOverride,
+  PermissionRegistry,
   ParsedAuthCompleteRequest,
   PublicFailureResponse,
   PublicSuccessResponse,
   RandomSource,
+  RoleDefinition,
   SessionStore,
   VerifyCompletionInput,
   VerifyCompletionOutcome,
