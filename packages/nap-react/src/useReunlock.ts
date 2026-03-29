@@ -46,14 +46,11 @@ export function useReunlock(isKeyAvailable?: () => boolean): UseReunlockReturn {
   const { session, isAuthenticated } = useNapSession();
   const [isPrompting, setIsPrompting] = useState(false);
   const pendingRef = useRef<PendingPromise[]>([]);
-  const mountedRef = useRef(true);
 
   const checkKeyAvailable = isKeyAvailable ?? (() => !session.isLocked());
 
   useEffect(() => {
-    mountedRef.current = true;
     return () => {
-      mountedRef.current = false;
       const pending = pendingRef.current;
       pendingRef.current = [];
       for (const p of pending) {

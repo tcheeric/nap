@@ -68,7 +68,13 @@ export function createNapSession(options: NapClientOptions): NapSession {
         return;
       }
 
-      publishLock();
+      // Handle incoming lock from another tab without re-broadcasting
+      // to avoid ping-pong between tabs.
+      if (type === 'lock') {
+        locked = true;
+        options.onLock?.();
+        return;
+      }
     }
   );
 

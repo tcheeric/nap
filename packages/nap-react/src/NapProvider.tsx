@@ -37,18 +37,27 @@ export function NapProvider({ session, children }: NapProviderProps) {
   const [isLocked, setIsLocked] = useState(() => session.isLocked());
   const [isShutdown, setIsShutdown] = useState(() => session.isShutdown());
 
-  // Sync state on every render — the NapSession is imperative, so we poll
-  // after known mutation points. The callbacks below handle the common cases;
-  // this effect catches anything we missed (e.g., external session.lock() calls).
+  // Sync React state with the imperative NapSession on lifecycle callbacks
+  // and on visibility change (tab switch back) to catch external mutations.
   useEffect(() => {
     const sync = () => {
       setIsAuthenticated(session.isAuthenticated());
       setIsLocked(session.isLocked());
       setIsShutdown(session.isShutdown());
     };
-    // Sync on visibility change (tab switch back) as a lightweight poll.
+
+    // Poll on visibility change as a fallback for external mutations.
     document.addEventListener('visibilitychange', sync);
-    return () => document.removeEventListener('visibilitychange', sync);
+
+    // Poll on a short interval to catch imperative session changes
+    // (e.g., direct session.lock() / session.logout() calls) that bypass
+    // the NapProvider's callback-based sync.
+    const intervalId = setInterval(sync, 500);
+
+    return () => {
+      document.removeEventListener('visibilitychange', sync);
+      clearInterval(intervalId);
+    };
   }, [session]);
 
   const value: NapSessionState = {

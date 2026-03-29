@@ -61,6 +61,15 @@ export function decodeBase64Bytes(value: string): Uint8Array {
     throw new Error('Invalid base64 length');
   }
 
+  // Validate that '=' only appears as trailing padding in valid combinations.
+  const eqIndex = sanitized.indexOf('=');
+  if (eqIndex !== -1) {
+    const tail = sanitized.slice(eqIndex);
+    if (tail !== '=' && tail !== '==') {
+      throw new Error('Invalid base64 padding');
+    }
+  }
+
   const padding = sanitized.endsWith('==') ? 2 : sanitized.endsWith('=') ? 1 : 0;
   const output = new Uint8Array((sanitized.length / 4) * 3 - padding);
   let outputIndex = 0;
