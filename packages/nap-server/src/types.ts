@@ -12,6 +12,42 @@ import type {
   VerifyCompleteResult,
 } from '@imani/nap-core';
 
+export interface PermissionDefinition {
+  key: string;
+  description: string;
+  stepUp: boolean;
+}
+
+export interface RoleDefinition {
+  key: string;
+  description: string;
+  permissions: string[];
+}
+
+export interface PermissionRegistry {
+  appId: string;
+  permissions: PermissionDefinition[];
+  roles: RoleDefinition[];
+  defaultRole: string;
+}
+
+export interface PermissionOverride {
+  action: 'grant' | 'deny';
+  permission: string;
+}
+
+export interface AclRecord {
+  principal_pubkey: string;
+  app_id: string;
+  role: string;
+  permission_overrides: PermissionOverride[];
+  suspended: boolean;
+  suspended_at?: string;
+  suspended_reason?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface ChallengeStore {
   create(record: ChallengeRecord): Promise<void>;
   get(challengeId: string): Promise<ChallengeRecord | null>;
@@ -37,6 +73,13 @@ export interface SessionStore {
 
 export interface AclResolver {
   resolve(npub: string, pubkey: string): Promise<AclDecision>;
+}
+
+export interface AclStore {
+  get(pubkey: string, appId: string): Promise<AclRecord | null>;
+  upsert(record: AclRecord): Promise<void>;
+  suspend(pubkey: string, appId: string, reason?: string): Promise<void>;
+  unsuspend(pubkey: string, appId: string): Promise<void>;
 }
 
 export interface Clock {

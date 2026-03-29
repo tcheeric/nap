@@ -1,5 +1,5 @@
 import type { ChallengeRecord, SessionRecord } from '@imani/nap-core';
-import type { ChallengeStore, SessionStore } from './types.js';
+import type { AclRecord, AclStore, ChallengeStore, SessionStore } from './types.js';
 
 export class InMemoryChallengeStore implements ChallengeStore {
   private readonly records = new Map<string, ChallengeRecord>();
@@ -109,3 +109,49 @@ export class InMemorySessionStore implements SessionStore {
   }
 }
 
+export class InMemoryAclStore implements AclStore {
+  private readonly records = new Map<string, AclRecord>();
+
+  async get(pubkey: string, appId: string): Promise<AclRecord | null> {
+    return this.records.get(`${appId}:${pubkey}`) ?? null;
+  }
+
+  async upsert(record: AclRecord): Promise<void> {
+    this.records.set(`${record.app_id}:${record.principal_pubkey}`, {
+      ...record,
+      permission_overrides: [...record.permission_overrides],
+    });
+  }
+
+  async suspend(pubkey: string, appId: string, reason?: string): Promise<void> {
+    const key = `${appId}:${pubkey}`;
+    const existing = this.records.get(key);
+
+    if (!existing) {
+      return;
+    }
+
+    this.records.set(key, {
+      ...existing,
+      suspended: true,
+      suspended_reason: reason,
+      suspended_at: new Date().toISOString(),
+    });
+  }
+
+  async unsuspend(pubkey: string, appId: string): Promise<void> {
+    const key = `${appId}:${pubkey}`;
+    const existing = this.records.get(key);
+
+    if (!existing) {
+      return;
+    }
+
+    this.records.set(key, {
+      ...existing,
+      suspended: false,
+      suspended_reason: undefined,
+      suspended_at: undefined,
+    });
+  }
+}
