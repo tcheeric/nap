@@ -3,3 +3,6 @@ coverage/
 *.tsbuildinfo
 
 /.idea/
+/.claude/
+/.specify/
+specs/001-nip46-signer-support/

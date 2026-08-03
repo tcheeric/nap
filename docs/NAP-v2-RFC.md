@@ -1530,7 +1530,62 @@ The adapter only removes framework boilerplate. It does not remove application s
 
 ---
 
-## Appendix D. Implementation Plan
+## Appendix D. NAP vs OAuth 2.0
+
+This appendix is explanatory, not normative.
+
+NAP and OAuth 2.0 share structural similarities — both are token-based protocols that separate authentication from subsequent API access — but they differ in trust model, complexity, and scope.
+
+### D.1 Structural Comparison
+
+| Aspect | NAP v2 | OAuth 2.0 |
+|--------|--------|-----------|
+| **Flow shape** | Two-step: `/auth/init` → `/auth/complete` | Multi-step: authorize → token exchange (+ optional refresh) |
+| **Identity verification** | Cryptographic — client signs a NIP-98 proof with a Nostr key | Delegated — an authorization server vouches for the user |
+| **Third-party authorization server** | None — the application server verifies identity directly | Required — identity is asserted by a separate provider |
+| **Browser redirects** | None — two direct API calls | Typically required for the authorization code flow |
+| **Token type** | Opaque server-side access token | Access token (opaque or JWT), refresh token, ID token (OIDC), authorization code |
+| **Token transport** | `Authorization: Bearer` header or HTTP-only cookie | `Authorization: Bearer` header |
+| **Scopes / permissions** | Roles and permissions resolved server-side via ACL at authentication time | Scopes requested at authorization time and encoded in the token grant |
+| **Refresh tokens** | Supported (optional) | Supported (standard) |
+| **Token revocation** | Server-side (`revoked_at` on session record) | Token revocation endpoint (RFC 7009) |
+| **Delegation** | Not supported — single-party authentication only | Core use case — "app A accesses resource B on behalf of user C" |
+
+### D.2 Trust Model
+
+OAuth 2.0 is built around **delegated trust**. The client never sees the user's credentials; instead, it receives a token from a trusted authorization server that asserts the user's identity and granted scopes. This makes OAuth well-suited for third-party integrations where an application needs access to another service's resources on behalf of a user.
+
+NAP uses **direct cryptographic proof**. The user proves control of a Nostr private key by signing a NIP-98 event bound to the server's challenge. There is no intermediary — the application server validates the signature itself. This eliminates the need for a centralized identity provider but limits the protocol to first-party authentication.
+
+### D.3 Complexity
+
+OAuth 2.0 defines multiple grant types (authorization code, client credentials, device code, etc.), token introspection, dynamic client registration, and the OpenID Connect layer for identity. This flexibility comes with significant implementation complexity and a large attack surface that must be carefully managed.
+
+NAP has a single flow with two endpoints. There is one way to authenticate, one token shape, and one session model. The simplicity is intentional — NAP is scoped to HTTP login, not general-purpose authorization.
+
+### D.4 When To Prefer Each
+
+Use **NAP** when:
+
+- the application authenticates users directly by Nostr key
+- no third-party identity delegation is needed
+- simplicity and a minimal protocol surface are priorities
+- cryptographic proof of key ownership is the desired authentication factor
+
+Use **OAuth 2.0** when:
+
+- the application needs delegated access to third-party resources
+- users authenticate through an external identity provider (Google, GitHub, etc.)
+- fine-grained, per-resource scoping across multiple services is required
+- the ecosystem already uses OAuth/OIDC infrastructure
+
+### D.5 Summary
+
+NAP borrows the token-based session pattern from OAuth but replaces the delegated authorization model with direct cryptographic identity verification. OAuth answers "can this app act on behalf of this user at that service?" NAP answers "does this user control this Nostr key right now?"
+
+---
+
+## Appendix E. Implementation Plan
 
 This appendix is explanatory, not normative.
 
@@ -1545,7 +1600,7 @@ The recommended delivery strategy is to build the protocol from the inside out:
 
 That order keeps security-critical logic centralized before any framework-specific integration is added.
 
-### D.1 Phase 0: Freeze Scope
+### E.1 Phase 0: Freeze Scope
 
 Decisions to freeze before coding:
 
@@ -1564,7 +1619,7 @@ Exit criteria:
 - no unresolved transport questions
 - no unresolved question about whether the library is signer-side or server-side
 
-### D.2 Phase 1: Build `nap-core`
+### E.2 Phase 1: Build `nap-core`
 
 `nap-core` should contain pure protocol logic with no web-framework dependency.
 
@@ -1589,7 +1644,7 @@ Exit criteria:
 - all conformance fixtures pass in-process
 - no Express/Fastify types leak into `nap-core`
 
-### D.3 Phase 2: Build `nap-server`
+### E.3 Phase 2: Build `nap-server`
 
 `nap-server` should implement the stateful auth flow on top of `nap-core`.
 
@@ -1615,7 +1670,7 @@ Exit criteria:
 - missing session after redemption is surfaced as internal failure
 - store contracts are usable in single-node and clustered deployments
 
-### D.4 Phase 3: Build `nap-client-http`
+### E.4 Phase 3: Build `nap-client-http`
 
 `nap-client-http` should help clients produce correct HTTP requests without embedding backend policy.
 
@@ -1638,7 +1693,7 @@ Exit criteria:
 - generated NIP-98 completion proof passes server conformance tests
 - no session-policy assumptions are embedded in the client package
 
-### D.5 Phase 4: Build Framework Adapters
+### E.5 Phase 4: Build Framework Adapters
 
 Adapters should stay thin and only solve framework integration problems.
 
@@ -1660,7 +1715,7 @@ Exit criteria:
 - adapters can run the same black-box tests against shared fixtures
 - adapter code contains no duplicated protocol validation logic
 
-### D.6 Phase 5: Conformance And Interop
+### E.6 Phase 5: Conformance And Interop
 
 The project should ship a reusable test harness, not just unit tests.
 
@@ -1683,7 +1738,7 @@ Exit criteria:
 - client-generated proofs are accepted by the reference server
 - regression tests cover retry safety and raw-body correctness
 
-### D.7 Phase 6: Security Hardening
+### E.7 Phase 6: Security Hardening
 
 Before publishing, do one explicit hardening pass.
 
@@ -1706,7 +1761,7 @@ Exit criteria:
 - no known raw-body verification gap
 - no adapter path that trusts spoofed forwarded headers by default
 
-### D.8 Phase 7: Packaging And Release
+### E.8 Phase 7: Packaging And Release
 
 Suggested package order:
 
@@ -1734,7 +1789,7 @@ Exit criteria:
 - examples cover bearer mode and cookie mode
 - release artifacts include conformance vectors
 
-### D.9 Recommended v1 Cut
+### E.9 Recommended v1 Cut
 
 The safest v1 cut is:
 
@@ -1746,7 +1801,7 @@ The safest v1 cut is:
 
 Fastify can follow immediately after if the core APIs remain clean.
 
-### D.10 Post-v1 Work
+### E.10 Post-v1 Work
 
 Post-v1 candidates:
 
