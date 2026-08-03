@@ -216,37 +216,43 @@ you the RFC's `/auth/init` and `/auth/complete`.
 ```mermaid
 sequenceDiagram
     autonumber
-    participant U as User
+    actor U as User
     participant C as Browser app
-    participant S as Signer (NIP-07 / NIP-46 / local key)
+    participant S as Signer
     participant A as NAP server
     participant CS as ChallengeStore
     participant SS as SessionStore
 
-    C->>A: POST /auth/init  {"npub": "npub1..."}
-    A->>A: nip19.decode(npub) -> pubkey
-    A->>CS: create(ChallengeRecord state="issued")
-    A-->>C: 200 {challenge_id, challenge, auth_url, auth_method, issued_at, expires_at}
+    Note over S: NIP-07 extension, NIP-46 remote signer, or a local key
 
-    C->>C: body = {"challenge_id": "..."}; payload = sha256(bytes(body))
-    C->>S: sign kind:27235 with tags u, method, payload, challenge, challenge_id
-    S->>U: approve (extension prompt / bunker)
+    Note over C,CS: 1. Challenge issuance
+    C->>A: POST /auth/init
+    A->>A: decode npub to pubkey
+    A->>CS: create ChallengeRecord, state issued
+    A-->>C: 200 challenge_id, challenge, auth_url, auth_method, issued_at, expires_at
+
+    Note over U,S: 2. Proof construction
+    C->>C: payload = sha256 of the exact request body bytes
+    C->>S: sign kind 27235 with tags u, method, payload, challenge, challenge_id
+    S->>U: prompt for approval
     U-->>S: approve
-    S-->>C: signed event + schnorr sig
+    S-->>C: signed event with schnorr signature
 
-    C->>A: POST /auth/complete<br/>Authorization: Nostr base64(event)<br/>{"challenge_id": "..."}
-    A->>A: verifyNip98Completion(): kind, content, sig, skew, u, method, payload, challenge_id
-    A->>CS: get(challenge_id)
-    A->>A: expiry / challenge value / pubkey / challenge-bound created_at
-    A->>A: aclResolver.resolve(npub, pubkey)
-    A->>SS: createForChallenge(SessionRecord)
-    A->>CS: redeem(challenge_id, {eventId, sessionId, resultCacheUntil})
-    CS-->>A: redeemed | already_redeemed | expired | not_found
-    A-->>C: 200 {status:"ok", access_token, token_type:"Bearer", expires_at, principal, roles, permissions}
+    Note over C,SS: 3. Completion
+    C->>A: POST /auth/complete, Authorization Nostr base64 event
+    A->>A: verify kind, content, signature, skew, u, method, payload, challenge_id
+    A->>CS: get challenge_id
+    A->>A: check expiry, challenge value, pubkey, challenge-bound created_at
+    A->>A: aclResolver.resolve npub, pubkey
+    A->>SS: createForChallenge SessionRecord
+    A->>CS: redeem challenge_id with eventId, sessionId, resultCacheUntil
+    CS-->>A: redeemed, already_redeemed, expired, or not_found
+    A-->>C: 200 access_token, token_type, expires_at, principal, roles, permissions
 
-    C->>A: GET /api/whatever<br/>Authorization: Bearer <access_token>
-    A->>SS: getByAccessToken(token)
-    A-->>C: 200 (or 401 / 403)
+    Note over C,SS: 4. Authorized requests
+    C->>A: GET /api/resource, Authorization Bearer token
+    A->>SS: getByAccessToken
+    A-->>C: 200, or 401 if no session, or 403 if permission missing
 ```
 
 ### 2.2 `POST /auth/init`
