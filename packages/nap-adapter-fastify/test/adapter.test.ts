@@ -10,6 +10,7 @@ import {
   createInMemoryRateLimiter,
   createRegistryAclResolver,
   type NapServerOptions,
+  type SessionStore,
   type PermissionRegistry,
 } from '@imani/nap-server';
 import {
@@ -535,5 +536,250 @@ describe('nap-adapter-fastify', () => {
     expect(() => validatePermissions(REGISTRY)).toThrow(
       'Permissions used in middleware but missing from registry: unknown:permission'
     );
+  });
+
+  it('takes the audience verbatim from an audienceResolver (RFC §20.2)', async () => {
+    const app = Fastify();
+
+    await app.register(napFastifyPlugin, {
+      routePrefix: '/auth',
+      server: buildServerOptions(),
+      // A path the request itself does not carry, which is the case
+      // getExternalBaseUrl cannot express.
+      audienceResolver: { resolve: () => 'https://gateway.example.com/v2/nap/finish' },
+    });
+
+    const init = await app.inject({
+      method: 'POST',
+      url: '/auth/init',
+      payload: { npub: NPUB },
+    });
+
+    expect(init.statusCode).toBe(200);
+    expect(init.json().auth_url).toBe('https://gateway.example.com/v2/nap/finish');
+
+    const completion = await buildAuthCompleteRequest({
+      challenge: init.json(),
+      signer: createPrivateKeySigner(PRIVATE_KEY_HEX),
+      createdAt: 1_710_000_000,
+    });
+
+    // The proof is signed against that same audience, so it verifies.
+    const complete = await app.inject({
+      method: 'POST',
+      url: '/auth/complete',
+      headers: {
+        authorization: completion.authorization,
+        'content-type': 'application/json',
+      },
+      payload: new TextDecoder().decode(completion.rawBody),
+    });
+
+    expect(complete.statusCode).toBe(200);
+    expect(complete.json().status).toBe('ok');
+
+    await app.close();
+  });
+
+  it('refuses to register the plugin with neither audience source', async () => {
+    const app = Fastify();
+
+    await expect(
+      app.register(napFastifyPlugin, { routePrefix: '/auth', server: buildServerOptions() })
+        .after()
+    ).rejects.toThrow(/exactly one of getExternalBaseUrl or audienceResolver/);
+  });
+
+  it('refuses to register the plugin with both audience sources', async () => {
+    const app = Fastify();
+
+    await expect(
+      app
+        .register(napFastifyPlugin, {
+          routePrefix: '/auth',
+          server: buildServerOptions(),
+          getExternalBaseUrl: () => 'https://api.example.com',
+          audienceResolver: { resolve: () => 'https://other.example.com/auth/complete' },
+        })
+        .after()
+    ).rejects.toThrow(/exactly one of getExternalBaseUrl or audienceResolver/);
+  });
+
+  it('reads the signed bytes through a supplied rawBodyExtractor (RFC §20.2)', async () => {
+    const seen: number[] = [];
+    const app = Fastify();
+
+    await app.register(napFastifyPlugin, {
+      routePrefix: '/auth',
+      server: buildServerOptions(),
+      getExternalBaseUrl: () => 'https://api.example.com',
+      rawBodyExtractor: {
+        extract(req) {
+          const captured = (req as { rawBody?: Uint8Array }).rawBody ?? null;
+
+          if (captured) {
+            seen.push(captured.length);
+          }
+
+          return captured;
+        },
+      },
+    });
+
+    const init = await app.inject({
+      method: 'POST',
+      url: '/auth/init',
+      payload: { npub: NPUB },
+    });
+    const completion = await buildAuthCompleteRequest({
+      challenge: init.json(),
+      signer: createPrivateKeySigner(PRIVATE_KEY_HEX),
+      createdAt: 1_710_000_000,
+    });
+
+    const complete = await app.inject({
+      method: 'POST',
+      url: '/auth/complete',
+      headers: {
+        authorization: completion.authorization,
+        'content-type': 'application/json',
+      },
+      payload: new TextDecoder().decode(completion.rawBody),
+    });
+
+    // Nothing populates `req.rawBody`, so the extractor is genuinely the only
+    // source consulted — had the default symbol reader still run, this would
+    // have completed.
+    expect(seen).toEqual([]);
+    expect(complete.statusCode).toBe(500);
+
+    await app.close();
+  });
+  it('rotates a refresh token over POST /auth/refresh', async () => {
+    let seed = 0;
+    const options: NapServerOptions = {
+      ...buildServerOptions(),
+      refreshTtlSeconds: 3600,
+      // The shared fixture's random source is constant, which would make a
+      // rotated token indistinguishable from the one it replaced.
+      randomSource: {
+        randomBytes(length: number) {
+          seed += 1;
+          return new Uint8Array(Array.from({ length }, (_, index) => (index + seed * 7) % 255));
+        },
+      },
+    };
+    const app = await createApp(options);
+
+    const init = await app.inject({
+      method: 'POST',
+      url: '/auth/init',
+      headers: { host: 'api.example.com', 'x-forwarded-proto': 'https' },
+      payload: { npub: NPUB },
+    });
+    const completion = await buildAuthCompleteRequest({
+      challenge: init.json(),
+      signer: createPrivateKeySigner(PRIVATE_KEY_HEX),
+      createdAt: 1_710_000_000,
+    });
+    const complete = await app.inject({
+      method: 'POST',
+      url: '/auth/complete',
+      headers: {
+        host: 'api.example.com',
+        'x-forwarded-proto': 'https',
+        authorization: completion.authorization,
+        'content-type': 'application/json',
+      },
+      payload: new TextDecoder().decode(completion.rawBody),
+    });
+
+    const session = complete.json();
+    expect(session.refresh_token).toBeTypeOf('string');
+
+    const refreshed = await app.inject({
+      method: 'POST',
+      url: '/auth/refresh',
+      headers: { authorization: `Bearer ${session.refresh_token}` },
+    });
+
+    expect(refreshed.statusCode).toBe(200);
+    expect(refreshed.json().refresh_token).not.toBe(session.refresh_token);
+
+    // The presented token is now retired, so presenting it again kills the family.
+    const replay = await app.inject({
+      method: 'POST',
+      url: '/auth/refresh',
+      headers: { authorization: `Bearer ${session.refresh_token}` },
+    });
+
+    expect(replay.statusCode).toBe(401);
+
+    await app.close();
+  });
+
+  it('does not register /auth/refresh when no refresh TTL is configured', async () => {
+    const app = await createApp(buildServerOptions());
+
+    const refreshed = await app.inject({
+      method: 'POST',
+      url: '/auth/refresh',
+      headers: { authorization: 'Bearer x' },
+    });
+
+    expect(refreshed.statusCode).toBe(404);
+
+    await app.close();
+  });
+
+  it('refuses to start when the store cannot honour the configured refresh TTL', async () => {
+    const capable = new InMemorySessionStore();
+    // A store predating refresh tokens: it satisfies the required members and
+    // nothing else.
+    const legacy: SessionStore = {
+      createForChallenge: (record) => capable.createForChallenge(record),
+      getBySessionId: (id) => capable.getBySessionId(id),
+      getByAccessToken: (token) => capable.getByAccessToken(token),
+      revokeBySessionId: (id, now) => capable.revokeBySessionId(id, now),
+      revokeByPrincipal: (pubkey, now) => capable.revokeByPrincipal(pubkey, now),
+    };
+
+    await expect(
+      Fastify()
+        .register(napFastifyPlugin, {
+          routePrefix: '/auth',
+          server: { ...buildServerOptions(), sessionStore: legacy, refreshTtlSeconds: 3600 },
+          getExternalBaseUrl: () => 'https://api.example.com',
+        })
+        .after()
+    ).rejects.toThrow(/getByRefreshToken and rotateRefreshToken/);
+  });
+
+  it('refuses to start when the cookie writer would throw the refresh token away', async () => {
+    await expect(
+      Fastify()
+        .register(napFastifyPlugin, {
+          routePrefix: '/auth',
+          server: { ...buildServerOptions(), refreshTtlSeconds: 3600 },
+          getExternalBaseUrl: () => 'https://api.example.com',
+          writeSuccess: writeNapCookieSuccess('session'),
+        })
+        .after()
+    ).rejects.toThrow(/never receives the refresh token/);
+  });
+
+  it('accepts the cookie writer once a transformBody carries the refresh token', async () => {
+    await expect(
+      Fastify()
+        .register(napFastifyPlugin, {
+          routePrefix: '/auth',
+          server: { ...buildServerOptions(), refreshTtlSeconds: 3600 },
+          getExternalBaseUrl: () => 'https://api.example.com',
+          writeSuccess: writeNapCookieSuccess('session', undefined, (body) => ({
+            refresh_token: body.refresh_token,
+          })),
+        })
+        .after()
+    ).resolves.toBeUndefined();
   });
 });

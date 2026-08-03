@@ -12,6 +12,7 @@ import {
   createRegistryAclResolver,
   type NapServerOptions,
   type PermissionRegistry,
+  type SessionStore,
 } from '@imani/nap-server';
 import {
   createPermissionsRouter,
@@ -516,5 +517,204 @@ describe('nap-adapter-express', () => {
     expect(() => validatePermissions(REGISTRY)).toThrow(
       'Permissions used in middleware but missing from registry: unknown:permission'
     );
+  });
+
+  it('takes the audience verbatim from an audienceResolver (RFC §20.2)', async () => {
+    const app = express();
+    app.use(
+      '/auth',
+      createNapExpressRouter({
+        server: buildServerOptions(),
+        // A path the request itself does not carry, which is the case
+        // getExternalBaseUrl cannot express.
+        audienceResolver: { resolve: () => 'https://gateway.example.com/v2/nap/finish' },
+      })
+    );
+
+    const init = await request(app).post('/auth/init').send({ npub: NPUB });
+
+    expect(init.status).toBe(200);
+    expect(init.body.auth_url).toBe('https://gateway.example.com/v2/nap/finish');
+
+    const completion = await buildAuthCompleteRequest({
+      challenge: init.body,
+      signer: createPrivateKeySigner(PRIVATE_KEY_HEX),
+      createdAt: 1_710_000_000,
+    });
+
+    // The proof is signed against that same audience, so it verifies.
+    const complete = await request(app)
+      .post('/auth/complete')
+      .set('authorization', completion.authorization)
+      .set('content-type', 'application/json')
+      .send(new TextDecoder().decode(completion.rawBody));
+
+    expect(complete.status).toBe(200);
+    expect(complete.body.status).toBe('ok');
+  });
+
+  it('rotates a refresh token over POST /auth/refresh', async () => {
+    let seed = 0;
+    const options: NapServerOptions = {
+      ...buildServerOptions(),
+      refreshTtlSeconds: 3600,
+      // The shared fixture's random source is constant, which would make a
+      // rotated token indistinguishable from the one it replaced.
+      randomSource: {
+        randomBytes(length: number) {
+          seed += 1;
+          return new Uint8Array(Array.from({ length }, (_, index) => (index + seed * 7) % 255));
+        },
+      },
+    };
+    const app = createApp(options);
+    const init = await request(app)
+      .post('/auth/init')
+      .set('host', 'api.example.com')
+      .set('x-forwarded-proto', 'https')
+      .send({ npub: NPUB });
+    const completion = await buildAuthCompleteRequest({
+      challenge: init.body,
+      signer: createPrivateKeySigner(PRIVATE_KEY_HEX),
+      createdAt: 1_710_000_000,
+    });
+    const complete = await request(app)
+      .post('/auth/complete')
+      .set('host', 'api.example.com')
+      .set('x-forwarded-proto', 'https')
+      .set('authorization', completion.authorization)
+      .set('content-type', 'application/json')
+      .send(new TextDecoder().decode(completion.rawBody));
+
+    expect(complete.body.refresh_token).toBeTypeOf('string');
+
+    const refreshed = await request(app)
+      .post('/auth/refresh')
+      .set('authorization', `Bearer ${complete.body.refresh_token}`);
+
+    expect(refreshed.status).toBe(200);
+    expect(refreshed.body.access_token).not.toBe(complete.body.access_token);
+    expect(refreshed.body.refresh_token).not.toBe(complete.body.refresh_token);
+
+    // The presented token is now retired, so presenting it again kills the family.
+    const replay = await request(app)
+      .post('/auth/refresh')
+      .set('authorization', `Bearer ${complete.body.refresh_token}`);
+
+    expect(replay.status).toBe(401);
+  });
+
+  it('does not register /auth/refresh when no refresh TTL is configured', async () => {
+    const app = createApp(buildServerOptions());
+
+    const refreshed = await request(app).post('/auth/refresh').set('authorization', 'Bearer x');
+
+    expect(refreshed.status).toBe(404);
+  });
+
+  it('refuses to start when the store cannot honour the configured refresh TTL', () => {
+    const capable = new InMemorySessionStore();
+    // A store predating refresh tokens: it satisfies the required members and
+    // nothing else.
+    const legacy: SessionStore = {
+      createForChallenge: (record) => capable.createForChallenge(record),
+      getBySessionId: (id) => capable.getBySessionId(id),
+      getByAccessToken: (token) => capable.getByAccessToken(token),
+      revokeBySessionId: (id, now) => capable.revokeBySessionId(id, now),
+      revokeByPrincipal: (pubkey, now) => capable.revokeByPrincipal(pubkey, now),
+    };
+
+    expect(() =>
+      createNapExpressRouter({
+        server: { ...buildServerOptions(), sessionStore: legacy, refreshTtlSeconds: 3600 },
+        getExternalBaseUrl: () => 'https://api.example.com',
+      })
+    ).toThrow(/getByRefreshToken and rotateRefreshToken/);
+  });
+
+  it('refuses to start when the cookie writer would throw the refresh token away', () => {
+    expect(() =>
+      createNapExpressRouter({
+        server: { ...buildServerOptions(), refreshTtlSeconds: 3600 },
+        getExternalBaseUrl: () => 'https://api.example.com',
+        writeSuccess: writeNapCookieSuccess('session'),
+      })
+    ).toThrow(/never receives the refresh token/);
+  });
+
+  it('accepts the cookie writer once a transformBody carries the refresh token', () => {
+    expect(() =>
+      createNapExpressRouter({
+        server: { ...buildServerOptions(), refreshTtlSeconds: 3600 },
+        getExternalBaseUrl: () => 'https://api.example.com',
+        writeSuccess: writeNapCookieSuccess('session', undefined, (body) => ({
+          refresh_token: body.refresh_token,
+        })),
+      })
+    ).not.toThrow();
+  });
+
+  it('refuses to build a router with neither audience source', () => {
+    expect(() =>
+      createNapExpressRouter({ server: buildServerOptions() })
+    ).toThrow(/exactly one of getExternalBaseUrl or audienceResolver/);
+  });
+
+  it('refuses to build a router with both audience sources', () => {
+    expect(() =>
+      createNapExpressRouter({
+        server: buildServerOptions(),
+        getExternalBaseUrl: () => 'https://api.example.com',
+        audienceResolver: { resolve: () => 'https://other.example.com/auth/complete' },
+      })
+    ).toThrow(/exactly one of getExternalBaseUrl or audienceResolver/);
+  });
+
+  it('reads the signed bytes through a supplied rawBodyExtractor (RFC §20.2)', async () => {
+    const seen: number[] = [];
+    const app = express();
+    app.use(
+      '/auth',
+      createNapExpressRouter({
+        server: buildServerOptions(),
+        getExternalBaseUrl: () => 'https://api.example.com',
+        rawBodyExtractor: {
+          extract(req) {
+            const captured = (req as { rawBody?: Uint8Array }).rawBody ?? null;
+
+            if (captured) {
+              seen.push(captured.length);
+            }
+
+            return captured;
+          },
+        },
+      })
+    );
+    app.use(
+      (error: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+        res.status(500).json({ error: error.message });
+      }
+    );
+
+    const init = await request(app).post('/auth/init').send({ npub: NPUB });
+    const completion = await buildAuthCompleteRequest({
+      challenge: init.body,
+      signer: createPrivateKeySigner(PRIVATE_KEY_HEX),
+      createdAt: 1_710_000_000,
+    });
+
+    const complete = await request(app)
+      .post('/auth/complete')
+      .set('authorization', completion.authorization)
+      .set('content-type', 'application/json')
+      .send(new TextDecoder().decode(completion.rawBody));
+
+    // Nothing populates `req.rawBody`, so the extractor is genuinely the only
+    // source consulted — had the default symbol reader still run, this would
+    // have completed.
+    expect(seen).toEqual([]);
+    expect(complete.status).toBe(500);
+    expect(complete.body.error).toMatch(/requires createNapExpressJsonParser/);
   });
 });

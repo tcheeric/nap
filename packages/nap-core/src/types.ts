@@ -83,8 +83,22 @@ export interface SessionRecord {
   expires_at: number;
   step_up_token?: string;
   step_up_expires_at?: number;
+  /**
+   * Current refresh token (RFC §14.1). Present only when the server is
+   * configured with `refreshTtlSeconds`.
+   */
   refresh_token?: string;
   refresh_expires_at?: number;
+  /**
+   * The refresh token this row held before its last rotation.
+   *
+   * Kept so a replay is *recognised* rather than merely rejected: a token that
+   * is unknown could be anything, but one that is this row's immediate
+   * predecessor means two parties hold the lineage, and the session is revoked.
+   * One step of history is enough — whoever rotated past an older token already
+   * tripped this check at the time.
+   */
+  previous_refresh_token?: string;
   revoked_at?: number;
 }
 
@@ -130,7 +144,14 @@ export type NapErrorCode =
   | 'NAP_COMPLETE_ACL_DENIED'
   | 'NAP_COMPLETE_RATE_LIMITED'
   | 'NAP_COMPLETE_FAILED_TERMINAL'
-  | 'NAP_COMPLETE_INTERNAL';
+  | 'NAP_COMPLETE_INTERNAL'
+  | 'NAP_REFRESH_UNKNOWN_TOKEN'
+  | 'NAP_REFRESH_REUSED'
+  | 'NAP_REFRESH_EXPIRED'
+  | 'NAP_REFRESH_REVOKED'
+  | 'NAP_REFRESH_ACL_DENIED'
+  | 'NAP_REFRESH_RATE_LIMITED'
+  | 'NAP_REFRESH_INTERNAL';
 
 export interface VerifyCompleteSuccess {
   ok: true;

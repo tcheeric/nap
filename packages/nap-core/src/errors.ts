@@ -7,6 +7,8 @@ const RETRYABLE_ERRORS: ReadonlySet<NapErrorCode> = new Set([
   'NAP_COMPLETE_UNKNOWN_CHALLENGE',
   'NAP_COMPLETE_RATE_LIMITED',
   'NAP_COMPLETE_INTERNAL',
+  'NAP_REFRESH_RATE_LIMITED',
+  'NAP_REFRESH_INTERNAL',
 ]);
 
 export function isRetryableNapError(code: NapErrorCode): boolean {

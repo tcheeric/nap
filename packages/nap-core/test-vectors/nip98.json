@@ -1,0 +1,132 @@
+{
+  "description": "Cases decided by the NIP-98 header validator alone, with no challenge store involved. Feed `authorization`, `request`, and `now` to the validator and compare the outcome.",
+  "cases": [
+    {
+      "name": "exact-url-match/accepted",
+      "rfc": "§20.3 exact URL matching",
+      "description": "The signed `u` tag is byte-identical to the URL the server computed.",
+      "now": 1710000000,
+      "authorization": "Nostr eyJraW5kIjoyNzIzNSwiY3JlYXRlZF9hdCI6MTcxMDAwMDAwMCwidGFncyI6W1sidSIsImh0dHBzOi8vYXBpLmV4YW1wbGUuY29tL2F1dGgvY29tcGxldGUiXSxbIm1ldGhvZCIsIlBPU1QiXSxbInBheWxvYWQiLCI1YjMyNWUwZmE0MmU5OTA5YTQ2N2UzYzIxN2EzZjc0MWU5ZjY5ODJhNTFmNWMzNTJlNmQyM2FjNTJlMmFhZjQyIl0sWyJjaGFsbGVuZ2UiLCJabTl5TFhSbGMzUXRkbVZqZEc5eWN5MXZibXg1TFc1dmRDMXlZVzVrYjIwIl0sWyJjaGFsbGVuZ2VfaWQiLCJjaGFsLTAwMDAwMDAwMDAwMDAwMDAiXV0sImNvbnRlbnQiOiIiLCJwdWJrZXkiOiI0ZjM1NWJkY2I3Y2MwYWY3MjhlZjNjY2ViOTYxNWQ5MDY4NGJiNWIyY2E1Zjg1OWFiMGYwYjcwNDA3NTg3MWFhIiwiaWQiOiI4MmNjYTMxY2QxYTc2OTRhMjI4ZmJkYWQ1Yzc3NWQzNTYxZmEzYjk1OGQ1MGFjYTBlM2I0MmY4YjExNzNmZGMwIiwic2lnIjoiOWU0YTUxYjEzMWFlNjdhNmVhNzQ5M2NkZjc5M2IzNDMwMDllYzM2OWFiNjFiNmVhYjBhMWYyYmM1NjI3NTA3N2M2MjE5NzZkMTkyNjJiOTc0MDNkYjI5NWJhODk5MGQ2ZjUwNDZiMDY0ZDAxMGI2M2M2MTY4NGNkNzFmYzU5YzQifQ==",
+      "request": {
+        "method": "POST",
+        "url": "https://api.example.com/auth/complete",
+        "body": "{\"challenge_id\":\"chal-0000000000000000\"}"
+      },
+      "expect": {
+        "ok": true
+      }
+    },
+    {
+      "name": "exact-url-match/different-host",
+      "rfc": "§20.3 exact URL matching",
+      "description": "A proof signed for another host is not a proof for this one.",
+      "now": 1710000000,
+      "authorization": "Nostr eyJraW5kIjoyNzIzNSwiY3JlYXRlZF9hdCI6MTcxMDAwMDAwMCwidGFncyI6W1sidSIsImh0dHBzOi8vZXZpbC5leGFtcGxlLmNvbS9hdXRoL2NvbXBsZXRlIl0sWyJtZXRob2QiLCJQT1NUIl0sWyJwYXlsb2FkIiwiNWIzMjVlMGZhNDJlOTkwOWE0NjdlM2MyMTdhM2Y3NDFlOWY2OTgyYTUxZjVjMzUyZTZkMjNhYzUyZTJhYWY0MiJdLFsiY2hhbGxlbmdlIiwiWm05eUxYUmxjM1F0ZG1WamRHOXljeTF2Ym14NUxXNXZkQzF5WVc1a2IyMCJdLFsiY2hhbGxlbmdlX2lkIiwiY2hhbC0wMDAwMDAwMDAwMDAwMDAwIl1dLCJjb250ZW50IjoiIiwicHVia2V5IjoiNGYzNTViZGNiN2NjMGFmNzI4ZWYzY2NlYjk2MTVkOTA2ODRiYjViMmNhNWY4NTlhYjBmMGI3MDQwNzU4NzFhYSIsImlkIjoiOWUzNTlhMmU2ZjVlYjQ4YmZjNGJlMDI1MDQ0ZjE5MGJmZjFmM2Q1NGY0NWEwMDk1NDhhMWU3NGNhYWYzNDU0NSIsInNpZyI6Ijg4NzYzMjE0NDZiZThhODI2ZmQ4NTMwMDY3MmFjZWQ0NzZhNjQwODYxMTQyNzlhNzE1YjFjZTgyMGZkYjAxOWQ3NmFkZGE0MDJjYzQwYWM0MTRlMWRjMGEwNTI3YzNmNzE0MmEyMDU1YjEyZjQ4NWJlNTY0ZWM1Y2ZkMDkzNmY5In0=",
+      "request": {
+        "method": "POST",
+        "url": "https://api.example.com/auth/complete",
+        "body": "{\"challenge_id\":\"chal-0000000000000000\"}"
+      },
+      "expect": {
+        "ok": false,
+        "code": "NAP_COMPLETE_URL_MISMATCH"
+      }
+    },
+    {
+      "name": "exact-url-match/trailing-slash",
+      "rfc": "§20.3 exact URL matching",
+      "description": "Matching is exact, not normalising: a trailing slash is a different URL. An implementation that canonicalises paths will wrongly accept this.",
+      "now": 1710000000,
+      "authorization": "Nostr eyJraW5kIjoyNzIzNSwiY3JlYXRlZF9hdCI6MTcxMDAwMDAwMCwidGFncyI6W1sidSIsImh0dHBzOi8vYXBpLmV4YW1wbGUuY29tL2F1dGgvY29tcGxldGUvIl0sWyJtZXRob2QiLCJQT1NUIl0sWyJwYXlsb2FkIiwiNWIzMjVlMGZhNDJlOTkwOWE0NjdlM2MyMTdhM2Y3NDFlOWY2OTgyYTUxZjVjMzUyZTZkMjNhYzUyZTJhYWY0MiJdLFsiY2hhbGxlbmdlIiwiWm05eUxYUmxjM1F0ZG1WamRHOXljeTF2Ym14NUxXNXZkQzF5WVc1a2IyMCJdLFsiY2hhbGxlbmdlX2lkIiwiY2hhbC0wMDAwMDAwMDAwMDAwMDAwIl1dLCJjb250ZW50IjoiIiwicHVia2V5IjoiNGYzNTViZGNiN2NjMGFmNzI4ZWYzY2NlYjk2MTVkOTA2ODRiYjViMmNhNWY4NTlhYjBmMGI3MDQwNzU4NzFhYSIsImlkIjoiNjZiMGFjZDAxNDA0Y2FmOTU5YjFmMjVjOGZkYmQyNmI1NmFjMjA3OGJkMDk2YWVhZjM5MDA5YWJiNjZhMzJmNiIsInNpZyI6ImIzMzRlMjFjZjgxMDQ4NjI5ZWI3ODI2ZDAyZDMzZWU0NWU1ZjViZGRkZTdmMWIxZWMxMjQxYTVhYjc3MTEyYzNiMjFjYWQ3NTA5YWYyNDU1ZDExYzg2MWE0OWIwMjgxMWFkM2NjN2E1MTIwNTEyYmY4NWM2NTBkYzg3M2EwNTcwIn0=",
+      "request": {
+        "method": "POST",
+        "url": "https://api.example.com/auth/complete",
+        "body": "{\"challenge_id\":\"chal-0000000000000000\"}"
+      },
+      "expect": {
+        "ok": false,
+        "code": "NAP_COMPLETE_URL_MISMATCH"
+      }
+    },
+    {
+      "name": "exact-url-match/query-string-appended",
+      "rfc": "§20.3 exact URL matching",
+      "description": "A query string the server did not compute is a mismatch, not a detail to strip.",
+      "now": 1710000000,
+      "authorization": "Nostr eyJraW5kIjoyNzIzNSwiY3JlYXRlZF9hdCI6MTcxMDAwMDAwMCwidGFncyI6W1sidSIsImh0dHBzOi8vYXBpLmV4YW1wbGUuY29tL2F1dGgvY29tcGxldGU/eD0xIl0sWyJtZXRob2QiLCJQT1NUIl0sWyJwYXlsb2FkIiwiNWIzMjVlMGZhNDJlOTkwOWE0NjdlM2MyMTdhM2Y3NDFlOWY2OTgyYTUxZjVjMzUyZTZkMjNhYzUyZTJhYWY0MiJdLFsiY2hhbGxlbmdlIiwiWm05eUxYUmxjM1F0ZG1WamRHOXljeTF2Ym14NUxXNXZkQzF5WVc1a2IyMCJdLFsiY2hhbGxlbmdlX2lkIiwiY2hhbC0wMDAwMDAwMDAwMDAwMDAwIl1dLCJjb250ZW50IjoiIiwicHVia2V5IjoiNGYzNTViZGNiN2NjMGFmNzI4ZWYzY2NlYjk2MTVkOTA2ODRiYjViMmNhNWY4NTlhYjBmMGI3MDQwNzU4NzFhYSIsImlkIjoiMzRjYzQzOTJhMWMyZjM3NzBiNGE5MWM1NGRjY2JhMDAyZjExZTE5ZTdkYjBjMDg2MDRlN2I4YWFjMGEyMzY2OCIsInNpZyI6IjEzNzY3OWJjOTIwNDdmOTBlNDljNDc2ZDBlNTU2MDczZWFkOGFmNGQ2ZWM3NGE0MGE5NmMyMzQ0M2RhNWM0MTFjZTYyMWZhMjBjOGNhM2Y1Mjg2YWVhZDc1ODk3ZmI1ZGEyYjU4YmNmMjY1YmNhZjA3ZWZiMzhkNTY0OTk3MGZmIn0=",
+      "request": {
+        "method": "POST",
+        "url": "https://api.example.com/auth/complete",
+        "body": "{\"challenge_id\":\"chal-0000000000000000\"}"
+      },
+      "expect": {
+        "ok": false,
+        "code": "NAP_COMPLETE_URL_MISMATCH"
+      }
+    },
+    {
+      "name": "payload-hash/mismatch",
+      "rfc": "§20.3 payload hash generation",
+      "description": "The body was altered — or reserialized — after signing. This is what a global JSON body parser in front of the NAP router produces.",
+      "now": 1710000000,
+      "authorization": "Nostr eyJraW5kIjoyNzIzNSwiY3JlYXRlZF9hdCI6MTcxMDAwMDAwMCwidGFncyI6W1sidSIsImh0dHBzOi8vYXBpLmV4YW1wbGUuY29tL2F1dGgvY29tcGxldGUiXSxbIm1ldGhvZCIsIlBPU1QiXSxbInBheWxvYWQiLCI0NDEzNmZhMzU1YjM2NzhhMTE0NmFkMTZmN2U4NjQ5ZTk0ZmI0ZmMyMWZlNzdlODMxMGMwNjBmNjFjYWFmZjhhIl0sWyJjaGFsbGVuZ2UiLCJabTl5TFhSbGMzUXRkbVZqZEc5eWN5MXZibXg1TFc1dmRDMXlZVzVrYjIwIl0sWyJjaGFsbGVuZ2VfaWQiLCJjaGFsLTAwMDAwMDAwMDAwMDAwMDAiXV0sImNvbnRlbnQiOiIiLCJwdWJrZXkiOiI0ZjM1NWJkY2I3Y2MwYWY3MjhlZjNjY2ViOTYxNWQ5MDY4NGJiNWIyY2E1Zjg1OWFiMGYwYjcwNDA3NTg3MWFhIiwiaWQiOiJlNzI1ODljNGZlOGY2NWJjMmU5YTVkMTVkMjQzY2E4MjNiMjM0ZTQwNWI1OWUwZWZiMWU5ZDg4NmU5NzQwOWMwIiwic2lnIjoiOTQ3YTZmNzlhN2RkNzA0NWVkNmVjOGUxZTBkYWY3MjhiM2Y4NTFlZWY1YmM4ZDJhMDBmNjIzNzg2ZDEwM2ZlOWE3YmQzM2ZjZDEzZjJlZWUyNGM5NWQ4ZjhhYmU3YjI1NDdkZjgxYzVjNmU2ODE5OWYwM2M0ZjQxM2NlOTg2YmEifQ==",
+      "request": {
+        "method": "POST",
+        "url": "https://api.example.com/auth/complete",
+        "body": "{\"challenge_id\":\"chal-0000000000000000\"}"
+      },
+      "expect": {
+        "ok": false,
+        "code": "NAP_COMPLETE_PAYLOAD_MISMATCH"
+      }
+    },
+    {
+      "name": "duplicate-tag/u",
+      "rfc": "§20.3 duplicate tag rejection",
+      "description": "Two `u` tags: rejected outright rather than resolved by picking one. Picking the first or the last lets a signer present one audience to the verifier and another to a reader.",
+      "now": 1710000000,
+      "authorization": "Nostr eyJraW5kIjoyNzIzNSwiY3JlYXRlZF9hdCI6MTcxMDAwMDAwMCwidGFncyI6W1sidSIsImh0dHBzOi8vYXBpLmV4YW1wbGUuY29tL2F1dGgvY29tcGxldGUiXSxbIm1ldGhvZCIsIlBPU1QiXSxbInBheWxvYWQiLCI1YjMyNWUwZmE0MmU5OTA5YTQ2N2UzYzIxN2EzZjc0MWU5ZjY5ODJhNTFmNWMzNTJlNmQyM2FjNTJlMmFhZjQyIl0sWyJjaGFsbGVuZ2UiLCJabTl5TFhSbGMzUXRkbVZqZEc5eWN5MXZibXg1TFc1dmRDMXlZVzVrYjIwIl0sWyJjaGFsbGVuZ2VfaWQiLCJjaGFsLTAwMDAwMDAwMDAwMDAwMDAiXSxbInUiLCJodHRwczovL2V2aWwuZXhhbXBsZS5jb20vYXV0aC9jb21wbGV0ZSJdXSwiY29udGVudCI6IiIsInB1YmtleSI6IjRmMzU1YmRjYjdjYzBhZjcyOGVmM2NjZWI5NjE1ZDkwNjg0YmI1YjJjYTVmODU5YWIwZjBiNzA0MDc1ODcxYWEiLCJpZCI6IjIwNTc1ZjNmYjhkYWI3NTIwMzQ1MTc2NWE4MWQwNTgxYzc4ZjEzNWI1MTM2MTgwYjUyZTliYTQ2NDRmZmFhZmYiLCJzaWciOiI1ZmQxMGU5ODI2NDUzNzI1ZTNhNzlkNGNlYjc2NTFmZmJkYzA0MjRjOTg0Yzk5NDk1NzBjM2M4NjBkMjY2ODUzNjBiNGY1NzgwNWI2ZDA4NzcxM2NiYTlmYmZkOWRmN2U1YWU0ZWNiYjUzNjJmMDgyMzEwYTVmMDU3ODZhNjg1MCJ9",
+      "request": {
+        "method": "POST",
+        "url": "https://api.example.com/auth/complete",
+        "body": "{\"challenge_id\":\"chal-0000000000000000\"}"
+      },
+      "expect": {
+        "ok": false,
+        "code": "NAP_COMPLETE_INVALID_EVENT_JSON"
+      }
+    },
+    {
+      "name": "duplicate-tag/payload",
+      "rfc": "§20.3 duplicate tag rejection",
+      "description": "Two `payload` tags, one of which hashes the body actually sent.",
+      "now": 1710000000,
+      "authorization": "Nostr eyJraW5kIjoyNzIzNSwiY3JlYXRlZF9hdCI6MTcxMDAwMDAwMCwidGFncyI6W1sidSIsImh0dHBzOi8vYXBpLmV4YW1wbGUuY29tL2F1dGgvY29tcGxldGUiXSxbIm1ldGhvZCIsIlBPU1QiXSxbInBheWxvYWQiLCI0NDEzNmZhMzU1YjM2NzhhMTE0NmFkMTZmN2U4NjQ5ZTk0ZmI0ZmMyMWZlNzdlODMxMGMwNjBmNjFjYWFmZjhhIl0sWyJjaGFsbGVuZ2UiLCJabTl5TFhSbGMzUXRkbVZqZEc5eWN5MXZibXg1TFc1dmRDMXlZVzVrYjIwIl0sWyJjaGFsbGVuZ2VfaWQiLCJjaGFsLTAwMDAwMDAwMDAwMDAwMDAiXSxbInBheWxvYWQiLCI1YjMyNWUwZmE0MmU5OTA5YTQ2N2UzYzIxN2EzZjc0MWU5ZjY5ODJhNTFmNWMzNTJlNmQyM2FjNTJlMmFhZjQyIl1dLCJjb250ZW50IjoiIiwicHVia2V5IjoiNGYzNTViZGNiN2NjMGFmNzI4ZWYzY2NlYjk2MTVkOTA2ODRiYjViMmNhNWY4NTlhYjBmMGI3MDQwNzU4NzFhYSIsImlkIjoiZTVkOTRhOWYzOWIwYzRiZGYzODhlMzhmZDE0YzdkNzE5MDhhNTBkMTM1ZmI3MTM3NzAwMDBjYTk2NmFlNjA4OSIsInNpZyI6IjNmNmUwMWE0ZGY3OTQxMGUyMDY3YTlmZWQ0NTIxNjEzNThiMjMwZDFmYzJjZDI0MmYwYWI0NGQ2NTVhMWVjZDE2NzYzMmRhODFjM2VmOTNjOGQ4OTA2YjhkYjQ2MzEwMThkMTIzZGM0YzJhMzIyNWUwODA0N2MwN2EyZGVjYjFmIn0=",
+      "request": {
+        "method": "POST",
+        "url": "https://api.example.com/auth/complete",
+        "body": "{\"challenge_id\":\"chal-0000000000000000\"}"
+      },
+      "expect": {
+        "ok": false,
+        "code": "NAP_COMPLETE_MISSING_PAYLOAD"
+      }
+    },
+    {
+      "name": "duplicate-tag/challenge-id",
+      "rfc": "§20.3 duplicate tag rejection",
+      "description": "Two `challenge_id` tags, one of which matches the body.",
+      "now": 1710000000,
+      "authorization": "Nostr eyJraW5kIjoyNzIzNSwiY3JlYXRlZF9hdCI6MTcxMDAwMDAwMCwidGFncyI6W1sidSIsImh0dHBzOi8vYXBpLmV4YW1wbGUuY29tL2F1dGgvY29tcGxldGUiXSxbIm1ldGhvZCIsIlBPU1QiXSxbInBheWxvYWQiLCI1YjMyNWUwZmE0MmU5OTA5YTQ2N2UzYzIxN2EzZjc0MWU5ZjY5ODJhNTFmNWMzNTJlNmQyM2FjNTJlMmFhZjQyIl0sWyJjaGFsbGVuZ2UiLCJabTl5TFhSbGMzUXRkbVZqZEc5eWN5MXZibXg1TFc1dmRDMXlZVzVrYjIwIl0sWyJjaGFsbGVuZ2VfaWQiLCJjaGFsLTAwMDAwMDAwMDAwMDAwMDAiXSxbImNoYWxsZW5nZV9pZCIsImNoYWwtMTExMTExMTExMTExMTExMSJdXSwiY29udGVudCI6IiIsInB1YmtleSI6IjRmMzU1YmRjYjdjYzBhZjcyOGVmM2NjZWI5NjE1ZDkwNjg0YmI1YjJjYTVmODU5YWIwZjBiNzA0MDc1ODcxYWEiLCJpZCI6IjUwMzA1NjFlYmMzYmIzMjdmMTNmMTVhMzBjNWVhMjM0YzBmM2UwMDhlYzQ3ZDgwYWJiZmMxNDViYTM3ZmJiMzkiLCJzaWciOiJjYmRhMDFiYzI2OWJiMzM4YTE5ODk1MDBkMjVjYWY4ZjAyNzE3NjNjYjA4MDZjOTI0N2I0NTI0N2FlNjBlYjI0MTNkYzJjYWY4Yzc5ZjgxMDVmYTkzYjdmN2ZjODZkYzNhYTZhNjRlYWFlYmQ5ODU5ZWQ0YTRiOTQyMzFlYjIwMyJ9",
+      "request": {
+        "method": "POST",
+        "url": "https://api.example.com/auth/complete",
+        "body": "{\"challenge_id\":\"chal-0000000000000000\"}"
+      },
+      "expect": {
+        "ok": false,
+        "code": "NAP_COMPLETE_MISSING_CHALLENGE_ID"
+      }
+    }
+  ]
+}

@@ -97,12 +97,60 @@ export interface ChallengeStore {
   ): Promise<RecordChallengeFailureResult | null>;
 }
 
+export interface RotateRefreshTokenParams {
+  /**
+   * The token the caller presented. The store must only rotate if the row still
+   * holds it — that compare-and-swap is what stops two concurrent refreshes off
+   * one credential from both succeeding.
+   */
+  expectedRefreshToken: string;
+  accessToken: string;
+  refreshToken: string;
+  /**
+   * Read from the configured `Clock`, not the store's own wall clock. Neither
+   * bundled store needs it — there is no `last_activity_at` in the TypeScript
+   * schema, where the JVM implementation writes it — but a store that stamps a
+   * row of its own must have the same `now` the rotation was decided against, or
+   * it desynchronises from every test that injects a clock.
+   */
+  now: number;
+  expiresAt: number;
+  refreshExpiresAt: number;
+  /** Re-resolved at refresh time, not carried over from login. */
+  roles: string[];
+  permissions: string[];
+}
+
 export interface SessionStore {
   createForChallenge(record: SessionRecord): Promise<SessionRecord>;
   getBySessionId(sessionId: string): Promise<SessionRecord | null>;
   getByAccessToken(token: string): Promise<SessionRecord | null>;
   revokeBySessionId(sessionId: string, now: number): Promise<void>;
   revokeByPrincipal(pubkey: string, now: number): Promise<number>;
+  /**
+   * Look up a session by either its current *or* its previous refresh token
+   * (RFC §14.1). Both, deliberately: returning nothing for a retired token
+   * would make a replay indistinguishable from a made-up one, and the whole
+   * point of rotation is that the difference is detectable.
+   *
+   * Optional so stores written before refresh tokens keep compiling. Leaving it
+   * out means `refreshTtlSeconds` cannot be configured — the adapters refuse to
+   * start rather than serve a `/auth/refresh` that always fails.
+   */
+  getByRefreshToken?(token: string): Promise<SessionRecord | null>;
+  /**
+   * Swap in a new access and refresh token on an existing session, retaining
+   * the outgoing refresh token as `previous_refresh_token`. Returns the updated
+   * record, or null if the session is gone.
+   *
+   * Rotation stays on the one row: the row *is* the token family, so revoking
+   * it on a replay revokes the lineage, and no separate family table has to be
+   * kept in step with it.
+   */
+  rotateRefreshToken?(
+    sessionId: string,
+    params: RotateRefreshTokenParams
+  ): Promise<SessionRecord | null>;
 }
 
 export interface RateLimitDecision {
@@ -113,7 +161,7 @@ export interface RateLimitDecision {
 
 export interface RateLimitKey {
   /** Which endpoint is being called. */
-  scope: 'init' | 'complete';
+  scope: 'init' | 'complete' | 'refresh';
   /** Principal the request claims, when the request names one. */
   npub?: string;
   /**
@@ -172,6 +220,67 @@ export interface AuditLogger {
   }): Promise<void> | void;
 }
 
+/**
+ * Resolves the audience NIP-98 is checked against (RFC §17.3, §20.2).
+ *
+ * NIP-98 compares the exact absolute URL, so behind a proxy, gateway, or mesh
+ * the URL the application sees is not the one the client signed. This is the
+ * seam where that is corrected, and it is security-relevant: whatever it
+ * returns *is* the audience. Prefer a pinned constant or a Host allowlist over
+ * anything derived from request headers, which an arbitrary client can set.
+ *
+ * Generic over the request type because each adapter has its own — the server
+ * core never sees a request object.
+ */
+export interface AudienceResolver<TRequest = unknown> {
+  resolve(request: TRequest): string;
+}
+
+/**
+ * Produces the exact bytes the NIP-98 `payload` tag hashes (RFC §20.2).
+ *
+ * `payload` is `sha256(rawBody)`, so this must return the bytes as they arrived.
+ * Anything that re-serialises the parsed body — a global `express.json()` ahead
+ * of the NAP router, a logging middleware that round-trips JSON — produces
+ * different bytes and fails every completion with
+ * `NAP_COMPLETE_PAYLOAD_MISMATCH`.
+ *
+ * Returns `null` when no raw body was captured, which is a wiring error rather
+ * than a client error and is reported as one.
+ */
+export interface RawBodyExtractor<TRequest = unknown> {
+  extract(request: TRequest): Uint8Array | null;
+}
+
+/** The counters RFC §19.3 asks implementations to emit. */
+export type NapCounter =
+  | 'auth_init_total'
+  | 'auth_complete_total'
+  | 'auth_success_total'
+  | 'auth_failure_total'
+  | 'auth_rate_limited_total'
+  | 'challenge_redeemed_total'
+  | 'challenge_retry_hit_total'
+  | 'challenge_expired_total'
+  | 'audience_mismatch_total'
+  | 'payload_mismatch_total';
+
+/**
+ * Pluggable counter sink (RFC §19.3).
+ *
+ * Deliberately counters only, and deliberately separate from `AuditLogger`:
+ * audit events carry per-request identifiers that must not become metric labels
+ * — an `npub` or `challenge_id` label is unbounded cardinality, and §19.2
+ * forbids exporting several of the values an audit event carries.
+ *
+ * `increment` is called on the request path, so it must not block or throw.
+ * Failures are swallowed rather than allowed to fail a login: a metrics backend
+ * being down is not a reason to stop authenticating.
+ */
+export interface MetricsRecorder {
+  increment(counter: NapCounter, labels?: Record<string, string>): void;
+}
+
 export interface NapServerOptions {
   challengeStore: ChallengeStore;
   sessionStore: SessionStore;
@@ -179,6 +288,11 @@ export interface NapServerOptions {
   clock?: Clock;
   randomSource?: RandomSource;
   auditLogger?: AuditLogger;
+  /**
+   * Counter sink for the RFC §19.3 metrics. Defaults to a no-op, so the
+   * counters cost nothing until something is bound to them.
+   */
+  metrics?: MetricsRecorder;
   /**
    * Defaults to a per-options `createInMemoryRateLimiter()`.
    *
@@ -199,6 +313,18 @@ export interface NapServerOptions {
   upperBoundGraceSeconds?: number;
   /** Lifetime of a minted step-up token, in seconds. Defaults to 600. */
   stepUpTtlSeconds?: number;
+  /**
+   * Lifetime of a refresh token, in seconds (RFC §14.1). **Unset means no
+   * refresh tokens are issued at all** and `/auth/refresh` refuses everything —
+   * refresh is opt-in, since it trades a longer-lived credential for fewer
+   * NIP-98 signing prompts and only the deployment knows whether that is a
+   * trade it wants.
+   *
+   * The RFC recommends 8 to 24 hours. Setting it requires a `SessionStore` that
+   * implements `getByRefreshToken` and `rotateRefreshToken`; the adapters check
+   * at startup.
+   */
+  refreshTtlSeconds?: number;
   /**
    * Cap on unexpired `issued` challenges per principal (RFC §17.4). Defaults to
    * 10. Requires `ChallengeStore.countOutstanding`; skipped without it.

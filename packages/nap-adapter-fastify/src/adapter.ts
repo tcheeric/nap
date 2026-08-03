@@ -18,13 +18,16 @@ import {
   issueChallenge,
   isMalformedRequestFailure,
   isVerifyFailure,
+  refreshSession,
   verifyCompletion,
   type AclResolver,
+  type AudienceResolver,
   type Clock,
   type EffectiveAcl,
   type IssueChallengeResult,
   type NapServerOptions,
   type PermissionRegistry,
+  type RawBodyExtractor,
   type SessionStore,
 } from '@imani/nap-server';
 import type { SessionRecord, VerifyCompleteFailure } from '@imani/nap-core';
@@ -44,7 +47,19 @@ export interface NapFastifyRequest extends FastifyRequest {
 export interface NapFastifyOptions {
   server: NapServerOptions;
   routePrefix?: string;
-  getExternalBaseUrl(req: FastifyRequest): string;
+  /**
+   * Shorthand for the common case: return the external origin and the adapter
+   * appends `/auth/complete`. Mutually exclusive with `audienceResolver` —
+   * supply exactly one.
+   */
+  getExternalBaseUrl?: (req: FastifyRequest) => string;
+  /**
+   * The RFC §20.2 form, for when the completion endpoint is not
+   * `<base>/auth/complete` — a rewriting gateway, a `routePrefix` the request
+   * does not carry. Whatever it returns *is* the audience the NIP-98 `u` tag
+   * must equal, so it takes the full URL rather than an origin.
+   */
+  audienceResolver?: AudienceResolver<FastifyRequest>;
   /** Cookie carrying the access token, read by `/auth/session` and cleared by `/auth/logout`. Defaults to `session`. */
   cookieName?: string;
   /** Attributes used when clearing the cookie on logout. Must match those used to set it, or the browser keeps it. Defaults to `{ path: '/' }`. */
@@ -68,6 +83,15 @@ export interface NapFastifyOptions {
    * than enforced against a value anyone can forge.
    */
   getClientIp?: (req: FastifyRequest) => string | undefined;
+  /**
+   * Where `/auth/complete` reads the exact bytes the NIP-98 `payload` tag hashed.
+   *
+   * Defaults to the buffer the plugin's content-type parser stashes on the
+   * request. Supply your own only if the raw body is captured somewhere else —
+   * never one that re-stringifies `req.body`, which changes key order and
+   * whitespace and fails every completion with `NAP_COMPLETE_PAYLOAD_MISMATCH`.
+   */
+  rawBodyExtractor?: RawBodyExtractor<FastifyRequest>;
   writeSuccess?: (ctx: {
     req: FastifyRequest;
     reply: FastifyReply;
@@ -237,7 +261,79 @@ async function loadGuardContext(
 }
 
 function authCompleteUrl(req: FastifyRequest, options: NapFastifyOptions): string {
-  return `${normalizeBaseUrl(options.getExternalBaseUrl(req))}/auth/complete`;
+  return options.audienceResolver
+    ? options.audienceResolver.resolve(req)
+    : `${normalizeBaseUrl(options.getExternalBaseUrl!(req))}/auth/complete`;
+}
+
+/**
+ * Both options set means two answers to "what is the audience", and the wrong
+ * one silently becomes the value every NIP-98 proof is checked against. Neither
+ * means the adapter would have to guess from the request, which is exactly the
+ * trust decision `createRequestDerivedBaseUrlResolver()` documents as the
+ * caller's to make. Either way it is a wiring mistake, so it fails at startup
+ * rather than as a uniform 401 per request.
+ */
+function assertOneAudienceSource(options: NapFastifyOptions): void {
+  const supplied = [options.getExternalBaseUrl, options.audienceResolver].filter(Boolean).length;
+
+  if (supplied !== 1) {
+    throw new Error('NAP adapter requires exactly one of getExternalBaseUrl or audienceResolver');
+  }
+}
+
+/**
+ * Marks a `writeSuccess` that replies without the tokens. `Symbol.for` rather than a
+ * module-local symbol so it survives an adapter loaded twice through different paths —
+ * a duplicated copy failing this check open would be exactly the silent case it exists
+ * to catch.
+ */
+const DISCARDS_TOKENS = Symbol.for('nap.writeSuccess.discardsTokens');
+
+function discardsTokens(writeSuccess: NapFastifyOptions['writeSuccess']): boolean {
+  return Boolean(writeSuccess && (writeSuccess as unknown as Record<symbol, unknown>)[DISCARDS_TOKENS]);
+}
+
+function rawBodyOf(req: FastifyRequest, options: NapFastifyOptions): Uint8Array | null {
+  return options.rawBodyExtractor ? options.rawBodyExtractor.extract(req) : getRawBody(req);
+}
+
+function bearerTokenOf(req: FastifyRequest): string | undefined {
+  const header = req.headers.authorization;
+
+  return header?.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : undefined;
+}
+
+/**
+ * A `refreshTtlSeconds` the store cannot honour would mint refresh tokens that
+ * every `/auth/refresh` then rejects — indistinguishable, from the client, from
+ * a stolen token. It is a wiring error, so it surfaces at startup.
+ */
+function assertRefreshIsWirable(options: NapFastifyOptions): void {
+  const store = options.server.sessionStore;
+
+  if (!options.server.refreshTtlSeconds) {
+    throw new Error('NAP /auth/refresh requires server.refreshTtlSeconds to be set');
+  }
+
+  if (!store.getByRefreshToken || !store.rotateRefreshToken) {
+    throw new Error(
+      'NAP refreshTtlSeconds requires a SessionStore implementing getByRefreshToken and rotateRefreshToken'
+    );
+  }
+
+  // The refresh token would be minted, stored, and then dropped on the floor by a
+  // `writeSuccess` that replies `{ status: 'ok' }` — leaving a client that can never
+  // present the credential this endpoint exists to accept. Inert rather than insecure,
+  // but silently inert, which is why it fails here.
+  if (discardsTokens(options.writeSuccess)) {
+    throw new Error(
+      'NAP refreshTtlSeconds cannot be combined with the default writeNapCookieSuccess body: ' +
+        'it replies {status:"ok"}, so the client never receives the refresh token that ' +
+        '/auth/refresh requires. Pass a transformBody that returns refresh_token, or leave ' +
+        'refreshTtlSeconds unset.'
+    );
+  }
 }
 
 function clientIpOf(req: FastifyRequest, options: NapFastifyOptions): string | undefined {
@@ -269,7 +365,7 @@ function defaultWriteFailure(reply: FastifyReply): void {
  * (`() => 'https://api.example.com'`) or a Host allowlist. See §9.4 of
  * docs/NAP-INTEGRATION-GUIDE.md.
  */
-export function createRequestDerivedBaseUrlResolver(): NapFastifyOptions['getExternalBaseUrl'] {
+export function createRequestDerivedBaseUrlResolver(): (req: FastifyRequest) => string {
   return (req) => {
     const host = req.headers.host;
 
@@ -286,13 +382,22 @@ export function writeNapCookieSuccess(
   cookieOptions?: SerializeOptions,
   transformBody?: (body: ReturnType<typeof toPublicAuthSuccess>) => unknown
 ): NapFastifyOptions['writeSuccess'] {
-  return ({ reply, body }) => {
+  const write: NonNullable<NapFastifyOptions['writeSuccess']> = ({ reply, body }) => {
     reply.header('set-cookie', serialize(cookieName, body.access_token, cookieOptions));
     reply.status(200).send(transformBody ? transformBody(body) : { status: 'ok' });
   };
+
+  // A `transformBody` is the caller taking the body over, so only the default is marked.
+  if (!transformBody) {
+    Object.defineProperty(write, DISCARDS_TOKENS, { value: true });
+  }
+
+  return write;
 }
 
 export function createNapFastifyInitHandler(options: NapFastifyOptions): RouteHandlerMethod {
+  assertOneAudienceSource(options);
+
   return async (req, reply) => {
     const npub = (req.body as Record<string, unknown> | undefined)?.npub;
 
@@ -324,8 +429,10 @@ export function createNapFastifyInitHandler(options: NapFastifyOptions): RouteHa
 }
 
 export function createNapFastifyCompleteHandler(options: NapFastifyOptions): RouteHandlerMethod {
+  assertOneAudienceSource(options);
+
   return async (req, reply) => {
-    const rawBody = getRawBody(req);
+    const rawBody = rawBodyOf(req, options);
 
     if (!rawBody) {
       throw new Error('nap-adapter-fastify requires raw body capture for /auth/complete');
@@ -397,6 +504,47 @@ function installNapJsonParser(instance: FastifyInstance, bodyLimitBytes = 1024):
 }
 
 /**
+ * `POST /auth/refresh` — exchanges a rotating refresh token for a new access
+ * token (RFC §14.1). The token is read from `Authorization: Bearer`, never a
+ * cookie: a cookie would be attached by the browser to any request to the
+ * origin, which is exactly what a credential this long-lived must not be.
+ *
+ * Registered only when `refreshTtlSeconds` is configured.
+ */
+export function createNapFastifyRefreshHandler(options: NapFastifyOptions): RouteHandlerMethod {
+  assertRefreshIsWirable(options);
+
+  return async (req, reply) => {
+    const result = await refreshSession(
+      {
+        refreshToken: bearerTokenOf(req),
+        clientIp: clientIpOf(req, options),
+      },
+      options.server
+    );
+
+    if (!result.ok) {
+      if (result.code === 'NAP_REFRESH_RATE_LIMITED') {
+        rateLimited(reply, result.retryAfterSeconds);
+        return;
+      }
+
+      defaultWriteFailure(reply);
+      return;
+    }
+
+    const body = toPublicAuthSuccess(result.session);
+
+    if (options.writeSuccess) {
+      await options.writeSuccess({ req, reply, body });
+      return;
+    }
+
+    reply.status(200).send(body);
+  };
+}
+
+/**
  * `GET /auth/session` — returns the current session, or 401 if there is none.
  *
  * The body omits `access_token` (see `toPublicSessionView`): in cookie mode the
@@ -461,6 +609,10 @@ export const napFastifyPlugin: FastifyPluginAsync<NapFastifyOptions> = async (fa
   fastify.post(`${prefix}/complete`, createNapFastifyCompleteHandler(options));
   fastify.get(`${prefix}/session`, createNapFastifySessionHandler(options));
   fastify.post(`${prefix}/logout`, createNapFastifyLogoutHandler(options));
+
+  if (options.server.refreshTtlSeconds) {
+    fastify.post(`${prefix}/refresh`, createNapFastifyRefreshHandler(options));
+  }
 };
 
 export function requirePermission(
