@@ -118,9 +118,10 @@ All packages in this workspace share a single version.
   Ignoring it is safe — the caller counts the same key on `clientIp` too — but a limiter
   that keys only on `clientIp` will not bound `/auth/complete` for an adapter that reports
   no address.
-- **`nap-java` is not yet wire-compatible with the body-carried `step_up` flag, the 429
-  responses, or `failed_terminal`.** Until it is, do not mix a TS client asking for a
-  step-up with a Java server.
+- **`nap-java` carries the matching change** (its own `[Unreleased]`), so a TS client
+  asking for a step-up works against a Java server. `nap-it`'s interop test drives the
+  real `@imani/nap-client-http` against the JVM server and asserts the step-up token
+  round-trips, which is what fails if either side moves the flag again.
 
 ## [0.3.0] - 2026-08-03
 
