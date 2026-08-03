@@ -161,6 +161,98 @@ describe('rate limiting (RFC §17.1)', () => {
     expect(second).toMatchObject({ ok: false, code: 'NAP_INIT_RATE_LIMITED' });
   });
 
+  it('scopes the npub dimension to the address it arrived from', async () => {
+    // An npub is public and /auth/init is unauthenticated, so a globally counted
+    // npub budget lets anyone spend a stranger's and keep them from logging in.
+    const options = buildOptions({
+      rateLimiter: createInMemoryRateLimiter({
+        maxPerWindow: 1,
+        clock: { nowUnix: () => NOW },
+      }),
+    });
+
+    await issue(options, '198.51.100.1');
+
+    expect(
+      await issueChallenge({ npub: NPUB, authUrl: AUTH_URL, clientIp: '198.51.100.1' }, options)
+    ).toMatchObject({ ok: false, code: 'NAP_INIT_RATE_LIMITED' });
+
+    // Same npub, different address: unaffected.
+    expect(
+      await issueChallenge({ npub: NPUB, authUrl: AUTH_URL, clientIp: '203.0.113.9' }, options)
+    ).toMatchObject({ ok: true });
+  });
+
+  it('spends the caller address budget once per completion', async () => {
+    // /auth/complete checks the limiter twice — once on the address before the
+    // proof, once on the proved pubkey after it. Carrying the address into the
+    // second key would charge it twice and halve the configured rate.
+    const options = buildOptions({
+      rateLimiter: createInMemoryRateLimiter({
+        maxPerWindow: 2,
+        clock: { nowUnix: () => NOW },
+      }),
+    });
+    const first = await issue(options, '203.0.113.7');
+    const second = await issue(options, '203.0.113.7');
+
+    for (const challenge of [first, second]) {
+      const completion = completionFor(challenge.challenge_id, challenge.challenge);
+
+      expect(
+        await verifyCompletion(
+          { ...completion, method: 'POST', url: AUTH_URL, clientIp: '203.0.113.7' },
+          options
+        )
+      ).toMatchObject({ ok: true });
+    }
+  });
+
+  it('does not pad a rate-limited response', async () => {
+    // A 429 is already distinguishable by its status code, so padding hides
+    // nothing and only hands a caller who is over the limit a free hold on the
+    // server for the floor's duration.
+    const options = buildOptions({
+      minAuthResponseMillis: 300,
+      rateLimiter: { check: () => ({ allowed: false, retryAfterSeconds: 7 }) },
+    });
+
+    const startedAt = Date.now();
+    const denied = await issueChallenge({ npub: NPUB, authUrl: AUTH_URL }, options);
+
+    expect(denied).toMatchObject({ ok: false, code: 'NAP_INIT_RATE_LIMITED' });
+    expect(Date.now() - startedAt).toBeLessThan(150);
+
+    // Control: an ordinary refusal is still held to the floor, which is what
+    // makes the 401 paths indistinguishable from each other.
+    const padded = buildOptions({ minAuthResponseMillis: 300 });
+    const refusedAt = Date.now();
+
+    expect(await issueChallenge({ npub: 'not-an-npub', authUrl: AUTH_URL }, padded)).toMatchObject({
+      code: 'NAP_INIT_INVALID_NPUB',
+    });
+    expect(Date.now() - refusedAt).toBeGreaterThanOrEqual(300);
+  });
+
+  it('drops an oversized npub from the limiter key rather than truncating it', async () => {
+    // The npub reaches the limiter before decodeNpub has looked at it, so it is
+    // still arbitrary caller input. Truncating would let distinct npubs share a
+    // budget, which is a lockout primitive of its own.
+    const seen: (string | undefined)[] = [];
+    const options = buildOptions({
+      rateLimiter: {
+        check: (key) => {
+          seen.push(key.npub);
+          return { allowed: true };
+        },
+      },
+    });
+
+    await issueChallenge({ npub: 'npub1'.padEnd(4096, 'x'), authUrl: AUTH_URL }, options);
+
+    expect(seen).toEqual([undefined]);
+  });
+
   it('reports a retry-after the caller can honour', async () => {
     const limiter = createInMemoryRateLimiter({
       windowSeconds: 60,
@@ -219,27 +311,43 @@ describe('challenge failure budget (RFC §13.4)', () => {
   it('moves the challenge to failed_terminal and rejects further attempts', async () => {
     const options = buildOptions({ maxFailuresPerChallenge: 2 });
     const challenge = await issue(options);
-    const wrongSigner = completionFor(challenge.challenge_id, challenge.challenge, {
-      key: OTHER_KEY_BYTES,
-    });
+    // Guessed by the key the challenge was issued to: the case the budget is
+    // for, someone brute-forcing the challenge value they were meant to echo.
+    const guess = completionFor(challenge.challenge_id, 'not-the-challenge-value');
 
-    const first = await verifyCompletion(
-      { ...wrongSigner, method: 'POST', url: AUTH_URL },
-      options
-    );
-    expect(first).toMatchObject({ code: 'NAP_COMPLETE_PRINCIPAL_MISMATCH' });
+    const first = await verifyCompletion({ ...guess, method: 'POST', url: AUTH_URL }, options);
+    expect(first).toMatchObject({ code: 'NAP_COMPLETE_CHALLENGE_MISMATCH' });
 
-    const second = await verifyCompletion(
-      { ...wrongSigner, method: 'POST', url: AUTH_URL },
-      options
-    );
-    expect(second).toMatchObject({ code: 'NAP_COMPLETE_PRINCIPAL_MISMATCH' });
+    const second = await verifyCompletion({ ...guess, method: 'POST', url: AUTH_URL }, options);
+    expect(second).toMatchObject({ code: 'NAP_COMPLETE_CHALLENGE_MISMATCH' });
 
     // The budget is spent, so even the rightful holder's valid proof is refused.
     const valid = completionFor(challenge.challenge_id, challenge.challenge);
     const third = await verifyCompletion({ ...valid, method: 'POST', url: AUTH_URL }, options);
 
     expect(third).toMatchObject({ ok: false, code: 'NAP_COMPLETE_FAILED_TERMINAL' });
+  });
+
+  it('cannot be spent by anyone but the principal the challenge was issued to', async () => {
+    // A challenge_id is not a secret — it travels in the clear and the client
+    // hands it back. If a proof signed by some other key could spend the budget,
+    // anyone who saw one could burn a stranger's challenge and deny them a login.
+    const options = buildOptions({ maxFailuresPerChallenge: 2 });
+    const challenge = await issue(options);
+    const stranger = completionFor(challenge.challenge_id, challenge.challenge, {
+      key: OTHER_KEY_BYTES,
+    });
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      expect(
+        await verifyCompletion({ ...stranger, method: 'POST', url: AUTH_URL }, options)
+      ).toMatchObject({ code: 'NAP_COMPLETE_PRINCIPAL_MISMATCH' });
+    }
+
+    const valid = completionFor(challenge.challenge_id, challenge.challenge);
+
+    expect(await verifyCompletion({ ...valid, method: 'POST', url: AUTH_URL }, options))
+      .toMatchObject({ ok: true });
   });
 
   it('does not spend the budget on an ACL denial', async () => {

@@ -89,6 +89,37 @@ All packages in this workspace share a single version.
   computes, which RFC §11 requires. `buildAuthCompleteRequest()` takes a `stepUp` option.
 - RFC gains §10.3 (Step-up authentication); `AuthCompleteRequest.step_up` and
   `AuthSuccessResponse.step_up_token` / `step_up_expires_at` are now specified wire fields.
+- **The per-npub budgets are scoped to the caller address.** Both the outstanding-challenge
+  cap (RFC §17.4) and the limiter's `npub` dimension now count per address rather than
+  globally. An npub is public and `/auth/init` is unauthenticated, so a global per-npub
+  budget was a lockout primitive: anyone could spend a stranger's and keep them from
+  logging in. The per-address cap already bounds total storage, which is what the cap is
+  for. The `pubkey` dimension keeps a global budget — it only appears once a NIP-98 proof
+  has established the caller holds the key.
+- **`/auth/complete` spends the caller address's budget once per request.** The post-proof
+  limiter check no longer repeats `clientIp`, which was halving the configured per-address
+  rate and unevenly: a request rejected before the proof cost one, a request that got
+  through cost two.
+- **A rate-limited response is no longer padded** to `minAuthResponseMillis`. A 429 is
+  already distinguishable by its status code, so the floor hid nothing there and only gave
+  a caller who was over the limit a free hold on the server — the amplification the
+  limiter exists to prevent. The 401 paths are padded exactly as before.
+
+### Fixed
+
+- **A challenge's failure budget can no longer be spent by anyone but its principal**
+  (RFC §13.4). The challenge-value check ran before the principal check, so a proof signed
+  by any key could burn a challenge to `failed_terminal`. A `challenge_id` is not a secret
+  — it travels in the clear and the client hands it back — so anyone who had seen one
+  could deny the rightful holder their login. `NAP_COMPLETE_PRINCIPAL_MISMATCH` now
+  returns without touching the counter.
+- **The outstanding-challenge cap now sends `Retry-After`.** It denied with a plain
+  failure, so the adapter emitted a 429 with no header and a caller who legitimately hit
+  the cap could only guess. It now reports the challenge TTL, which is when a slot frees.
+- **An oversized npub is dropped from the rate-limit key** rather than used as a map key.
+  It reaches the limiter before `decodeNpub` has looked at it, so it is still arbitrary
+  caller input at that point. Dropped, not truncated: truncation would let two distinct
+  npubs share one budget.
 
 ### Migration
 

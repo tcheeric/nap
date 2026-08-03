@@ -7,6 +7,7 @@ import {
   type AuthFailureResponse,
   type AuthSuccessResponse,
   type ChallengeRecord,
+  type NapErrorCode,
   type SessionRecord,
   validateChallengeBoundCreatedAt,
   verifyNip98Completion,
@@ -249,6 +250,19 @@ async function checkRateLimit(
     : { allowed: false, retryAfterSeconds: decision.retryAfterSeconds };
 }
 
+/** A bech32 npub is 63 characters. */
+const MAX_NPUB_KEY_LENGTH = 128;
+
+/**
+ * The npub reaches the limiter before `decodeNpub` has looked at it, so it is
+ * still arbitrary caller input at that point. Oversized values are dropped
+ * rather than truncated: truncation would let two distinct npubs share one
+ * budget, which is a lockout primitive of its own.
+ */
+function boundedNpub(npub: string): string | undefined {
+  return npub.length <= MAX_NPUB_KEY_LENGTH ? npub : undefined;
+}
+
 /**
  * RFC §17.4: bound outstanding challenges per principal and per caller address.
  *
@@ -277,8 +291,14 @@ async function findExceededOutstandingCap(
   // Both counts in flight together: they are independent, and the npub check
   // rejecting is the rare case, so serialising them just paid a round trip on
   // every /auth/init to save a query on almost none of them.
+  // The npub count is scoped to the caller's address. An npub is public and
+  // /auth/init is unauthenticated, so counting one npub across every address
+  // lets anyone fill a stranger's slots and lock them out of logging in. The
+  // per-address cap already bounds total storage, which is what the cap is for.
   const [npubCount, ipCount] = await Promise.all([
-    perNpub > 0 ? countOutstanding({ npub, now }) : Promise.resolve(0),
+    perNpub > 0
+      ? countOutstanding(clientIp ? { npub, clientIp, now } : { npub, now })
+      : Promise.resolve(0),
     countsIp ? countOutstanding({ clientIp, now }) : Promise.resolve(0),
   ]);
 
@@ -368,14 +388,31 @@ export async function issueChallenge(
 ): Promise<IssueChallengeResult> {
   const startedAtMillis = Date.now();
   const randomSource = options.randomSource ?? defaultRandomSource;
+  let result: IssueChallengeResult | undefined;
 
   // `finally`, so a store outage answers on the same schedule as a refusal. An
   // unpadded 500 next to padded 401s is itself a distinguishable response.
   try {
-    return await issueChallengeUnpadded(input, options);
+    result = await issueChallengeUnpadded(input, options);
+    return result;
   } finally {
-    await padAuthResponse(startedAtMillis, options, randomSource);
+    if (!isRateLimited(result, 'NAP_INIT_RATE_LIMITED')) {
+      await padAuthResponse(startedAtMillis, options, randomSource);
+    }
   }
+}
+
+/**
+ * A 429 is not padded. Its status code already sets it apart from the 401s the
+ * floor exists to make indistinguishable, so holding the response would only
+ * give a caller who is already over the limit a free hold on the server for the
+ * floor's duration — the amplification the limiter is there to prevent.
+ */
+function isRateLimited(
+  result: IssueChallengeResult | VerifyCompletionOutcome | undefined,
+  code: NapErrorCode
+): boolean {
+  return result !== undefined && !result.ok && 'code' in result && result.code === code;
 }
 
 async function issueChallengeUnpadded(
@@ -388,7 +425,7 @@ async function issueChallengeUnpadded(
   const ttl = resolveChallengeTtl(options);
   const rateLimit = await checkRateLimit(options, {
     scope: 'init',
-    npub: input.npub,
+    npub: boundedNpub(input.npub),
     clientIp: input.clientIp,
   });
 
@@ -433,6 +470,10 @@ async function issueChallengeUnpadded(
       ok: false,
       code: 'NAP_INIT_RATE_LIMITED',
       retryable: isRetryableNapError('NAP_INIT_RATE_LIMITED'),
+      // A slot frees when an outstanding challenge expires, so the TTL is the
+      // honest answer. Without it the adapter sends a 429 with no `Retry-After`
+      // and a caller who legitimately hit the cap can only guess.
+      retryAfterSeconds: ttl,
     };
   }
 
@@ -478,11 +519,15 @@ export async function verifyCompletion(
 ): Promise<VerifyCompletionOutcome> {
   const startedAtMillis = Date.now();
   const randomSource = options.randomSource ?? defaultRandomSource;
+  let outcome: VerifyCompletionOutcome | undefined;
 
   try {
-    return await verifyCompletionUnpadded(input, options);
+    outcome = await verifyCompletionUnpadded(input, options);
+    return outcome;
   } finally {
-    await padAuthResponse(startedAtMillis, options, randomSource);
+    if (!isRateLimited(outcome, 'NAP_COMPLETE_RATE_LIMITED')) {
+      await padAuthResponse(startedAtMillis, options, randomSource);
+    }
   }
 }
 
@@ -545,10 +590,14 @@ async function verifyCompletionUnpadded(
   // untrusted proxy is told to report none — which left the one endpoint that
   // runs a Schnorr verify per call with no bound at all. Counting the proved
   // pubkey costs an attacker one signature per request they get through.
+  //
+  // No `clientIp` here: the pre-proof check already spent this address's budget
+  // for the request. Counting it twice would halve the configured per-address
+  // rate, and unevenly — a request rejected before the proof would cost one, a
+  // request that got through would cost two.
   const provenRateLimit = await checkRateLimit(options, {
     scope: 'complete',
     pubkey: proof.value.event.pubkey,
-    clientIp: input.clientIp,
   });
 
   if (!provenRateLimit.allowed) {
@@ -583,18 +632,22 @@ async function verifyCompletionUnpadded(
     return failure('NAP_COMPLETE_FAILED_TERMINAL');
   }
 
-  // Past this point the request is addressing a live challenge we loaded and
-  // matched, so failures count against that challenge's budget (RFC §13.4(2)).
+  // The principal check comes first, and deliberately spends no budget. A
+  // `challenge_id` is not a secret — it travels in the clear and the client
+  // hands it back — so anyone who has seen one could otherwise burn a victim's
+  // challenge to `failed_terminal` with proofs signed by their own key, and the
+  // budget meant to stop guessing becomes a way to deny someone their login.
+  if (challenge.pubkey !== proof.value.event.pubkey) {
+    await logFailure(auditLogger, 'NAP_COMPLETE_PRINCIPAL_MISMATCH', { challenge_id: challenge.challenge_id });
+    return failure('NAP_COMPLETE_PRINCIPAL_MISMATCH');
+  }
+
+  // Past this point the request holds the key the challenge was issued to, so
+  // failures count against that challenge's budget (RFC §13.4(2)).
   if (challenge.challenge !== proof.value.challenge) {
     await recordChallengeFailure(options, auditLogger, challenge.challenge_id, now);
     await logFailure(auditLogger, 'NAP_COMPLETE_CHALLENGE_MISMATCH', { challenge_id: challenge.challenge_id });
     return failure('NAP_COMPLETE_CHALLENGE_MISMATCH');
-  }
-
-  if (challenge.pubkey !== proof.value.event.pubkey) {
-    await recordChallengeFailure(options, auditLogger, challenge.challenge_id, now);
-    await logFailure(auditLogger, 'NAP_COMPLETE_PRINCIPAL_MISMATCH', { challenge_id: challenge.challenge_id });
-    return failure('NAP_COMPLETE_PRINCIPAL_MISMATCH');
   }
 
   const createdAtWindow = validateChallengeBoundCreatedAt(

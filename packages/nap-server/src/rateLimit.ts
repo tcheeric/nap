@@ -28,6 +28,12 @@ const DEFAULT_MAX_PER_WINDOW = 30;
  * The `npub`, `pubkey`, and `clientIp` dimensions are counted separately and
  * all must pass — one principal cycling addresses is still capped, and one
  * address cycling principals is too.
+ *
+ * The `npub` dimension is scoped to the address it arrived from when there is
+ * one. An npub is public and `/auth/init` is unauthenticated, so a globally
+ * counted npub budget is a lockout primitive: anyone can spend a stranger's
+ * budget and keep them from logging in. `pubkey` keeps a global budget because
+ * it only appears once a NIP-98 proof has established the caller holds the key.
  */
 export function createInMemoryRateLimiter(
   options: InMemoryRateLimiterOptions = {}
@@ -89,7 +95,11 @@ export function createInMemoryRateLimiter(
       prune(now);
 
       const identifiers = [
-        key.npub ? `${key.scope}:npub:${key.npub}` : null,
+        key.npub
+          ? key.clientIp
+            ? `${key.scope}:npub:${key.npub}@${key.clientIp}`
+            : `${key.scope}:npub:${key.npub}`
+          : null,
         key.pubkey ? `${key.scope}:pubkey:${key.pubkey}` : null,
         key.clientIp ? `${key.scope}:ip:${key.clientIp}` : null,
       ].filter((value): value is string => value !== null);
