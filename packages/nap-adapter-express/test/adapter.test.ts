@@ -17,6 +17,7 @@ import {
   createNapExpressRouter,
   createRequestDerivedBaseUrlResolver,
   requirePermission,
+  requireRole,
   requireStepUp,
   resetPermissionValidationState,
   validatePermissions,
@@ -311,6 +312,100 @@ describe('nap-adapter-express', () => {
     const response = await request(app).post('/auth/logout');
 
     expect(response.status).toBe(204);
+  });
+
+  it('allows a request whose session holds the required role', async () => {
+    const options = buildServerOptions();
+    await seedSession(options.sessionStore as InMemorySessionStore);
+    const app = createApp(options);
+
+    app.get(
+      '/staff',
+      requireRole('merchant', {
+        sessionStore: options.sessionStore,
+        cookieName: 'session',
+      }),
+      (_req, res) => {
+        res.status(200).json({ status: 'ok' });
+      }
+    );
+
+    const response = await request(app).get('/staff').set('cookie', 'session=token-1');
+
+    expect(response.status).toBe(200);
+  });
+
+  it('accepts any of several roles', async () => {
+    const options = buildServerOptions();
+    await seedSession(options.sessionStore as InMemorySessionStore);
+    const app = createApp(options);
+
+    app.get(
+      '/either',
+      // Chaining middleware is AND, so any-of has to be expressed in one guard.
+      requireRole(['admin', 'merchant'], {
+        sessionStore: options.sessionStore,
+        cookieName: 'session',
+      }),
+      (_req, res) => {
+        res.status(200).json({ status: 'ok' });
+      }
+    );
+
+    const response = await request(app).get('/either').set('cookie', 'session=token-1');
+
+    expect(response.status).toBe(200);
+  });
+
+  it('forbids a request whose session lacks the role', async () => {
+    const options = buildServerOptions();
+    await seedSession(options.sessionStore as InMemorySessionStore, { roles: ['viewer'] });
+    const app = createApp(options);
+
+    app.get(
+      '/staff',
+      requireRole('merchant', {
+        sessionStore: options.sessionStore,
+        cookieName: 'session',
+      }),
+      (_req, res) => {
+        res.status(200).json({ status: 'ok' });
+      }
+    );
+
+    const response = await request(app).get('/staff').set('cookie', 'session=token-1');
+
+    expect(response.status).toBe(403);
+  });
+
+  it('returns 401 from a role guard without a session', async () => {
+    const options = buildServerOptions();
+    const app = createApp(options);
+
+    app.get(
+      '/staff',
+      requireRole('merchant', {
+        sessionStore: options.sessionStore,
+        cookieName: 'session',
+      }),
+      (_req, res) => {
+        res.status(200).json({ status: 'ok' });
+      }
+    );
+
+    const response = await request(app).get('/staff');
+
+    expect(response.status).toBe(401);
+  });
+
+  it('fails startup validation for unknown role keys', () => {
+    const sessionStore = new InMemorySessionStore();
+    requireRole('nonexistent-role', { sessionStore, cookieName: 'session' });
+
+    // Without this, a typo'd role silently 403s forever.
+    expect(() => validatePermissions(REGISTRY)).toThrow(
+      'Roles used in middleware but missing from registry: nonexistent-role'
+    );
   });
 
   it('fails startup validation for unknown permission keys', () => {

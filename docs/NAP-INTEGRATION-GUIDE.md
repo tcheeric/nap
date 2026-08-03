@@ -511,6 +511,43 @@ Permissions used in middleware but missing from registry: voucher:create
 Call it after your routes are registered. `resetPermissionValidationState()`
 (`adapter.ts:310`) exists to clear the module-global between test runs.
 
+**`requireRole` exists, but reach for `requirePermission` first.**
+
+```ts
+app.get('/admin/keys', requireRole(['admin', 'owner'], { sessionStore }), handler);
+```
+
+A role is a named set of permissions — `RoleDefinition` is
+`{ key, description, permissions[] }` (`packages/nap-server/src/types.ts:21`) and
+the ACL resolver expands roles into `session.permissions` at login. So every role
+check is expressible as a permission check, and the two differ in which direction
+change flows:
+
+- `requirePermission('voucher:issue')` — a new role that should have access is
+  **one registry edit**; the guard is untouched.
+- `requireRole('merchant')` — the same change means **editing every guard site**
+  that should now also accept the new role.
+
+The registry exists to centralise that mapping, and role guards route around it.
+The failure is silent: the new role holds every permission it needs and the route
+still refuses it. RFC `§15.1` (`docs/NAP-v2-RFC.md:475`) states the preference,
+and the legitimate exception — break-glass and staff-only routes, where the role
+genuinely *is* what is being authorised.
+
+Two practical notes:
+
+- **Pass an array for any-of.** Chaining middleware gives you AND, so
+  `['admin', 'owner']` is the only way to express OR without hand-rolling a check
+  — and a hand-rolled `session.roles.includes()` gets no startup validation.
+- **Role keys are validated too.** `requireRole` registers into its own set and
+  `validatePermissions(registry)` fails on a key missing from `registry.roles`:
+  `Roles used in middleware but missing from registry: amin`. That is the real
+  reason to prefer the guard over an inline check — a typo'd role otherwise fails
+  closed forever and looks exactly like a legitimate denial.
+
+`session.roles` is a login-time snapshot, exactly like `session.permissions`, so
+a role revoked mid-session stays effective until the session TTL expires (§3.4).
+
 `createPermissionsRouter(registry)` (`adapter.ts:314`) exposes the registry
 verbatim at `GET /permissions` — handy for a frontend that wants to render
 capability-gated UI.
@@ -1842,7 +1879,7 @@ implementation gaps above for the JVM side.
 - All Java store methods are **synchronous** (`Optional<T>` returns); the RFC/TS
   interfaces are all `Promise`-returning.
 - The RFC's `SessionRecord` carries `refresh_token` / `refresh_expires_at`
-  (`docs/NAP-v2-RFC.md:890-891`). Java has neither; it carries `stepUpToken` /
+  (`docs/NAP-v2-RFC.md:908-891`). Java has neither; it carries `stepUpToken` /
   `stepUpExpiresAt` plus the sliding-window fields `lastActivityAt` /
   `absoluteExpiryAt` instead (`nap-core/.../SessionRecord.java:27-42`).
 
@@ -1858,7 +1895,7 @@ implementation gaps above for the JVM side.
 - No `AuditLogger` — logging is ad-hoc SLF4J calls with structured-ish message keys
   (`nap_complete_replay_detected`, `nap_session_acl_denied`, `nap_complete_failed`,
   `nap_logout`, `nap.acl.auto_provisioned`).
-- `NAP_INIT_INVALID_JSON` is in the RFC registry (`docs/NAP-v2-RFC.md:997`) but **absent**
+- `NAP_INIT_INVALID_JSON` is in the RFC registry (`docs/NAP-v2-RFC.md:1015`) but **absent**
   from Java's `NapErrorCode` (`nap-core/.../NapErrorCode.java:8-30`); Java maps
   unparseable bodies to `MalformedRequest` instead. All other 22 codes are present with
   the RFC's retryable flags, except `NAP_COMPLETE_UNKNOWN_CHALLENGE`, which the RFC
@@ -1957,7 +1994,7 @@ response header on `/auth/init`) can correct for it.
 
 **Server clock skew across instances** matters too. `expires_at` is written by
 whichever node handled `/auth/init` and compared by whichever node handles
-`/auth/complete` (`server.ts:254`). Run NTP; `docs/NAP-v2-RFC.md:495` calls
+`/auth/complete` (`server.ts:254`). Run NTP; `docs/NAP-v2-RFC.md:513` calls
 bounded inter-node skew a cluster-safety requirement.
 
 ### 9.2 Session lifetime and rotation
@@ -2056,7 +2093,7 @@ instead, and when the request is attacker-controlled *both sides of the equality
 check come from the attacker*. The comparison does not get weaker — it stops
 being a check at all.
 
-`docs/NAP-v2-RFC.md:508` is explicit: *"Implementations MUST NOT blindly trust
+`docs/NAP-v2-RFC.md:561` is explicit: *"Implementations MUST NOT blindly trust
 forwarded headers from arbitrary clients."* `trust proxy: true` in production, on
 a service reachable other than through your load balancer, means any client can
 set `X-Forwarded-Proto` and `Host` and move the audience. Do one of:
@@ -2127,12 +2164,12 @@ Three more audience gotchas:
 `NAP_COMPLETE_RATE_LIMITED` exist as enum members
 (`packages/nap-core/src/types.ts:88`) and `PublicFailureResponse` permits a 429
 (`packages/nap-server/src/types.ts:174`), but no code path produces one. There is
-no `RateLimiter` interface, despite `docs/NAP-v2-RFC.md:517` listing one as a
+no `RateLimiter` interface, despite `docs/NAP-v2-RFC.md:539` listing one as a
 required pluggable interface.
 
 `/auth/init` is an unauthenticated endpoint that performs a bech32 decode, 44
 bytes of CSPRNG, and a database `INSERT` per call, with **no cap on outstanding
-challenges per IP or per npub** (`docs/NAP-v2-RFC.md:531` asks for both). That is
+challenges per IP or per npub** (`docs/NAP-v2-RFC.md:573` asks for both). That is
 a trivially cheap way to fill your `nap_challenges` table. Put a limiter in front
 of it — `express-rate-limit` or `@fastify/rate-limit` on the `/auth` mount is
 enough:
@@ -2165,7 +2202,7 @@ client-visible failure is an identical 401.
 What actually reaches it (`packages/nap-server/src/server.ts:86`): `code`,
 `outcome`, and a `details` bag containing — depending on the branch —
 `challenge_id`, `url`, `npub`, `session_id`, `retry`, or `reason`. Two notes
-against `docs/NAP-v2-RFC.md:475`:
+against `docs/NAP-v2-RFC.md:598`:
 
 - The `AuditLogger` event type declares top-level `challenge_id`, `npub`, and
   `pubkey` fields, but `logFailure()` / `logSuccess()` only ever set `code`,
@@ -2176,7 +2213,7 @@ against `docs/NAP-v2-RFC.md:475`:
   a PII/pseudonymity policy, truncate in your logger.
 
 Nothing logs raw challenges, signatures, `Authorization` headers, or session
-tokens, which matches the RFC's do-not-log list (`docs/NAP-v2-RFC.md:565`).
+tokens, which matches the RFC's do-not-log list (`docs/NAP-v2-RFC.md:607`).
 
 None of the RFC's recommended metrics (`:573`) are emitted. Derive them from the
 audit logger — the `code` field maps cleanly onto `auth_failure_total{code=…}`,
@@ -2419,15 +2456,15 @@ Collected from the preceding sections:
 | RFC requirement | Where | Status |
 |---|---|---|
 | Refresh tokens, rotating (`§14.1`) | `docs/NAP-v2-RFC.md:416` | Types exist (`AuthSuccessResponse.refresh_token`), never populated. No refresh endpoint. |
-| Rate limiter as a pluggable interface (`§17.1`) | `docs/NAP-v2-RFC.md:517` | No `RateLimiter` interface. Error codes and 429 status exist; nothing emits them. |
-| Bounded outstanding challenges per IP / per npub (`§17.4`) | `docs/NAP-v2-RFC.md:531` | Not implemented. |
-| Bounded `/auth/complete` body size (`§17.4`) | `docs/NAP-v2-RFC.md:534` | Not configurable through the adapter. |
-| `AudienceResolver` and `RawBodyExtractor` as named interfaces (`§20.2`) | `docs/NAP-v2-RFC.md:635` | Present in spirit — `getExternalBaseUrl` and the adapters' raw-body capture — but not as the named, swappable interfaces the RFC asks for. |
+| Rate limiter as a pluggable interface (`§17.1`) | `docs/NAP-v2-RFC.md:539` | No `RateLimiter` interface. Error codes and 429 status exist; nothing emits them. |
+| Bounded outstanding challenges per IP / per npub (`§17.4`) | `docs/NAP-v2-RFC.md:573` | Not implemented. |
+| Bounded `/auth/complete` body size (`§17.4`) | `docs/NAP-v2-RFC.md:575` | Not configurable through the adapter. |
+| `AudienceResolver` and `RawBodyExtractor` as named interfaces (`§20.2`) | `docs/NAP-v2-RFC.md:671` | Present in spirit — `getExternalBaseUrl` and the adapters' raw-body capture — but not as the named, swappable interfaces the RFC asks for. |
 | Permissions re-evaluated per request (`§15`) | `docs/NAP-v2-RFC.md:466` | Snapshot at login only (§3.4). |
 | ACL removal revokes active sessions (`§15`) | `docs/NAP-v2-RFC.md:467` | `revokeByPrincipal()` exists; nothing calls it. |
 | Bounded timing differences / jitter (`§15`) | `docs/NAP-v2-RFC.md:473` | No jitter or constant-time padding. |
-| Recommended metrics (`§19.3`) | `docs/NAP-v2-RFC.md:573` | None emitted; derivable from `AuditLogger`. |
-| Official test vectors (`§20.3`) | `docs/NAP-v2-RFC.md:639` | No `test-vectors/` directory. The unit tests cover the same cases but are not exported as vectors for other implementations. |
+| Recommended metrics (`§19.3`) | `docs/NAP-v2-RFC.md:614` | None emitted; derivable from `AuditLogger`. |
+| Official test vectors (`§20.3`) | `docs/NAP-v2-RFC.md:676` | No `test-vectors/` directory. The unit tests cover the same cases but are not exported as vectors for other implementations. |
 | Challenge TTL ≤ 60s enforced (`§10.1`) | `docs/NAP-v2-RFC.md:198` | Default is 60; the ceiling is not validated. |
 | `failed_terminal` challenge state (`§13`) | `docs/NAP-v2-RFC.md:335` | Declared in `ChallengeState` (`packages/nap-core/src/types.ts:44`); no code ever sets it. §13.4's "cap failures per challenge" is unimplemented. |
 | WebSocket / relay profiles | `docs/NAP-v2-RFC.md:118` | Correctly out of scope, per `§20.4`. |
