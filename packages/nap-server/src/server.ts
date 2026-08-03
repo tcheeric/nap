@@ -1,5 +1,6 @@
 import { randomBytes as nodeRandomBytes } from 'node:crypto';
 import {
+  encodeBase64UrlBytes,
   failure,
   isRetryableNapError,
   type AuthCompleteRequest,
@@ -51,7 +52,7 @@ const noopAuditLogger: AuditLogger = {
 };
 
 function base64Url(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString('base64url');
+  return encodeBase64UrlBytes(bytes);
 }
 
 function decodeNpub(npub: string): string | null {
@@ -361,6 +362,8 @@ export function toPublicAuthSuccess(session: SessionRecord): AuthSuccessResponse
     access_token: session.access_token,
     token_type: 'Bearer',
     expires_at: session.expires_at,
+    step_up_token: session.step_up_token,
+    step_up_expires_at: session.step_up_expires_at,
     principal: {
       npub: session.principal_npub,
       pubkey: session.principal_pubkey,

@@ -20,6 +20,8 @@ export interface AuthSuccessResponse {
   access_token: string;
   token_type: 'Bearer';
   expires_at: number;
+  step_up_token?: string;
+  step_up_expires_at?: number;
   refresh_token?: string;
   refresh_expires_at?: number;
   principal: {
@@ -66,6 +68,8 @@ export interface SessionRecord {
   permissions: string[];
   issued_at: number;
   expires_at: number;
+  step_up_token?: string;
+  step_up_expires_at?: number;
   refresh_token?: string;
   refresh_expires_at?: number;
   revoked_at?: number;
@@ -75,6 +79,7 @@ export interface AclDecision {
   allowed: boolean;
   roles: string[];
   permissions: string[];
+  reason?: string;
 }
 
 export type NapErrorCode =
@@ -143,4 +148,3 @@ export interface VerifyNip98CompletionInput {
   now: number;
   maxClockSkewSeconds?: number;
 }
-

@@ -15,7 +15,7 @@ Fastify adapter for `@imani/nap-server`.
 ```ts
 import Fastify from 'fastify';
 import {
-  createTrustedProxyAwareBaseUrlResolver,
+  createRequestDerivedBaseUrlResolver,
   napFastifyPlugin,
 } from '@imani/nap-adapter-fastify';
 
@@ -24,6 +24,6 @@ const app = Fastify({ trustProxy: true });
 await app.register(napFastifyPlugin, {
   routePrefix: '/auth',
   server: napServerOptions,
-  getExternalBaseUrl: createTrustedProxyAwareBaseUrlResolver(),
+  getExternalBaseUrl: createRequestDerivedBaseUrlResolver(),
 });
 ```

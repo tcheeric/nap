@@ -1,35 +1,52 @@
 import Fastify from 'fastify';
 import { getPublicKey, nip19 } from 'nostr-tools';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { hexToBytes } from '@imani/nap-core';
 import { buildAuthCompleteRequest, createPrivateKeySigner } from '@imani/nap-client-http';
 import {
+  InMemoryAclStore,
   InMemoryChallengeStore,
   InMemorySessionStore,
+  createRegistryAclResolver,
   type NapServerOptions,
+  type PermissionRegistry,
 } from '@imani/nap-server';
 import {
-  createTrustedProxyAwareBaseUrlResolver,
+  createRequestDerivedBaseUrlResolver,
   napFastifyPlugin,
+  permissionsFastifyPlugin,
+  requirePermission,
+  requireStepUp,
+  resetPermissionValidationState,
+  validatePermissions,
   writeNapCookieSuccess,
 } from '../src/index.js';
 
 const PRIVATE_KEY_HEX = '1111111111111111111111111111111111111111111111111111111111111111';
-const PRIVATE_KEY_BYTES = Uint8Array.from(Buffer.from(PRIVATE_KEY_HEX, 'hex'));
+const PRIVATE_KEY_BYTES = hexToBytes(PRIVATE_KEY_HEX);
 const NPUB = nip19.npubEncode(getPublicKey(PRIVATE_KEY_BYTES));
+const REGISTRY: PermissionRegistry = {
+  appId: 'possa-merchant',
+  permissions: [
+    { key: 'voucher:issue', description: 'Issue vouchers', stepUp: false },
+    { key: 'stripe:manage', description: 'Manage Stripe', stepUp: true },
+  ],
+  roles: [
+    {
+      key: 'merchant',
+      description: 'Merchant access',
+      permissions: ['voucher:issue', 'stripe:manage'],
+    },
+  ],
+  defaultRole: 'merchant',
+};
 
 function buildServerOptions(now = 1_710_000_000): NapServerOptions {
+  const sessionStore = new InMemorySessionStore();
   return {
     challengeStore: new InMemoryChallengeStore(),
-    sessionStore: new InMemorySessionStore(),
-    aclResolver: {
-      async resolve() {
-        return {
-          allowed: true,
-          roles: ['merchant'],
-          permissions: ['voucher:issue'],
-        };
-      },
-    },
+    sessionStore,
+    aclResolver: createRegistryAclResolver(REGISTRY, new InMemoryAclStore()),
     clock: {
       nowUnix() {
         return now;
@@ -43,19 +60,42 @@ function buildServerOptions(now = 1_710_000_000): NapServerOptions {
   };
 }
 
+async function seedSession(
+  sessionStore: InMemorySessionStore,
+  overrides: Partial<Awaited<ReturnType<InMemorySessionStore['createForChallenge']>>> = {}
+) {
+  const now = Math.floor(Date.now() / 1000);
+  return sessionStore.createForChallenge({
+    session_id: 'session-1',
+    challenge_id: 'challenge-1',
+    access_token: 'token-1',
+    principal_npub: NPUB,
+    principal_pubkey: getPublicKey(PRIVATE_KEY_BYTES),
+    roles: ['merchant'],
+    permissions: ['voucher:issue', 'stripe:manage'],
+    issued_at: now,
+    expires_at: now + 900,
+    ...overrides,
+  });
+}
+
 async function createApp(options: NapServerOptions) {
   const app = Fastify({ trustProxy: true });
 
   await app.register(napFastifyPlugin, {
     routePrefix: '/auth',
     server: options,
-    getExternalBaseUrl: createTrustedProxyAwareBaseUrlResolver(),
+    getExternalBaseUrl: createRequestDerivedBaseUrlResolver(),
   });
 
   return app;
 }
 
 describe('nap-adapter-fastify', () => {
+  beforeEach(() => {
+    resetPermissionValidationState();
+  });
+
   it('handles the init and complete flow in bearer mode', async () => {
     const app = await createApp(buildServerOptions());
 
@@ -89,7 +129,7 @@ describe('nap-adapter-fastify', () => {
         authorization: completion.authorization,
         'content-type': 'application/json',
       },
-      payload: Buffer.from(completion.rawBody).toString('utf8'),
+      payload: new TextDecoder().decode(completion.rawBody),
     });
 
     expect(complete.statusCode).toBe(200);
@@ -107,7 +147,7 @@ describe('nap-adapter-fastify', () => {
     await app.register(napFastifyPlugin, {
       routePrefix: '/auth',
       server: buildServerOptions(),
-      getExternalBaseUrl: createTrustedProxyAwareBaseUrlResolver(),
+      getExternalBaseUrl: createRequestDerivedBaseUrlResolver(),
       writeSuccess: writeNapCookieSuccess('session', {
         httpOnly: true,
         secure: true,
@@ -141,7 +181,7 @@ describe('nap-adapter-fastify', () => {
         authorization: completion.authorization,
         'content-type': 'application/json',
       },
-      payload: Buffer.from(completion.rawBody).toString('utf8'),
+      payload: new TextDecoder().decode(completion.rawBody),
     });
 
     expect(complete.statusCode).toBe(200);
@@ -172,5 +212,89 @@ describe('nap-adapter-fastify', () => {
     });
 
     await app.close();
+  });
+
+  it('guards routes with requirePermission and validates permission keys', async () => {
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore);
+    const app = Fastify();
+
+    app.get(
+      '/protected',
+      {
+        preHandler: requirePermission('voucher:issue', {
+          sessionStore,
+          cookieName: 'session',
+        }),
+      },
+      async () => ({ status: 'ok' })
+    );
+    await app.register(permissionsFastifyPlugin(REGISTRY), { prefix: '/auth' });
+
+    validatePermissions(REGISTRY);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/protected',
+      headers: {
+        cookie: 'session=token-1',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: '/auth/permissions' })).json().appId).toBe('possa-merchant');
+
+    await app.close();
+  });
+
+  it('rejects missing step-up tokens', async () => {
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore, {
+      step_up_token: 'step-up-1',
+      step_up_expires_at: Math.floor(Date.now() / 1000) + 900,
+    });
+    const app = Fastify();
+
+    app.get(
+      '/step-up',
+      {
+        preHandler: [
+          requirePermission('stripe:manage', {
+            sessionStore,
+            cookieName: 'session',
+          }),
+          requireStepUp({
+            sessionStore,
+            cookieName: 'session',
+          }),
+        ],
+      },
+      async () => ({ status: 'ok' })
+    );
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/step-up',
+      headers: {
+        cookie: 'session=token-1',
+      },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json().message).toBe('step-up required');
+
+    await app.close();
+  });
+
+  it('fails startup validation for unknown permission keys', () => {
+    const sessionStore = new InMemorySessionStore();
+    requirePermission('unknown:permission', {
+      sessionStore,
+      cookieName: 'session',
+    });
+
+    expect(() => validatePermissions(REGISTRY)).toThrow(
+      'Permissions used in middleware but missing from registry: unknown:permission'
+    );
   });
 });

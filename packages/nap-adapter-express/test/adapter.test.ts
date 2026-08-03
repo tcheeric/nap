@@ -1,36 +1,53 @@
 import express from 'express';
 import { getPublicKey, nip19 } from 'nostr-tools';
 import request from 'supertest';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { hexToBytes } from '@imani/nap-core';
 import { buildAuthCompleteRequest, createPrivateKeySigner } from '@imani/nap-client-http';
 import {
+  InMemoryAclStore,
   InMemoryChallengeStore,
   InMemorySessionStore,
+  createRegistryAclResolver,
   type NapServerOptions,
+  type PermissionRegistry,
 } from '@imani/nap-server';
 import {
+  createPermissionsRouter,
   createNapExpressRouter,
-  createTrustedProxyAwareBaseUrlResolver,
+  createRequestDerivedBaseUrlResolver,
+  requirePermission,
+  requireStepUp,
+  resetPermissionValidationState,
+  validatePermissions,
   writeNapCookieSuccess,
 } from '../src/index.js';
 
 const PRIVATE_KEY_HEX = '1111111111111111111111111111111111111111111111111111111111111111';
-const PRIVATE_KEY_BYTES = Uint8Array.from(Buffer.from(PRIVATE_KEY_HEX, 'hex'));
+const PRIVATE_KEY_BYTES = hexToBytes(PRIVATE_KEY_HEX);
 const NPUB = nip19.npubEncode(getPublicKey(PRIVATE_KEY_BYTES));
+const REGISTRY: PermissionRegistry = {
+  appId: 'possa-merchant',
+  permissions: [
+    { key: 'voucher:issue', description: 'Issue vouchers', stepUp: false },
+    { key: 'stripe:manage', description: 'Manage Stripe', stepUp: true },
+  ],
+  roles: [
+    {
+      key: 'merchant',
+      description: 'Merchant access',
+      permissions: ['voucher:issue', 'stripe:manage'],
+    },
+  ],
+  defaultRole: 'merchant',
+};
 
 function buildServerOptions(now = 1_710_000_000): NapServerOptions {
+  const sessionStore = new InMemorySessionStore();
   return {
     challengeStore: new InMemoryChallengeStore(),
-    sessionStore: new InMemorySessionStore(),
-    aclResolver: {
-      async resolve() {
-        return {
-          allowed: true,
-          roles: ['merchant'],
-          permissions: ['voucher:issue'],
-        };
-      },
-    },
+    sessionStore,
+    aclResolver: createRegistryAclResolver(REGISTRY, new InMemoryAclStore()),
     clock: {
       nowUnix() {
         return now;
@@ -44,6 +61,25 @@ function buildServerOptions(now = 1_710_000_000): NapServerOptions {
   };
 }
 
+async function seedSession(
+  sessionStore: InMemorySessionStore,
+  overrides: Partial<Awaited<ReturnType<InMemorySessionStore['createForChallenge']>>> = {}
+) {
+  const now = Math.floor(Date.now() / 1000);
+  return sessionStore.createForChallenge({
+    session_id: 'session-1',
+    challenge_id: 'challenge-1',
+    access_token: 'token-1',
+    principal_npub: NPUB,
+    principal_pubkey: getPublicKey(PRIVATE_KEY_BYTES),
+    roles: ['merchant'],
+    permissions: ['voucher:issue', 'stripe:manage'],
+    issued_at: now,
+    expires_at: now + 900,
+    ...overrides,
+  });
+}
+
 function createApp(options: NapServerOptions) {
   const app = express();
   app.set('trust proxy', true);
@@ -51,7 +87,7 @@ function createApp(options: NapServerOptions) {
     '/auth',
     createNapExpressRouter({
       server: options,
-      getExternalBaseUrl: createTrustedProxyAwareBaseUrlResolver(),
+      getExternalBaseUrl: createRequestDerivedBaseUrlResolver(),
     })
   );
   app.use((error: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -61,6 +97,10 @@ function createApp(options: NapServerOptions) {
 }
 
 describe('nap-adapter-express', () => {
+  beforeEach(() => {
+    resetPermissionValidationState();
+  });
+
   it('handles the init and complete flow in bearer mode', async () => {
     const app = createApp(buildServerOptions());
     const init = await request(app)
@@ -84,7 +124,7 @@ describe('nap-adapter-express', () => {
       .set('x-forwarded-proto', 'https')
       .set('authorization', completion.authorization)
       .set('content-type', 'application/json')
-      .send(Buffer.from(completion.rawBody).toString('utf8'));
+      .send(new TextDecoder().decode(completion.rawBody));
 
     expect(complete.status).toBe(200);
     expect(complete.body.status).toBe('ok');
@@ -99,7 +139,7 @@ describe('nap-adapter-express', () => {
       '/auth',
       createNapExpressRouter({
         server: buildServerOptions(),
-        getExternalBaseUrl: createTrustedProxyAwareBaseUrlResolver(),
+        getExternalBaseUrl: createRequestDerivedBaseUrlResolver(),
         writeSuccess: writeNapCookieSuccess('session', {
           httpOnly: true,
           secure: true,
@@ -129,7 +169,7 @@ describe('nap-adapter-express', () => {
       .set('x-forwarded-proto', 'https')
       .set('authorization', completion.authorization)
       .set('content-type', 'application/json')
-      .send(Buffer.from(completion.rawBody).toString('utf8'));
+      .send(new TextDecoder().decode(completion.rawBody));
 
     expect(complete.status).toBe(200);
     expect(complete.body).toEqual({ status: 'ok' });
@@ -143,12 +183,80 @@ describe('nap-adapter-express', () => {
       .set('host', 'api.example.com')
       .set('x-forwarded-proto', 'https')
       .set('content-type', 'application/json')
-      .send(Buffer.from('{"invalid":true}'));
+      .send('{"invalid":true}');
 
     expect(response.status).toBe(400);
     expect(response.body).toEqual({
       status: 'error',
       message: 'bad request',
     });
+  });
+
+  it('guards routes with requirePermission and validates permission keys', async () => {
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore);
+    const app = express();
+    app.get(
+      '/protected',
+      requirePermission('voucher:issue', {
+        sessionStore,
+        cookieName: 'session',
+      }),
+      (_req, res) => {
+        res.status(200).json({ status: 'ok' });
+      }
+    );
+    app.use('/auth', createPermissionsRouter(REGISTRY));
+
+    validatePermissions(REGISTRY);
+
+    const response = await request(app)
+      .get('/protected')
+      .set('cookie', 'session=token-1');
+
+    expect(response.status).toBe(200);
+    expect((await request(app).get('/auth/permissions')).body.appId).toBe('possa-merchant');
+  });
+
+  it('rejects missing step-up tokens', async () => {
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore, {
+      step_up_token: 'step-up-1',
+      step_up_expires_at: Math.floor(Date.now() / 1000) + 900,
+    });
+    const app = express();
+    app.get(
+      '/step-up',
+      requirePermission('stripe:manage', {
+        sessionStore,
+        cookieName: 'session',
+      }),
+      requireStepUp({
+        sessionStore,
+        cookieName: 'session',
+      }),
+      (_req, res) => {
+        res.status(200).json({ status: 'ok' });
+      }
+    );
+
+    const response = await request(app)
+      .get('/step-up')
+      .set('cookie', 'session=token-1');
+
+    expect(response.status).toBe(403);
+    expect(response.body.message).toBe('step-up required');
+  });
+
+  it('fails startup validation for unknown permission keys', () => {
+    const sessionStore = new InMemorySessionStore();
+    requirePermission('unknown:permission', {
+      sessionStore,
+      cookieName: 'session',
+    });
+
+    expect(() => validatePermissions(REGISTRY)).toThrow(
+      'Permissions used in middleware but missing from registry: unknown:permission'
+    );
   });
 });

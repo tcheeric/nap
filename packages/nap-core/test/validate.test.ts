@@ -2,6 +2,7 @@ import { finalizeEvent, getPublicKey } from 'nostr-tools';
 import { describe, expect, it } from 'vitest';
 import {
   encodeBase64String,
+  hexToBytes,
   sha256Hex,
   utf8Bytes,
   verifyNip98Completion,
@@ -9,7 +10,7 @@ import {
 } from '../src/index.js';
 
 const PRIVATE_KEY_HEX = '1111111111111111111111111111111111111111111111111111111111111111';
-const PRIVATE_KEY_BYTES = Uint8Array.from(Buffer.from(PRIVATE_KEY_HEX, 'hex'));
+const PRIVATE_KEY_BYTES = hexToBytes(PRIVATE_KEY_HEX);
 
 function buildBody(body: AuthCompleteRequest): Uint8Array {
   return utf8Bytes(JSON.stringify(body));

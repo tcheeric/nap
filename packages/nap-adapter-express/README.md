@@ -16,7 +16,7 @@ Express adapter for `@imani/nap-server`.
 import express from 'express';
 import {
   createNapExpressRouter,
-  createTrustedProxyAwareBaseUrlResolver,
+  createRequestDerivedBaseUrlResolver,
 } from '@imani/nap-adapter-express';
 
 const app = express();
@@ -25,7 +25,7 @@ app.use(
   '/auth',
   createNapExpressRouter({
     server: napServerOptions,
-    getExternalBaseUrl: createTrustedProxyAwareBaseUrlResolver(),
+    getExternalBaseUrl: createRequestDerivedBaseUrlResolver(),
   })
 );
 ```
