@@ -1113,6 +1113,76 @@ Each server adapter should test:
 
 ---
 
+## 28. Client Key Custody
+
+### 28.1 Applicability
+
+This section applies to clients that hold a Nostr private key locally — in practice, browser clients using a locally supplied key rather than a signer.
+
+It is **normative but does not affect conformance**. Key custody is invisible on the wire: two implementations with opposite key handling interoperate perfectly, and the test vectors in `§27` cannot detect the difference. Nothing here changes the protocol.
+
+Clients that never hold a private key — those delegating to NIP-07 or NIP-46 — satisfy this section trivially. Server implementations are out of scope.
+
+### 28.2 Preference Order
+
+Implementations SHOULD obtain signatures in this order of preference:
+
+1. **NIP-46 remote signer** — the key never enters the client's origin
+2. **NIP-07 browser extension** — the key stays in the extension's origin
+3. **Locally held key** — fallback only
+
+The first two are categorically stronger. Script execution in the client's origin can request signatures while it is running, but cannot exfiltrate the key. With a locally held key, it can.
+
+Clients MUST NOT persist a private key in plaintext. This includes `localStorage`, `sessionStorage`, IndexedDB, and cookies.
+
+### 28.3 Locally Held Keys
+
+A client that holds a key locally MUST:
+
+1. store it encrypted at rest, under a key derived from a user-supplied passphrase by a deliberately slow KDF
+2. bound the time the decrypted key is resident in memory
+3. zero the decrypted key when that bound is reached
+4. require the passphrase again to restore access
+
+The decrypted key SHOULD be zeroed on:
+
+- idle timeout
+- explicit lock by the user
+- session expiry or logout
+- document unload
+
+### 28.4 Bounded Lifetime
+
+The in-memory lifetime of a decrypted key MUST NOT exceed the session TTL (`§14`). A key that outlives the session it authenticated is retained for no purpose.
+
+The RECOMMENDED default is an idle timeout of **15 minutes**, matching the default session TTL. Implementations SHOULD reset the timer on genuine user activity and SHOULD make the value configurable downward.
+
+### 28.5 What This Does Not Defend Against
+
+Implementations MUST NOT present a bounded key lifetime as protection against script execution in the client's origin.
+
+| Threat | Encrypted at rest + bounded lifetime |
+|--------|--------------------------------------|
+| Disk forensics, profile sync, backups | Protected |
+| Hostile script while key is locked | Ciphertext only; passphrase capture remains possible |
+| Hostile script while key is unlocked | **Not protected** — the key is in memory |
+| Compromised dependency in the client bundle | **Not protected** — same origin, same memory |
+
+The client must be able to decrypt the key to use it, so any code running with it can do the same. Bounding the lifetime narrows the window; it does not close it. Only `§28.2`'s first two options remove the key from reach.
+
+### 28.6 Implementation Obligation
+
+A library that exposes a lock, an idle timeout, or a key store MUST make the guarantee real rather than advisory:
+
+1. the component holding the decrypted key MUST expose a way to clear it, and clearing MUST release every reference the library holds
+2. a lock operation MUST evict key material, not only mark session state
+3. an unlock operation MUST restore key access, not merely clear a flag
+4. a library that cannot evict a key it did not create MUST document that the caller owns eviction
+
+Guidance the library cannot enforce becomes guidance integrators cannot rely on. A lock that changes state without evicting key material is worse than no lock, because it invites reliance it does not merit.
+
+---
+
 ## Appendix A. NAP vs NIP-46
 
 This appendix is explanatory, not normative.

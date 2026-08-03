@@ -1157,6 +1157,23 @@ interface KeyStore {
 `INVALID_PASSPHRASE`. If you use a NIP-07 or NIP-46 signer you do not need any
 of this — there is no key in the browser to unlock.
 
+> **The lock does not evict key material.** `docs/NAP-v2-RFC.md` §28.6 requires
+> that a lock operation clear the decrypted key and that unlock restore access.
+> Neither happens today. The `KeyHolder` that `session.ts:209-220` hands to
+> `reunlock()` only flips booleans — `setKey(key)` ignores its argument — while
+> `options.signer` is captured at `session.ts:114` and never released, so
+> `createPrivateKeySessionSigner`'s closure keeps the private key for the life
+> of the session object. After an idle lock, script in the page can still sign.
+>
+> The two halves mask each other: `reunlock()` decrypts the stored key and then
+> silently discards it, which is harmless only because lock never removed it.
+> Fix one side alone and the flow breaks.
+>
+> Treat `autoLock` as UI state, not a key-custody boundary. If you need the
+> guarantee, own eviction in your own `KeyStore` and drop your signer reference
+> on `onLock`. See §28.3–§28.6 of the RFC for the requirements, and §9.7 below
+> for what bounded key lifetime does and does not buy.
+
 ### 6.4 React
 
 `@imani/nap-react` is a thin binding. `NapProvider` takes an already-constructed
@@ -2174,6 +2191,16 @@ and `details.retry === true` gives you `challenge_retry_hit_total`.
   key is in browser memory (`docs/NAP-IMPLEMENTATION-BEST-PRACTICES.md:420`) but
   cannot revoke a key. Push users toward NIP-07 or NIP-46 so the key never
   enters your page context.
+
+  `docs/NAP-v2-RFC.md` §28 makes this normative: plaintext key persistence is
+  forbidden, a locally held key must be encrypted at rest under a slow KDF, and
+  its decrypted lifetime must not exceed the session TTL — 15 minutes by
+  default. Be clear about the ceiling, though. §28.5 states it directly:
+  bounding the lifetime protects at-rest copies and narrows the window, but
+  **does not** protect a key that is unlocked while hostile script runs, because
+  your own code must be able to decrypt it. Only keeping the key out of the
+  page's origin removes it from reach. And §6.3's lock does not currently evict
+  key material, so today the real window is wider than the timeout implies.
 
 ---
 
