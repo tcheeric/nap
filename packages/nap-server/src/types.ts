@@ -48,6 +48,17 @@ export interface AclRecord {
   updated_at?: string;
 }
 
+export interface OutstandingChallengeFilter {
+  npub?: string;
+  clientIp?: string;
+  now: number;
+}
+
+export interface RecordChallengeFailureResult {
+  failure_count: number;
+  state: ChallengeRecord['state'];
+}
+
 export interface ChallengeStore {
   create(record: ChallengeRecord): Promise<void>;
   get(challengeId: string): Promise<ChallengeRecord | null>;
@@ -61,6 +72,29 @@ export interface ChallengeStore {
     | { status: 'expired' }
   >;
   markExpired(now: number): Promise<number>;
+
+  /**
+   * Count unexpired challenges still in `issued` state for a principal or a
+   * caller address (RFC §17.4).
+   *
+   * Optional so existing custom stores keep compiling. When a store does not
+   * implement it, `maxOutstandingChallengesPerNpub` and
+   * `maxOutstandingChallengesPerIp` cannot be enforced and are skipped.
+   */
+  countOutstanding?(filter: OutstandingChallengeFilter): Promise<number>;
+
+  /**
+   * Increment the challenge's failure counter, moving it to `failed_terminal`
+   * once `maxFailure` is reached (RFC §13.4).
+   *
+   * Optional for the same reason as `countOutstanding`. Must be atomic:
+   * concurrent attacks on one challenge otherwise lose increments to a
+   * read-modify-write race and never reach the cap.
+   */
+  recordFailure?(
+    challengeId: string,
+    params: { now: number; maxFailures: number }
+  ): Promise<RecordChallengeFailureResult | null>;
 }
 
 export interface SessionStore {
@@ -69,6 +103,33 @@ export interface SessionStore {
   getByAccessToken(token: string): Promise<SessionRecord | null>;
   revokeBySessionId(sessionId: string, now: number): Promise<void>;
   revokeByPrincipal(pubkey: string, now: number): Promise<number>;
+}
+
+export interface RateLimitDecision {
+  allowed: boolean;
+  /** Seconds until the caller may retry, surfaced as `Retry-After` on the 429. */
+  retryAfterSeconds?: number;
+}
+
+export interface RateLimitKey {
+  /** Which endpoint is being called. */
+  scope: 'init' | 'complete';
+  /** Principal the request claims, when the request names one. */
+  npub?: string;
+  /** Caller address, as resolved by the adapter's trust policy. */
+  clientIp?: string;
+}
+
+/**
+ * Pluggable rate limiter (RFC §17.1).
+ *
+ * `/auth/init` is unauthenticated and writes a row per call, so a limiter in
+ * front of it is the difference between a public endpoint and a public write
+ * amplifier. `createInMemoryRateLimiter()` covers a single process; anything
+ * multi-instance needs a shared backend.
+ */
+export interface RateLimiter {
+  check(key: RateLimitKey): Promise<RateLimitDecision> | RateLimitDecision;
 }
 
 export interface AclResolver {
@@ -108,12 +169,48 @@ export interface NapServerOptions {
   clock?: Clock;
   randomSource?: RandomSource;
   auditLogger?: AuditLogger;
+  rateLimiter?: RateLimiter;
+  /** Defaults to 60, which is also the RFC §10.1 ceiling. Anything higher throws. */
   challengeTtlSeconds?: number;
   sessionTtlSeconds?: number;
   resultCacheTtlSeconds?: number;
   maxClockSkewSeconds?: number;
   lowerBoundGraceSeconds?: number;
   upperBoundGraceSeconds?: number;
+  /** Lifetime of a minted step-up token, in seconds. Defaults to 600. */
+  stepUpTtlSeconds?: number;
+  /**
+   * Cap on unexpired `issued` challenges per principal (RFC §17.4). Defaults to
+   * 10. Requires `ChallengeStore.countOutstanding`; skipped without it.
+   */
+  maxOutstandingChallengesPerNpub?: number;
+  /**
+   * Cap on unexpired `issued` challenges per caller address (RFC §17.4).
+   * Defaults to 30. Requires `ChallengeStore.countOutstanding` and an adapter
+   * that resolves `clientIp`; skipped without either.
+   */
+  maxOutstandingChallengesPerIp?: number;
+  /**
+   * Completion attempts a single challenge tolerates before moving to
+   * `failed_terminal` (RFC §13.4). Defaults to 5. Requires
+   * `ChallengeStore.recordFailure`; skipped without it.
+   */
+  maxFailuresPerChallenge?: number;
+  /**
+   * Floor on how long `/auth/init` and `/auth/complete` take to answer, in
+   * milliseconds (RFC §15). Defaults to 100. Set to 0 to disable.
+   *
+   * The uniform 401 hides *which* check failed; without a floor, how long the
+   * answer took still distinguishes "no such principal" from "signature did not
+   * verify". Padding to a fixed floor collapses that channel. See
+   * `responseJitterMillis` for the sub-floor variance.
+   */
+  minAuthResponseMillis?: number;
+  /**
+   * Uniform random padding added on top of `minAuthResponseMillis`, in
+   * milliseconds. Defaults to 25. Set to 0 for a fixed floor with no variance.
+   */
+  responseJitterMillis?: number;
 }
 
 export interface NapServer {
@@ -126,6 +223,15 @@ export interface NapServer {
 export interface IssueChallengeInput extends AuthInitRequest {
   authUrl: string;
   authMethod?: 'POST';
+  /**
+   * Caller address, for the rate limiter and the per-IP outstanding cap.
+   *
+   * The adapter decides what this is: it is only as trustworthy as the proxy
+   * configuration behind it, so a spoofable `X-Forwarded-For` makes both limits
+   * spoofable. Leave it unset rather than pass an untrusted value — the per-IP
+   * cap is then skipped instead of being trivially evaded.
+   */
+  clientIp?: string;
 }
 
 export interface IssueChallengeSuccess {
@@ -135,8 +241,13 @@ export interface IssueChallengeSuccess {
 
 export interface IssueChallengeFailure {
   ok: false;
-  code: Extract<NapErrorCode, 'NAP_INIT_INVALID_NPUB' | 'NAP_INIT_INTERNAL'>;
+  code: Extract<
+    NapErrorCode,
+    'NAP_INIT_INVALID_NPUB' | 'NAP_INIT_INTERNAL' | 'NAP_INIT_RATE_LIMITED'
+  >;
   retryable: boolean;
+  /** Set on `NAP_INIT_RATE_LIMITED`, for the adapter's `Retry-After` header. */
+  retryAfterSeconds?: number;
 }
 
 export type IssueChallengeResult =
@@ -148,6 +259,8 @@ export interface VerifyCompletionInput {
   method: string;
   url: string;
   rawBody: Uint8Array;
+  /** Caller address, for the rate limiter. See `IssueChallengeInput.clientIp`. */
+  clientIp?: string;
 }
 
 export interface MalformedRequestFailure {

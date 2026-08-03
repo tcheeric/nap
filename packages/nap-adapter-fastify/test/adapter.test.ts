@@ -7,6 +7,7 @@ import {
   InMemoryAclStore,
   InMemoryChallengeStore,
   InMemorySessionStore,
+  createInMemoryRateLimiter,
   createRegistryAclResolver,
   type NapServerOptions,
   type PermissionRegistry,
@@ -48,6 +49,7 @@ function buildServerOptions(now = 1_710_000_000): NapServerOptions {
     challengeStore: new InMemoryChallengeStore(),
     sessionStore,
     aclResolver: createRegistryAclResolver(REGISTRY, new InMemoryAclStore()),
+    minAuthResponseMillis: 0,
     clock: {
       nowUnix() {
         return now;
@@ -211,6 +213,106 @@ describe('nap-adapter-fastify', () => {
       status: 'error',
       message: 'bad request',
     });
+
+    await app.close();
+  });
+
+  it('returns 429 with retry-after when the limiter rejects /auth/init', async () => {
+    const options = buildServerOptions();
+    options.rateLimiter = createInMemoryRateLimiter({
+      maxPerWindow: 1,
+      clock: { nowUnix: () => 1_710_000_000 },
+    });
+    const app = await createApp(options);
+    const payload = { npub: NPUB };
+    const headers = { host: 'api.example.com', 'content-type': 'application/json' };
+
+    await app.inject({ method: 'POST', url: '/auth/init', headers, payload });
+    const second = await app.inject({ method: 'POST', url: '/auth/init', headers, payload });
+
+    expect(second.statusCode).toBe(429);
+    expect(second.headers['retry-after']).toBe('60');
+
+    await app.close();
+  });
+
+  it('rejects an oversized body before parsing it', async () => {
+    const app = await createApp(buildServerOptions());
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/auth/init',
+      headers: { host: 'api.example.com', 'content-type': 'application/json' },
+      payload: JSON.stringify({ npub: NPUB, padding: 'x'.repeat(2048) }),
+    });
+
+    expect(response.statusCode).toBe(413);
+
+    await app.close();
+  });
+
+  it('denies a guarded request once the live ACL revokes access', async () => {
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore);
+    let allowed = true;
+    const app = Fastify();
+
+    app.get(
+      '/protected',
+      {
+        preHandler: requirePermission('voucher:issue', {
+          sessionStore,
+          cookieName: 'session',
+          aclResolver: {
+            async resolve() {
+              return allowed
+                ? { allowed: true, roles: ['merchant'], permissions: ['voucher:issue'] }
+                : { allowed: false, roles: [], permissions: [] };
+            },
+          },
+        }),
+      },
+      async () => ({ status: 'ok' })
+    );
+
+    const headers = { cookie: 'session=token-1' };
+    expect((await app.inject({ method: 'GET', url: '/protected', headers })).statusCode).toBe(200);
+
+    allowed = false;
+
+    // Mid-session, without waiting out the session TTL.
+    expect((await app.inject({ method: 'GET', url: '/protected', headers })).statusCode).toBe(401);
+
+    await app.close();
+  });
+
+  it('enforces registry step-up on requirePermission', async () => {
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore);
+    const app = Fastify();
+
+    app.get(
+      '/stripe',
+      {
+        preHandler: requirePermission('stripe:manage', {
+          sessionStore,
+          cookieName: 'session',
+          registry: REGISTRY,
+        }),
+      },
+      async () => ({ status: 'ok' })
+    );
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/stripe',
+      headers: { cookie: 'session=token-1' },
+    });
+
+    // The session holds stripe:manage but no step-up token, and the registry
+    // marks that permission stepUp: true.
+    expect(response.statusCode).toBe(403);
+    expect(response.json().message).toBe('step-up required');
 
     await app.close();
   });

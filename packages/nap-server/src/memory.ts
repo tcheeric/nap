@@ -1,5 +1,12 @@
 import type { ChallengeRecord, SessionRecord } from '@imani/nap-core';
-import type { AclRecord, AclStore, ChallengeStore, SessionStore } from './types.js';
+import type {
+  AclRecord,
+  AclStore,
+  ChallengeStore,
+  OutstandingChallengeFilter,
+  RecordChallengeFailureResult,
+  SessionStore,
+} from './types.js';
 
 export class InMemoryChallengeStore implements ChallengeStore {
   private readonly records = new Map<string, ChallengeRecord>();
@@ -54,6 +61,47 @@ export class InMemoryChallengeStore implements ChallengeStore {
     }
 
     return count;
+  }
+
+  async countOutstanding(filter: OutstandingChallengeFilter): Promise<number> {
+    let count = 0;
+
+    for (const record of this.records.values()) {
+      if (record.state !== 'issued' || record.expires_at < filter.now) {
+        continue;
+      }
+
+      if (filter.npub !== undefined && record.npub !== filter.npub) {
+        continue;
+      }
+
+      if (filter.clientIp !== undefined && record.client_ip !== filter.clientIp) {
+        continue;
+      }
+
+      count += 1;
+    }
+
+    return count;
+  }
+
+  async recordFailure(
+    challengeId: string,
+    params: { now: number; maxFailures: number }
+  ): Promise<RecordChallengeFailureResult | null> {
+    const record = this.records.get(challengeId);
+
+    if (!record || record.state !== 'issued') {
+      return null;
+    }
+
+    record.failure_count = (record.failure_count ?? 0) + 1;
+
+    if (record.failure_count >= params.maxFailures) {
+      record.state = 'failed_terminal';
+    }
+
+    return { failure_count: record.failure_count, state: record.state };
   }
 }
 

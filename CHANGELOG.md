@@ -9,6 +9,89 @@ All packages in this workspace share a single version.
 
 ## [Unreleased]
 
+### Added
+
+- **Pluggable rate limiting** (RFC §17.1). `RateLimiter` is `{ check(key): RateLimitDecision }`,
+  where the key carries the scope (`init` / `complete`), npub, and caller address.
+  `createInMemoryRateLimiter()` ships a single-process fixed-window implementation; behind
+  N instances the effective rate is N× the configured one, so multi-instance deployments
+  want a shared backend behind the same interface. Off unless `rateLimiter` is set. Both
+  adapters map `NAP_INIT_RATE_LIMITED` / `NAP_COMPLETE_RATE_LIMITED` to **429 with
+  `Retry-After`** rather than the usual 401 — rate limiting is not an authentication
+  failure, and hiding it behind one only makes clients retry harder.
+- **Outstanding-challenge caps** (RFC §17.4). `maxOutstandingChallengesPerNpub` (default 10)
+  and `maxOutstandingChallengesPerIp` (default 30) bound how many unredeemed, unexpired
+  challenges one principal or address may hold, so a caller under the rate limit still
+  cannot accumulate rows. Exceeding either returns `NAP_INIT_RATE_LIMITED` — a distinct
+  code would tell the caller how to spread load to evade the cap.
+- **Configurable body limits** (RFC §17.4). `bodyLimit` on `NapExpressOptions` and
+  `bodyLimitBytes` on `NapFastifyOptions`, both defaulting to **1 kB**. A valid
+  `/auth/complete` body is ~40 bytes; the framework defaults were 100 kB and 1 MB of
+  parsing an anonymous caller could buy per request.
+- **Per-request permission evaluation** (RFC §15). `resolveEffectiveAcl()`, and an
+  `aclResolver` option on both adapters' guards: `requirePermission()` / `requireRole()`
+  re-read the ACL per request instead of trusting the login-time snapshot, and revoke the
+  principal's sessions when the ACL denies them. Costs one ACL read per guarded request,
+  so it is opt-in per guard; without it the previous snapshot behaviour is unchanged.
+- **`createRevokingAclStore(aclStore, sessionStore, clock?)`** (RFC §15), revoking active
+  sessions at the point of the ACL write rather than waiting for a request. Fires on
+  `suspend()` and on a role change, deliberately **not** on a permission-override edit —
+  logging everyone out because a permission was *granted* is worse than the delay.
+- **Response timing floor** (RFC §15). `minAuthResponseMillis` (default 100) and
+  `responseJitterMillis` (default 25) hold every auth response to a fixed floor plus
+  jitter. The generic 401 hides which check failed; latency did not. Jitter alone would
+  not close it — it hides samples, not the mean — so the floor does the work. Set
+  `minAuthResponseMillis: 0` in tests.
+- **Challenge failure budget** (RFC §13.4). `maxFailuresPerChallenge` (default 5) moves a
+  challenge to `failed_terminal`, after which further attempts get
+  `NAP_COMPLETE_FAILED_TERMINAL`. Counted only for proof failures after the challenge is
+  loaded and matched, so a wrong `challenge_id` cannot burn down another principal's live
+  challenge, and an ACL denial — deterministic, not a guessing attack — does not spend it.
+- **Step-up authentication finished** (new RFC §10.3). `POST /auth/complete` accepts
+  `"step_up": true`, and the resulting session carries `step_up_token` /
+  `step_up_expires_at` (`stepUpTtlSeconds`, default 600). `requirePermission()` now
+  enforces `stepUp: true` from the registry when passed a `registry`, rather than needing
+  `requireStepUp()` remembered at every call site. `session.stepUp()` works.
+- `getClientIp` on both adapters, defaulting to the framework's `req.ip`. Return
+  `undefined` to opt out — the per-IP cap is then skipped rather than enforced against a
+  value anyone can forge.
+- `ChallengeStore.countOutstanding()` and `ChallengeStore.recordFailure()`, implemented by
+  the in-memory and Postgres stores.
+
+### Changed
+
+- **`challengeTtlSeconds` is now validated** (RFC §10.1). `createNapServer()` throws at
+  wiring time for a value outside `1..60` instead of silently issuing a non-conformant
+  challenge; a longer TTL widens the window in which a captured proof is replayable.
+  A deployment that had set it above 60 will now fail to start.
+- **Step-up moved from `?step_up=true` to the request body.** The body is covered by the
+  NIP-98 `payload` hash, so the flag can no longer be added in transit to mint a token the
+  user never asked for, nor stripped to downgrade a step-up to an ordinary login. It also
+  keeps the signed `u` tag query-free and therefore equal to the audience the server
+  computes, which RFC §11 requires. `buildAuthCompleteRequest()` takes a `stepUp` option.
+- RFC gains §10.3 (Step-up authentication); `AuthCompleteRequest.step_up` and
+  `AuthSuccessResponse.step_up_token` / `step_up_expires_at` are now specified wire fields.
+
+### Migration
+
+- **Postgres users must add two columns** before deploying:
+
+  ```sql
+  ALTER TABLE nap_challenges ADD COLUMN client_ip TEXT;
+  ALTER TABLE nap_challenges ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0;
+  CREATE INDEX idx_nap_challenges_npub ON nap_challenges (npub) WHERE state = 'issued';
+  CREATE INDEX idx_nap_challenges_ip   ON nap_challenges (client_ip) WHERE state = 'issued';
+  ```
+
+  The indexes are not optional in practice: `countOutstanding()` runs on every
+  `/auth/init`.
+- **Custom `ChallengeStore` implementations keep compiling** — `countOutstanding()` and
+  `recordFailure()` are optional members — but a store that omits them silently skips the
+  corresponding cap. A store that cannot count cannot cap.
+- **`nap-java` is not yet wire-compatible with the body-carried `step_up` flag, the 429
+  responses, or `failed_terminal`.** Until it is, do not mix a TS client asking for a
+  step-up with a Java server.
+
 ## [0.3.0] - 2026-08-03
 
 ### Added

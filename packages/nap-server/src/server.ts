@@ -13,6 +13,7 @@ import {
 } from '@imani/nap-core';
 import { nip19 } from 'nostr-tools';
 import type {
+  AclResolver,
   AuditLogger,
   Clock,
   IssueChallengeInput,
@@ -22,6 +23,7 @@ import type {
   ParsedAuthCompleteRequest,
   NapServer,
   RandomSource,
+  SessionStore,
   VerifyCompletionInput,
   VerifyCompletionOutcome,
 } from './types.js';
@@ -32,6 +34,15 @@ const DEFAULT_SESSION_TTL_SECONDS = 900;
 const DEFAULT_MAX_CLOCK_SKEW_SECONDS = 60;
 const DEFAULT_LOWER_BOUND_GRACE_SECONDS = 30;
 const DEFAULT_UPPER_BOUND_GRACE_SECONDS = 5;
+const DEFAULT_STEP_UP_TTL_SECONDS = 600;
+const DEFAULT_MAX_OUTSTANDING_PER_NPUB = 10;
+const DEFAULT_MAX_OUTSTANDING_PER_IP = 30;
+const DEFAULT_MAX_FAILURES_PER_CHALLENGE = 5;
+const DEFAULT_MIN_AUTH_RESPONSE_MILLIS = 100;
+const DEFAULT_RESPONSE_JITTER_MILLIS = 25;
+
+/** RFC §10.1: `expires_at` MUST be no more than 60 seconds after `issued_at`. */
+export const MAX_CHALLENGE_TTL_SECONDS = 60;
 
 const defaultClock: Clock = {
   nowUnix() {
@@ -112,7 +123,8 @@ function createSessionRecord(
   sessionTtlSeconds: number,
   randomSource: RandomSource,
   roles: string[],
-  permissions: string[]
+  permissions: string[],
+  stepUp?: { ttlSeconds: number }
 ): SessionRecord {
   return {
     session_id: base64Url(randomSource.randomBytes(24)),
@@ -124,7 +136,154 @@ function createSessionRecord(
     permissions,
     issued_at: now,
     expires_at: now + sessionTtlSeconds,
+    ...(stepUp
+      ? {
+          step_up_token: base64Url(randomSource.randomBytes(32)),
+          step_up_expires_at: now + stepUp.ttlSeconds,
+        }
+      : {}),
   };
+}
+
+/**
+ * RFC §10.1 caps a challenge at 60 seconds past issuance. A longer TTL widens
+ * the window in which a captured completion proof is still replayable, so an
+ * over-long value is a configuration error rather than something to clamp
+ * silently.
+ */
+function resolveChallengeTtl(options: NapServerOptions): number {
+  const ttl = options.challengeTtlSeconds ?? DEFAULT_CHALLENGE_TTL_SECONDS;
+
+  if (!Number.isFinite(ttl) || ttl <= 0 || ttl > MAX_CHALLENGE_TTL_SECONDS) {
+    throw new Error(
+      `challengeTtlSeconds must be between 1 and ${MAX_CHALLENGE_TTL_SECONDS} (RFC §10.1), got ${ttl}`
+    );
+  }
+
+  return ttl;
+}
+
+function sleep(millis: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, millis);
+  });
+}
+
+/**
+ * Hold the response until a fixed floor has elapsed (RFC §15).
+ *
+ * The generic 401 hides which check failed; response latency does not, and an
+ * unknown principal answers measurably sooner than one that reached signature
+ * verification. Padding every answer to the same floor removes the difference
+ * an attacker can measure. The jitter on top costs nothing and blunts
+ * averaging attacks against the floor itself.
+ */
+async function padAuthResponse(
+  startedAtMillis: number,
+  options: NapServerOptions,
+  randomSource: RandomSource
+): Promise<void> {
+  const floor = options.minAuthResponseMillis ?? DEFAULT_MIN_AUTH_RESPONSE_MILLIS;
+  const jitterRange = options.responseJitterMillis ?? DEFAULT_RESPONSE_JITTER_MILLIS;
+
+  if (floor <= 0 && jitterRange <= 0) {
+    return;
+  }
+
+  const jitter =
+    jitterRange > 0 ? (randomSource.randomBytes(2)[0] ?? 0) % (jitterRange + 1) : 0;
+  const remaining = floor + jitter - (Date.now() - startedAtMillis);
+
+  if (remaining > 0) {
+    await sleep(remaining);
+  }
+}
+
+async function checkRateLimit(
+  options: NapServerOptions,
+  key: { scope: 'init' | 'complete'; npub?: string; clientIp?: string }
+): Promise<{ allowed: true } | { allowed: false; retryAfterSeconds?: number }> {
+  if (!options.rateLimiter) {
+    return { allowed: true };
+  }
+
+  const decision = await options.rateLimiter.check(key);
+
+  return decision.allowed
+    ? { allowed: true }
+    : { allowed: false, retryAfterSeconds: decision.retryAfterSeconds };
+}
+
+/**
+ * RFC §17.4: bound outstanding challenges per principal and per caller address.
+ *
+ * Returns the exceeded dimension, or null. Skipped entirely when the store does
+ * not implement `countOutstanding` — a store that cannot count cannot cap, and
+ * failing closed here would break every existing custom store.
+ */
+async function findExceededOutstandingCap(
+  options: NapServerOptions,
+  npub: string,
+  clientIp: string | undefined,
+  now: number
+): Promise<'npub' | 'ip' | null> {
+  const countOutstanding = options.challengeStore.countOutstanding?.bind(
+    options.challengeStore
+  );
+
+  if (!countOutstanding) {
+    return null;
+  }
+
+  const perNpub = options.maxOutstandingChallengesPerNpub ?? DEFAULT_MAX_OUTSTANDING_PER_NPUB;
+
+  if (perNpub > 0 && (await countOutstanding({ npub, now })) >= perNpub) {
+    return 'npub';
+  }
+
+  const perIp = options.maxOutstandingChallengesPerIp ?? DEFAULT_MAX_OUTSTANDING_PER_IP;
+
+  if (clientIp && perIp > 0 && (await countOutstanding({ clientIp, now })) >= perIp) {
+    return 'ip';
+  }
+
+  return null;
+}
+
+/**
+ * RFC §13.4: cap failures per challenge.
+ *
+ * Called only after the challenge has been loaded and matched, so a wrong
+ * `challenge_id` cannot burn down another principal's live challenge. Returns
+ * whether this attempt exhausted the budget, purely so the audit trail can say
+ * so — the caller's public response is the same 401 either way.
+ */
+async function recordChallengeFailure(
+  options: NapServerOptions,
+  auditLogger: AuditLogger,
+  challengeId: string,
+  now: number
+): Promise<void> {
+  const recordFailure = options.challengeStore.recordFailure?.bind(options.challengeStore);
+
+  if (!recordFailure) {
+    return;
+  }
+
+  const maxFailures = options.maxFailuresPerChallenge ?? DEFAULT_MAX_FAILURES_PER_CHALLENGE;
+
+  if (maxFailures <= 0) {
+    return;
+  }
+
+  const result = await recordFailure(challengeId, { now, maxFailures });
+
+  if (result?.state === 'failed_terminal') {
+    await logFailure(auditLogger, 'NAP_COMPLETE_FAILED_TERMINAL', {
+      challenge_id: challengeId,
+      failure_count: result.failure_count,
+    });
+  }
 }
 
 export function createSystemClock(): Clock {
@@ -147,8 +306,13 @@ export function parseAuthCompleteRequest(rawBody: Uint8Array): ParsedAuthComplet
       return null;
     }
 
+    if (parsed.step_up !== undefined && typeof parsed.step_up !== 'boolean') {
+      return null;
+    }
+
     return {
       challenge_id: parsed.challenge_id,
+      ...(parsed.step_up === true ? { step_up: true as const } : {}),
     };
   } catch {
     return null;
@@ -159,10 +323,41 @@ export async function issueChallenge(
   input: IssueChallengeInput,
   options: NapServerOptions
 ): Promise<IssueChallengeResult> {
+  const startedAtMillis = Date.now();
+  const randomSource = options.randomSource ?? defaultRandomSource;
+  const result = await issueChallengeUnpadded(input, options);
+  await padAuthResponse(startedAtMillis, options, randomSource);
+  return result;
+}
+
+async function issueChallengeUnpadded(
+  input: IssueChallengeInput,
+  options: NapServerOptions
+): Promise<IssueChallengeResult> {
   const clock = options.clock ?? defaultClock;
   const randomSource = options.randomSource ?? defaultRandomSource;
   const auditLogger = options.auditLogger ?? noopAuditLogger;
-  const ttl = options.challengeTtlSeconds ?? DEFAULT_CHALLENGE_TTL_SECONDS;
+  const ttl = resolveChallengeTtl(options);
+  const rateLimit = await checkRateLimit(options, {
+    scope: 'init',
+    npub: input.npub,
+    clientIp: input.clientIp,
+  });
+
+  if (!rateLimit.allowed) {
+    await auditLogger.log({
+      code: 'NAP_INIT_RATE_LIMITED',
+      outcome: 'rate_limited',
+      details: { npub: input.npub },
+    });
+    return {
+      ok: false,
+      code: 'NAP_INIT_RATE_LIMITED',
+      retryable: isRetryableNapError('NAP_INIT_RATE_LIMITED'),
+      retryAfterSeconds: rateLimit.retryAfterSeconds,
+    };
+  }
+
   const pubkey = decodeNpub(input.npub);
 
   if (!pubkey) {
@@ -175,6 +370,24 @@ export async function issueChallenge(
   }
 
   const now = clock.nowUnix();
+  const exceeded = await findExceededOutstandingCap(options, input.npub, input.clientIp, now);
+
+  if (exceeded) {
+    // Reported as rate limiting rather than a distinct code: the cap exists to
+    // bound storage, and telling the caller which dimension they hit tells them
+    // how to spread the load to evade it.
+    await auditLogger.log({
+      code: 'NAP_INIT_RATE_LIMITED',
+      outcome: 'rate_limited',
+      details: { npub: input.npub, cap: exceeded },
+    });
+    return {
+      ok: false,
+      code: 'NAP_INIT_RATE_LIMITED',
+      retryable: isRetryableNapError('NAP_INIT_RATE_LIMITED'),
+    };
+  }
+
   const record: ChallengeRecord = {
     challenge_id: base64Url(randomSource.randomBytes(12)),
     challenge: base64Url(randomSource.randomBytes(32)),
@@ -185,6 +398,7 @@ export async function issueChallenge(
     issued_at: now,
     expires_at: now + ttl,
     state: 'issued',
+    ...(input.clientIp ? { client_ip: input.clientIp } : {}),
   };
 
   try {
@@ -214,6 +428,17 @@ export async function verifyCompletion(
   input: VerifyCompletionInput,
   options: NapServerOptions
 ): Promise<VerifyCompletionOutcome> {
+  const startedAtMillis = Date.now();
+  const randomSource = options.randomSource ?? defaultRandomSource;
+  const result = await verifyCompletionUnpadded(input, options);
+  await padAuthResponse(startedAtMillis, options, randomSource);
+  return result;
+}
+
+async function verifyCompletionUnpadded(
+  input: VerifyCompletionInput,
+  options: NapServerOptions
+): Promise<VerifyCompletionOutcome> {
   const clock = options.clock ?? defaultClock;
   const randomSource = options.randomSource ?? defaultRandomSource;
   const auditLogger = options.auditLogger ?? noopAuditLogger;
@@ -222,10 +447,29 @@ export async function verifyCompletion(
   const upperBoundGraceSeconds = options.upperBoundGraceSeconds ?? DEFAULT_UPPER_BOUND_GRACE_SECONDS;
   const sessionTtlSeconds = options.sessionTtlSeconds ?? DEFAULT_SESSION_TTL_SECONDS;
   const resultCacheTtlSeconds = options.resultCacheTtlSeconds ?? DEFAULT_RESULT_CACHE_TTL_SECONDS;
+  const stepUpTtlSeconds = options.stepUpTtlSeconds ?? DEFAULT_STEP_UP_TTL_SECONDS;
   const body = parseAuthCompleteRequest(input.rawBody);
 
+  // RFC §13.4(1): reject malformed requests before touching challenge state.
   if (!body) {
     return malformedRequestFailure();
+  }
+
+  const rateLimit = await checkRateLimit(options, {
+    scope: 'complete',
+    clientIp: input.clientIp,
+  });
+
+  if (!rateLimit.allowed) {
+    await auditLogger.log({
+      code: 'NAP_COMPLETE_RATE_LIMITED',
+      outcome: 'rate_limited',
+      details: { challenge_id: body.challenge_id },
+    });
+    return {
+      ...failure('NAP_COMPLETE_RATE_LIMITED'),
+      retryAfterSeconds: rateLimit.retryAfterSeconds,
+    };
   }
 
   const now = clock.nowUnix();
@@ -256,12 +500,23 @@ export async function verifyCompletion(
     return failure('NAP_COMPLETE_EXPIRED_CHALLENGE');
   }
 
+  // RFC §13.4(3): a challenge that burned through its failure budget is dead
+  // even though it has not expired yet.
+  if (challenge.state === 'failed_terminal') {
+    await logFailure(auditLogger, 'NAP_COMPLETE_FAILED_TERMINAL', { challenge_id: challenge.challenge_id });
+    return failure('NAP_COMPLETE_FAILED_TERMINAL');
+  }
+
+  // Past this point the request is addressing a live challenge we loaded and
+  // matched, so failures count against that challenge's budget (RFC §13.4(2)).
   if (challenge.challenge !== proof.value.challenge) {
+    await recordChallengeFailure(options, auditLogger, challenge.challenge_id, now);
     await logFailure(auditLogger, 'NAP_COMPLETE_CHALLENGE_MISMATCH', { challenge_id: challenge.challenge_id });
     return failure('NAP_COMPLETE_CHALLENGE_MISMATCH');
   }
 
   if (challenge.pubkey !== proof.value.event.pubkey) {
+    await recordChallengeFailure(options, auditLogger, challenge.challenge_id, now);
     await logFailure(auditLogger, 'NAP_COMPLETE_PRINCIPAL_MISMATCH', { challenge_id: challenge.challenge_id });
     return failure('NAP_COMPLETE_PRINCIPAL_MISMATCH');
   }
@@ -275,6 +530,7 @@ export async function verifyCompletion(
   );
 
   if (createdAtWindow !== true) {
+    await recordChallengeFailure(options, auditLogger, challenge.challenge_id, now);
     await logFailure(auditLogger, createdAtWindow.code, { challenge_id: challenge.challenge_id });
     return createdAtWindow;
   }
@@ -286,6 +542,10 @@ export async function verifyCompletion(
     return failure('NAP_COMPLETE_ACL_DENIED');
   }
 
+  // A step-up is a full re-authentication: the caller proved key control again,
+  // just now, so the resulting session carries a short-lived token that
+  // `requireStepUp()` accepts. The flag is signed (it lives in the hashed body),
+  // so it cannot be added in transit to mint a token the user never asked for.
   const session = await options.sessionStore.createForChallenge(
     createSessionRecord(
       challenge,
@@ -293,7 +553,8 @@ export async function verifyCompletion(
       sessionTtlSeconds,
       randomSource,
       aclDecision.roles,
-      aclDecision.permissions
+      aclDecision.permissions,
+      body.step_up ? { ttlSeconds: stepUpTtlSeconds } : undefined
     )
   );
 
@@ -400,6 +661,61 @@ export function toPublicSessionView(session: SessionRecord): PublicSessionView {
   };
 }
 
+export interface EffectiveAcl {
+  roles: string[];
+  permissions: string[];
+}
+
+export interface ResolveEffectiveAclOptions {
+  /**
+   * When supplied, the ACL is re-read on every request instead of trusting the
+   * login-time snapshot. Omit to keep the snapshot behaviour.
+   */
+  aclResolver?: AclResolver;
+  /** When supplied alongside `aclResolver`, a denied principal's sessions are revoked. */
+  sessionStore?: SessionStore;
+  clock?: Clock;
+}
+
+/**
+ * Resolve the roles and permissions a request should actually be judged
+ * against (RFC §15 rule 1).
+ *
+ * `session.roles` and `session.permissions` are a snapshot taken at login. RFC
+ * §15 requires permissions to be evaluated on every authorized request, not
+ * just at login — otherwise revoking access takes effect only when the session
+ * expires, which for the default 900-second TTL means a suspended principal
+ * keeps working for up to fifteen minutes.
+ *
+ * Returns `null` when the principal is no longer allowed at all, in which case
+ * their sessions are revoked so the next request fails at session lookup
+ * without another ACL round trip.
+ *
+ * Costs one ACL read per guarded request. Guards left without an `aclResolver`
+ * keep reading the snapshot, so this is opt-in per guard.
+ */
+export async function resolveEffectiveAcl(
+  session: SessionRecord,
+  options: ResolveEffectiveAclOptions
+): Promise<EffectiveAcl | null> {
+  if (!options.aclResolver) {
+    return { roles: session.roles, permissions: session.permissions };
+  }
+
+  const decision = await options.aclResolver.resolve(
+    session.principal_npub,
+    session.principal_pubkey
+  );
+
+  if (!decision.allowed) {
+    const clock = options.clock ?? defaultClock;
+    await options.sessionStore?.revokeByPrincipal(session.principal_pubkey, clock.nowUnix());
+    return null;
+  }
+
+  return { roles: decision.roles, permissions: decision.permissions };
+}
+
 export function toPublicAuthFailure(): { status: 401; body: AuthFailureResponse } {
   return {
     status: 401,
@@ -411,6 +727,9 @@ export function toPublicAuthFailure(): { status: 401; body: AuthFailureResponse 
 }
 
 export function createNapServer(options: NapServerOptions): NapServer {
+  // Fail at wiring time rather than on the first /auth/init.
+  resolveChallengeTtl(options);
+
   return {
     issueChallenge(input: IssueChallengeInput): Promise<IssueChallengeResult> {
       return issueChallenge(input, options);

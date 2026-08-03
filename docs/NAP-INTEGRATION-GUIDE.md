@@ -85,7 +85,7 @@ Each phase is independently verifiable, so a failure tells you which layer broke
 | **1** | Swap in `@imani/nap-store-postgres`; switch to cookie mode via `writeNapCookieSuccess`; set `clearCookieOptions` to match | Sessions survive a server restart; logout clears the cookie |
 | **2** | `createNapSession` + `createNip07Signer`; `resume()` on mount; `isRestoringSession` loading state | Reload keeps you logged in without a signing prompt |
 | **3** | Permission registry; `requirePermission` guards; `validatePermissions()` after routes register | A typo'd permission key fails at startup |
-| **4** | Rate limiter in front of `/auth`; body-size cap; cookie flags reviewed | `/auth/init` is no longer an uncapped write |
+| **4** | `rateLimiter` wired; outstanding-challenge caps sized; `aclResolver` passed to the guards; cookie flags reviewed | `/auth/init` is no longer an uncapped write, and revoking access takes effect on the next request |
 
 ### 0.5 Checklist
 
@@ -102,8 +102,10 @@ Each phase is independently verifiable, so a failure tells you which layer broke
 - [ ] NAP router mounted **before** any global body parser (§5.2)
 - [ ] `AuditLogger` wired, `code` reaching your logs (§9.6)
 - [ ] Durable store configured, with a plan for sweeping expired rows — `markExpired()` marks but never deletes (§5.4)
-- [ ] Rate limiter in front of `/auth` — **NAP does not implement one** (§9.5)
-- [ ] Body size capped, e.g. `express.json({ limit: '1kb' })` (§9.5)
+- [ ] `rateLimiter` set — `createInMemoryRateLimiter()` for one process, a shared
+      backend behind the same interface for more than one (§9.5)
+- [ ] Body size capped — the adapters default to 1 kB; override with `bodyLimit`
+      (Express) / `bodyLimitBytes` (Fastify) (§9.5)
 - [ ] `validatePermissions(registry)` called at startup (§5.2)
 
 **Client**
@@ -438,11 +440,8 @@ The public body is `toPublicAuthSuccess()` (`server.ts:359`):
 > recommendation (`docs/NAP-v2-RFC.md:416`) is unimplemented — plan on
 > re-running the full flow when the 15-minute access token expires.
 >
-> `step_up_token` / `step_up_expires_at` are in the same position: the types
-> exist, `toPublicAuthSuccess()` forwards them, and `requireStepUp()`
-> (`packages/nap-adapter-express/src/adapter.ts:265`) will check an
-> `X-Step-Up-Token` header against them — but nothing in 0.2.0 ever *issues* a
-> step-up token. You would have to write it into the session record yourself.
+> `step_up_token` / `step_up_expires_at` **are** populated as of 0.4.0, when the
+> completion body carries `"step_up": true`. See §6.1.
 
 ### 2.6 Retry safety
 
@@ -665,39 +664,44 @@ a role revoked mid-session stays effective until the session TTL expires (§3.4)
 verbatim at `GET /permissions` — handy for a frontend that wants to render
 capability-gated UI.
 
-### 3.4 What is honestly not implemented
+### 3.4 Keeping authorization live
 
 The RFC's section 15 (`docs/NAP-v2-RFC.md:460`) states three rules. Measured
-against 0.2.0:
+against 0.4.0:
 
-| RFC rule | Status in 0.2.0 |
+| RFC rule | Status in 0.4.0 |
 |---|---|
-| "ACL checks MUST happen after proof verification and before session issuance" | **Implemented.** `server.ts:282` sits between the proof checks and `createForChallenge()`. |
-| "permissions are evaluated on every authorized application request, not just at login" | **Not implemented.** `requirePermission()` reads `session.permissions` — the snapshot copied into the `SessionRecord` at completion (`server.ts:114`). The `AclResolver` is never consulted again. |
-| "removing a principal from the ACL SHOULD revoke active sessions" | **Not automatic.** The primitive exists — `SessionStore.revokeByPrincipal(pubkey, now)` (`types.ts:71`) — but nothing calls it. `AclStore.suspend()` does not touch sessions. |
-| "role changes SHOULD take effect without forcing a new login" | **Not implemented**, same reason as above. |
+| "ACL checks MUST happen after proof verification and before session issuance" | **Implemented.** The `aclResolver.resolve()` call sits between the proof checks and `createForChallenge()`. |
+| "permissions are evaluated on every authorized application request, not just at login" | **Implemented, opt-in per guard.** Pass `aclResolver` in the guard options and `requirePermission()` / `requireRole()` re-read the ACL per request via `resolveEffectiveAcl()`. Omit it and they keep reading the login-time snapshot. |
+| "removing a principal from the ACL SHOULD revoke active sessions" | **Implemented two ways.** A guard with `aclResolver` revokes the principal's sessions the moment a request finds them denied; `createRevokingAclStore(aclStore, sessionStore)` revokes at the point of the ACL write instead, so it does not wait for a request. |
+| "role changes SHOULD take effect without forcing a new login" | **Implemented.** With `aclResolver` on the guard, the new roles are in force on the next request. |
 
-The practical consequence: **a suspension or permission change takes effect at
-most one session TTL later** — up to 15 minutes on defaults. If you need it
-sooner, call `revokeByPrincipal()` yourself alongside `AclStore.suspend()`, or
-write an `AclResolver`-backed guard instead of using `requirePermission()`.
+Both mechanisms are opt-in because both cost something. The per-request resolver
+costs one ACL read per guarded request; the revoking store logs a principal out
+on any role change. Wire one, the other, or both:
 
-Also unimplemented:
+```ts
+// Per-request evaluation — a principal who lost access is denied on their next
+// request, and their sessions are revoked so the following one fails earlier.
+app.get('/vouchers', requirePermission('voucher:issue', {
+  sessionStore,
+  aclResolver,   // the same resolver you gave NapServerOptions
+  registry,      // enforces `stepUp: true` on the permission definition
+}), handler);
 
-- **Step-up permissions.** `PermissionDefinition.stepUp` is declared and
-  round-trips through the registry, but nothing reads it. No code path
-  cross-references a permission's `stepUp` flag with `requireStepUp()`, and
-  nothing issues `step_up_token`. Treat `stepUp: true` as documentation today.
-- **Anti-enumeration timing.** `docs/NAP-v2-RFC.md:470` asks for bounded timing
-  differences and suggests jitter or a minimum processing time. There is no
-  jitter or constant-time padding in `verifyCompletion()`. An ACL-denied
-  completion returns after a store round-trip that a signature failure skips, so
-  the paths are distinguishable by timing. The *response shape* is correctly
-  generic (401 `authentication failed` for both).
-- **Rate limiting.** `NAP_INIT_RATE_LIMITED` and `NAP_COMPLETE_RATE_LIMITED`
-  are declared in `NapErrorCode` (`packages/nap-core/src/types.ts:88`) and
-  `PublicFailureResponse` allows a `429` (`packages/nap-server/src/types.ts:174`),
-  but no code in 0.2.0 emits either. Bring your own middleware — see §9.
+// Revoke at the write instead of at the read.
+const aclStore = createRevokingAclStore(new PostgresAclStore(pool), sessionStore);
+```
+
+`createRevokingAclStore` revokes on `suspend()` and on a role change, but **not**
+on a permission-override edit: those are picked up per-request by a guard with an
+`aclResolver`, and logging everyone out because a permission was *granted* is
+worse than the delay it avoids.
+
+Note that `requireStepUp()` and the `registry` option are the two halves of
+step-up: `PermissionDefinition.stepUp` is now enforced by `requirePermission()`
+when you pass the registry, rather than needing `requireStepUp()` remembered at
+every call site. See §6.1 for how a client obtains the token.
 
 ---
 
@@ -1025,7 +1029,11 @@ CREATE TABLE nap_challenges (
   expires_at          BIGINT NOT NULL,
   redeemed_event_id   TEXT,                      -- set by redeem(), L154
   redeemed_session_id TEXT,                      -- set by redeem(), L155
-  result_cache_until  BIGINT                     -- set by redeem(), L156
+  result_cache_until  BIGINT,                    -- set by redeem(), L156
+  client_ip           TEXT,                      -- per-IP outstanding cap; NULL when the
+                                                 -- adapter opts out of address reporting
+  failure_count       INTEGER NOT NULL DEFAULT 0 -- RFC §13.4 budget, incremented by
+                                                 -- recordFailure()
 );
 
 CREATE TABLE nap_sessions (
@@ -1059,6 +1067,11 @@ CREATE TABLE nap_acl (
 
 CREATE INDEX idx_nap_sessions_principal ON nap_sessions (principal_pubkey);
 CREATE INDEX idx_nap_challenges_expiry  ON nap_challenges (expires_at) WHERE state = 'issued';
+
+-- countOutstanding() runs on every /auth/init. Without these it is a sequential
+-- scan of the whole challenge table on the hottest unauthenticated path.
+CREATE INDEX idx_nap_challenges_npub ON nap_challenges (npub) WHERE state = 'issued';
+CREATE INDEX idx_nap_challenges_ip   ON nap_challenges (client_ip) WHERE state = 'issued';
 ```
 
 Three things that will bite you if you get the schema wrong:
@@ -1175,7 +1188,7 @@ The `NapSession` surface (`packages/nap-client-web/src/types.ts:38`):
 | `login()` | Full init → sign → complete. Returns `AuthSuccessResponse`. | `POST /auth/init`, `POST /auth/complete` |
 | `logout()` | Clears local state, fires `onLogout`, broadcasts to other tabs. | `POST /auth/logout` |
 | `resume()` | Rehydrate from an existing cookie on page load. `null` on 401. Fires `onLogin` when it restores a session. | `GET /auth/session` |
-| `stepUp()` | Re-auth and return a step-up token. | `POST /auth/complete?step_up=true` — see below |
+| `stepUp()` | Re-auth and return a step-up token. | `POST /auth/complete` with `{"step_up": true}` — see below |
 | `isAuthenticated()` / `getSession()` / `hasPermission(k)` / `hasRole(k)` | Local reads of the cached `SessionState`. | — |
 | `lock()` / `isLocked()` / `shutdown()` / `isShutdown()` | Idle-lock state machine. Zeroes the key on an `EvictableSigner` (§6.3). | — |
 | `reunlock(passphrase)` | Decrypt a stored key via your `KeyStore` and restore it to the signer. | — |
@@ -1196,16 +1209,24 @@ The `NapSession` surface (`packages/nap-client-web/src/types.ts:38`):
 > **must match the attributes you set it with** (`path`, `domain`) or the browser
 > keeps the cookie.
 >
-> **`stepUp()` cannot succeed in 0.2.0.** Nothing ever populates
-> `SessionRecord.step_up_token`, so the response has no `step_up_token` and
-> `stepUp()` throws `NAP step-up response did not include a step-up token`
-> (`packages/nap-client-web/src/session.ts:175`). Separately, the `?step_up=true`
-> query string is a protocol wrinkle: the server derives the audience from
-> `getExternalBaseUrl(req) + '/auth/complete'` — query-free — so verification
-> passes, but the signed `u` tag does not match the request-target the client
-> actually sent. `docs/NAP-v2-RFC.md:294` says query parameters "are part of the
-> exact URL and MUST match if present". Harmless today; a stricter verifier
-> would reject it.
+> **`stepUp()` works as of 0.4.0.** It re-runs the full init/complete exchange
+> with `{"challenge_id": "...", "step_up": true}` as the body, and the server
+> mints `step_up_token` / `step_up_expires_at` on the resulting session
+> (`stepUpTtlSeconds`, default 600). `requireStepUp()` and any
+> `stepUp: true` permission in the registry accept that token in
+> `X-Step-Up-Token`.
+>
+> The flag lives in the **body**, not a `?step_up=true` query parameter, and
+> deliberately so: the body is covered by the NIP-98 `payload` hash, so the flag
+> cannot be added in transit to mint a token the user never asked for, nor
+> stripped to silently downgrade a step-up to an ordinary login. It also keeps
+> the signed `u` tag query-free and therefore exactly equal to the audience the
+> server computes — `docs/NAP-v2-RFC.md:294` requires query parameters to match
+> if present, and the old query-string form did not satisfy that.
+>
+> A step-up is a full re-authentication, not a token refresh: it costs a fresh
+> signature from the user's key. That is the point — it is what makes the token
+> evidence of *present* key control rather than of a login fifteen minutes ago.
 
 ### 6.2 Signers
 
@@ -2106,11 +2127,13 @@ Do not conflate these. All three defaults live at
 The RFC caps `expires_at` at 60 seconds after `issued_at`
 (`docs/NAP-v2-RFC.md:198`) and recommends 60s skew (`:300`). The defaults match
 the RFC exactly, including the suggested `issued_at - 30s <= created_at <=
-expires_at + 5s` rule (`:307`). **Nothing enforces the 60-second ceiling** —
-`challengeTtlSeconds` is an unvalidated number, so setting it to 600 silently
-produces a non-conformant 10-minute challenge. If you raise it for a slow remote
-signer, know that you are trading spec conformance for usability, and raise
-`upperBoundGraceSeconds` too or late events will fail the challenge-bound check.
+expires_at + 5s` rule (`:307`). The 60-second ceiling **is enforced**:
+`createNapServer()` throws at wiring time if `challengeTtlSeconds` is outside
+`1..60`, rather than silently issuing a non-conformant 10-minute challenge. A
+longer TTL widens the window in which a captured completion proof is still
+replayable, which is why it is a configuration error rather than something to
+clamp quietly. If a slow remote signer needs more room, raise
+`upperBoundGraceSeconds` — late events otherwise fail the challenge-bound check.
 
 **Client clock skew** is the most common real-world failure. The client picks
 `created_at` from its own `Date.now()` (`packages/nap-client-http/src/client.ts:56`).
@@ -2287,35 +2310,75 @@ Three more audience gotchas:
   `createNapExpressCompleteHandler` directly and supply a `getExternalBaseUrl`
   that makes `base + '/auth/complete'` come out right.
 
-### 9.5 Rate limiting — you must supply it
-
-**Not implemented in 0.2.0.** `NAP_INIT_RATE_LIMITED` and
-`NAP_COMPLETE_RATE_LIMITED` exist as enum members
-(`packages/nap-core/src/types.ts:88`) and `PublicFailureResponse` permits a 429
-(`packages/nap-server/src/types.ts:174`), but no code path produces one. There is
-no `RateLimiter` interface, despite `docs/NAP-v2-RFC.md:539` listing one as a
-required pluggable interface.
+### 9.5 Rate limiting and resource bounds
 
 `/auth/init` is an unauthenticated endpoint that performs a bech32 decode, 44
-bytes of CSPRNG, and a database `INSERT` per call, with **no cap on outstanding
-challenges per IP or per npub** (`docs/NAP-v2-RFC.md:573` asks for both). That is
-a trivially cheap way to fill your `nap_challenges` table. Put a limiter in front
-of it — `express-rate-limit` or `@fastify/rate-limit` on the `/auth` mount is
-enough:
+bytes of CSPRNG, and a database `INSERT` per call. Three separate bounds cover it
+(RFC `§17.1`, `§17.4`), and **only the last is on by default**:
 
 ```ts
-import rateLimit from 'express-rate-limit';
-
-app.use('/auth', rateLimit({ windowMs: 60_000, limit: 20 }));
-app.use('/auth', createNapExpressRouter({ /* … */ }));
+createNapServer({
+  // …
+  rateLimiter: createInMemoryRateLimiter({ windowSeconds: 60, maxPerWindow: 20 }),
+  maxOutstandingChallengesPerNpub: 10,   // default 10
+  maxOutstandingChallengesPerIp: 30,     // default 30
+});
 ```
 
-Also bound the `/auth/complete` body size. The valid body is ~40 bytes;
-`express.json()` defaults to a 100 kB limit, so pass `{ limit: '1kb' }` if you
-build your own parser. Note that `createNapExpressJsonParser()` takes no options
-in 0.2.0, so if you want a body limit you must construct
-`express.json({ limit: '1kb', verify })` yourself with the same
-`Symbol.for('nap.rawBody')` write — or just put the limit at the proxy.
+1. **`rateLimiter`** — a `RateLimiter` is `{ check(key): RateLimitDecision }`,
+   where `key` carries the scope (`init` / `complete`), the npub, and the caller
+   address. Off unless you set it. Both entry points return
+   `NAP_INIT_RATE_LIMITED` / `NAP_COMPLETE_RATE_LIMITED` when it rejects, and the
+   adapters turn those into a **429 with `Retry-After`** rather than the usual
+   401 — rate limiting is not an authentication failure and hiding it behind one
+   would only mean clients retry harder.
+
+   `createInMemoryRateLimiter()` is a fixed-window counter that keeps its state
+   in the process. Behind N instances the effective rate is N× what you
+   configured; a multi-instance deployment wants Redis or similar behind the same
+   interface.
+
+2. **Outstanding-challenge caps** — bound how many *unredeemed, unexpired*
+   challenges one npub or one address may hold at once, so a caller under the
+   rate limit still cannot accumulate rows. On by default. Both are enforced by
+   `ChallengeStore.countOutstanding()`; a custom store that does not implement
+   that optional method silently skips the cap, because a store that cannot count
+   cannot cap. Set either to `0` to disable it.
+
+   Exceeding a cap returns `NAP_INIT_RATE_LIMITED` and not a distinct code —
+   telling the caller which dimension they hit tells them how to spread load to
+   evade it.
+
+3. **Body size** — the adapters cap NAP routes at **1 kB by default** (a valid
+   `/auth/complete` body is ~40 bytes). Override with `bodyLimit` on
+   `NapExpressOptions` (any `express.json()` limit value) or `bodyLimitBytes` on
+   `NapFastifyOptions` (bytes). Oversized bodies get a 413. This matters because
+   the framework defaults are 100 kB (Express) and 1 MB (Fastify) of parsing an
+   anonymous caller can buy per request.
+
+**The per-IP dimensions are only as trustworthy as your proxy configuration.**
+Both adapters default to the framework's `req.ip`, which believes
+`X-Forwarded-For` only when you have set Express's `trust proxy` / Fastify's
+`trustProxy`. Get that wrong behind a proxy and every request shares one address;
+get it wrong on a direct connection and anyone can forge theirs. If you cannot
+resolve the address honestly, pass `getClientIp: () => undefined` — the per-IP
+cap is then skipped rather than enforced against a value anyone can set.
+
+### 9.5.1 Response timing
+
+Every auth response is held to a floor plus jitter — `minAuthResponseMillis`
+(default 100) and `responseJitterMillis` (default 25) — before it is returned
+(RFC `§15`).
+
+The generic 401 hides *which* check failed; latency does not. An unknown npub
+answers in microseconds while a request that reached signature verification and a
+store round-trip takes measurably longer, which is enough to enumerate who has an
+account. Jitter alone would not fix that — it hides individual samples but not
+the mean — so the floor is what does the work and the jitter only blunts
+averaging attacks against the floor itself.
+
+Set `minAuthResponseMillis: 0` in tests. Leave it alone in production: 100 ms on
+a login is not a latency budget anyone notices, and it is the whole defence.
 
 `/auth/complete` also does a Schnorr verification (`verifyEvent`) **before** any
 store lookup (`packages/nap-core/src/validate.ts:82`), which is the right order
@@ -2553,8 +2616,9 @@ normal authenticated requests as an explicit non-goal).
 - **`getExternalBaseUrl` correctness** (§9.4) — wrong from day one means nothing
   works, and the error is a generic 401.
 - **The raw-body ordering** (§5.2) — wrong means a 500 on every completion.
-- **Rate limiting on `/auth/init`** (§9.5) — you are exposing a new
-  unauthenticated write endpoint to the internet.
+- **Setting `rateLimiter`** (§9.5) — you are exposing a new unauthenticated
+  write endpoint to the internet, and this is the one bound of the three that is
+  off until you configure it.
 - **Cookie attributes on logout** (§6.1) — `clearCookieOptions` must match the
   attributes you set the cookie with, or `/auth/logout` revokes server-side while
   the browser keeps a now-dead cookie.
@@ -2582,33 +2646,39 @@ warnings rather than boilerplate:
   build step, no `dist/`, no `files` field, no `publishConfig`. These are not
   npm-publishable as-is (§11.4).
 
-### 11.2 RFC-specified, not implemented in 0.2.0
+### 11.2 RFC-specified, not implemented in 0.4.0
 
 Collected from the preceding sections:
 
 | RFC requirement | Where | Status |
 |---|---|---|
 | Refresh tokens, rotating (`§14.1`) | `docs/NAP-v2-RFC.md:416` | Types exist (`AuthSuccessResponse.refresh_token`), never populated. No refresh endpoint. |
-| Rate limiter as a pluggable interface (`§17.1`) | `docs/NAP-v2-RFC.md:539` | No `RateLimiter` interface. Error codes and 429 status exist; nothing emits them. |
-| Bounded outstanding challenges per IP / per npub (`§17.4`) | `docs/NAP-v2-RFC.md:573` | Not implemented. |
-| Bounded `/auth/complete` body size (`§17.4`) | `docs/NAP-v2-RFC.md:575` | Not configurable through the adapter. |
 | `AudienceResolver` and `RawBodyExtractor` as named interfaces (`§20.2`) | `docs/NAP-v2-RFC.md:671` | Present in spirit — `getExternalBaseUrl` and the adapters' raw-body capture — but not as the named, swappable interfaces the RFC asks for. |
-| Permissions re-evaluated per request (`§15`) | `docs/NAP-v2-RFC.md:466` | Snapshot at login only (§3.4). |
-| ACL removal revokes active sessions (`§15`) | `docs/NAP-v2-RFC.md:467` | `revokeByPrincipal()` exists; nothing calls it. |
-| Bounded timing differences / jitter (`§15`) | `docs/NAP-v2-RFC.md:473` | No jitter or constant-time padding. |
 | Recommended metrics (`§19.3`) | `docs/NAP-v2-RFC.md:614` | None emitted; derivable from `AuditLogger`. |
 | Official test vectors (`§20.3`) | `docs/NAP-v2-RFC.md:676` | No `test-vectors/` directory. The unit tests cover the same cases but are not exported as vectors for other implementations. |
-| Challenge TTL ≤ 60s enforced (`§10.1`) | `docs/NAP-v2-RFC.md:198` | Default is 60; the ceiling is not validated. |
-| `failed_terminal` challenge state (`§13`) | `docs/NAP-v2-RFC.md:335` | Declared in `ChallengeState` (`packages/nap-core/src/types.ts:44`); no code ever sets it. §13.4's "cap failures per challenge" is unimplemented. |
 | WebSocket / relay profiles | `docs/NAP-v2-RFC.md:118` | Correctly out of scope, per `§20.4`. |
 
-### 11.3 Implemented but incomplete
+Closed in 0.4.0, kept here so the diff against an older deployment is visible:
 
-- **Step-up auth.** `requireStepUp()` guards, `X-Step-Up-Token` parsing,
-  `step_up_token` fields, and `PermissionDefinition.stepUp` all exist. Nothing
-  issues a step-up token, and nothing connects `stepUp: true` on a permission to
-  the guard. `session.stepUp()` throws (§6.1). This is a half-built feature —
-  the plumbing is there, the source is not.
+| RFC requirement | Where | How it landed |
+|---|---|---|
+| Rate limiter as a pluggable interface (`§17.1`) | `docs/NAP-v2-RFC.md:539` | `RateLimiter` interface + `createInMemoryRateLimiter()`; adapters return 429 with `Retry-After` (§9.5). Off unless configured. |
+| Bounded outstanding challenges per IP / per npub (`§17.4`) | `docs/NAP-v2-RFC.md:573` | `maxOutstandingChallengesPerNpub` / `PerIp`, via `ChallengeStore.countOutstanding()` (§9.5). On by default. |
+| Bounded `/auth/complete` body size (`§17.4`) | `docs/NAP-v2-RFC.md:575` | `bodyLimit` (Express) / `bodyLimitBytes` (Fastify), default 1 kB (§9.5). |
+| Permissions re-evaluated per request (`§15`) | `docs/NAP-v2-RFC.md:466` | `resolveEffectiveAcl()` behind the guards' `aclResolver` option (§3.4). Opt-in per guard. |
+| ACL removal revokes active sessions (`§15`) | `docs/NAP-v2-RFC.md:467` | Guard-side on denial, or `createRevokingAclStore()` at the ACL write (§3.4). |
+| Bounded timing differences / jitter (`§15`) | `docs/NAP-v2-RFC.md:473` | `minAuthResponseMillis` floor + `responseJitterMillis` (§9.5.1). On by default. |
+| Challenge TTL ≤ 60s enforced (`§10.1`) | `docs/NAP-v2-RFC.md:198` | `createNapServer()` throws outside `1..60` (§9.1). |
+| `failed_terminal` challenge state (`§13`) | `docs/NAP-v2-RFC.md:335` | `maxFailuresPerChallenge` (default 5) via `ChallengeStore.recordFailure()`; further attempts get `NAP_COMPLETE_FAILED_TERMINAL`. |
+
+> **Custom `ChallengeStore` implementations:** `countOutstanding()` and
+> `recordFailure()` are **optional** members, so an existing store keeps
+> compiling — but a store that does not implement them silently skips the
+> corresponding cap. The bundled in-memory and Postgres stores implement both.
+> The Postgres store needs the new `client_ip` and `failure_count` columns
+> (§5.5).
+
+### 11.3 Implemented but incomplete
 - ~~**`/auth/session` and `/auth/logout`.**~~ **Fixed.** Both adapters mount all
   four routes. `/auth/session` returns `toPublicSessionView()` — no access token
   in the body — and `/auth/logout` revokes the session and clears the cookie
@@ -2704,7 +2774,8 @@ auditLogger: {
 | **404 on `GET /auth/session` or `POST /auth/logout`** | You wired the init/complete handlers individually instead of mounting `createNapExpressRouter()` / `napFastifyPlugin`, which mount all four. Add `createNapExpressSessionHandler` / `createNapExpressLogoutHandler` (or the Fastify equivalents) (§6.1). |
 | **`NAP step-up response did not include a step-up token`** | `session.stepUp()` cannot work in 0.2.0 — nothing issues step-up tokens (§6.1). |
 | **403 `{"message":"forbidden"}` on a guarded route** | Valid session, but `session.permissions` lacks the key. Remember permissions are a **login-time snapshot** — if you just granted the permission, the user must re-login or you must `revokeByPrincipal()` (§3.4). |
-| **403 `{"message":"step-up required"}`** | `requireStepUp()` found no `X-Step-Up-Token`, a mismatch, or an expired one. In 0.2.0 this is unavoidable unless you populate `step_up_token` yourself. |
+| **403 `{"message":"step-up required"}`** | `requireStepUp()`, or `requirePermission()` with a registry marking the permission `stepUp: true`, found no `X-Step-Up-Token`, a mismatch, or an expired one. Have the client call `session.stepUp()` and resend with the returned token. |
+| **429 with `Retry-After`** | The `rateLimiter` rejected, or the caller is holding more outstanding challenges than `maxOutstandingChallengesPerNpub` / `PerIp` allows (§9.5). Deliberately not a 401. |
 | **401 on every request despite a successful login (cookie mode)** | Missing `credentials: 'include'` on your API calls, or a CORS config without `Access-Control-Allow-Credentials: true` and explicit origins, or `secure: true` on a plain-HTTP dev origin. |
 | **Login works, page reload logs you out** | `resume()` is not being called on mount, or `/auth/session` is not mounted, or the cookie is not being sent — check `credentials: 'include'` and the cookie's `SameSite`/`path` (§6.1). |
 | **Logout returns 204 but the browser keeps the cookie** | `clearCookieOptions` does not match the attributes the cookie was set with. `path` and `domain` must be identical or the browser treats it as a different cookie (§6.1). |
