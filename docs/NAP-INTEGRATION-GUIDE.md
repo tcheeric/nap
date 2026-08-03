@@ -1185,9 +1185,9 @@ const session = createNapSession({
 });
 ```
 
-There is **no cookie option**. Through 0.3.0 the type declared
+There is **no cookie option**. Through 0.5.0 the type declared
 `cookie?: { name?: string }` and `createNapSession()` never read it; rather than
-invent a meaning for it, 0.4.0 removed it. The cookie's name, attributes, and
+invent a meaning for it, the next release removed it. The cookie's name, attributes, and
 lifetime belong to the server, the browser attaches it without being asked, and
 an `HttpOnly` cookie is not readable from this side even if it were named. If
 you were setting it, delete the line — it never did anything.
@@ -2762,7 +2762,8 @@ Closed in 0.4.0, kept here so the diff against an older deployment is visible:
   four routes. `/auth/session` returns `toPublicSessionView()` — no access token
   in the body — and `/auth/logout` revokes the session and clears the cookie
   idempotently (§6.1).
-- ~~**`NapClientOptions.cookie`.**~~ **Fixed.** Removed in 0.4.0. It was declared
+- ~~**`NapClientOptions.cookie`.**~~ **Fixed.** Present through 0.5.0, removed
+  after. It was declared
   and never read, and a browser client has no use for the name of a cookie the
   server sets and the browser attaches on its own (§6.1).
 - ~~**`useNapCallbacks().onLogin`.**~~ **Fixed.** `NapClientOptions` accepts
