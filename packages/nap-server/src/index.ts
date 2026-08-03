@@ -15,8 +15,10 @@ export {
   issueChallenge,
   toPublicAuthFailure,
   toPublicAuthSuccess,
+  toPublicSessionView,
   verifyCompletion,
 } from './server.js';
+export type { PublicSessionView } from './server.js';
 export type {
   AclRecord,
   AclStore,

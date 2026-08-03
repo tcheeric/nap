@@ -286,6 +286,74 @@ describe('nap-adapter-fastify', () => {
     await app.close();
   });
 
+  it('returns the current session from GET /auth/session', async () => {
+    const options = buildServerOptions();
+    await seedSession(options.sessionStore as InMemorySessionStore);
+    const app = await createApp(options);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/auth/session',
+      headers: { cookie: 'session=token-1' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().principal.npub).toBe(NPUB);
+    expect(response.json().roles).toEqual(['merchant']);
+
+    // In cookie mode the token is HttpOnly. Echoing it into a JSON body would
+    // hand a working bearer credential to any script on the page.
+    expect(response.json().access_token).toBeUndefined();
+    expect(response.json().step_up_token).toBeUndefined();
+
+    await app.close();
+  });
+
+  it('returns 401 from GET /auth/session without a session', async () => {
+    const app = await createApp(buildServerOptions());
+
+    const response = await app.inject({ method: 'GET', url: '/auth/session' });
+
+    expect(response.statusCode).toBe(401);
+
+    await app.close();
+  });
+
+  it('revokes the session and clears the cookie on POST /auth/logout', async () => {
+    const options = buildServerOptions();
+    await seedSession(options.sessionStore as InMemorySessionStore);
+    const app = await createApp(options);
+
+    const logout = await app.inject({
+      method: 'POST',
+      url: '/auth/logout',
+      headers: { cookie: 'session=token-1' },
+    });
+
+    expect(logout.statusCode).toBe(204);
+    expect(logout.headers['set-cookie']).toContain('session=;');
+
+    const after = await app.inject({
+      method: 'GET',
+      url: '/auth/session',
+      headers: { cookie: 'session=token-1' },
+    });
+
+    expect(after.statusCode).toBe(401);
+
+    await app.close();
+  });
+
+  it('returns 204 from POST /auth/logout when no session exists', async () => {
+    const app = await createApp(buildServerOptions());
+
+    const response = await app.inject({ method: 'POST', url: '/auth/logout' });
+
+    expect(response.statusCode).toBe(204);
+
+    await app.close();
+  });
+
   it('fails startup validation for unknown permission keys', () => {
     const sessionStore = new InMemorySessionStore();
     requirePermission('unknown:permission', {
