@@ -9,6 +9,8 @@ All packages in this workspace share a single version.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-04
+
 ### Added
 
 - **Rotating refresh tokens** (RFC §14.1). Set `refreshTtlSeconds` and the completion
@@ -56,6 +58,27 @@ All packages in this workspace share a single version.
   and Fastify adapters. `getExternalBaseUrl` stays as the documented shorthand; supplying
   both it and `audienceResolver` throws at construction, because a wiring mistake in the
   security-relevant audience should fail at startup rather than as a uniform 401.
+
+### Fixed
+
+- **A `MetricsRecorder` that throws no longer fails the request.** The interface documented
+  that failures are swallowed and nothing caught them, so a metrics backend merely being
+  down turned the uniform 401 into a 500 on exactly one branch — the timing side channel
+  the uniform failure exists to close, in a louder form. Swallowed and deliberately not
+  logged either: a broken sink must not be able to flood the caller's audit logger.
+- **The adapters refuse to start when `refreshTtlSeconds` is combined with the default
+  `writeNapCookieSuccess` body.** It replies `{status:"ok"}`, so the refresh token was
+  minted, stored, and dropped on the floor, leaving a client that could never present the
+  credential `/auth/refresh` exists to accept — inert rather than insecure, but silently
+  inert. A `transformBody` that returns the token is accepted; the marker is a
+  `Symbol.for`, so an adapter loaded twice through different paths cannot fail the check
+  open.
+- **`NAP_REFRESH_REUSED` names the principal.** The pubkey was landing inside `details`,
+  because `logFailure` has nowhere else to put one. It is the one event that says a
+  credential leaked, so a sink alerting on `event.pubkey` must be able to name the
+  principal whose session just ended.
+- Integration guide: the JDBC schema section listed one migration and quoted manual DDL for
+  columns `V3` now creates. It lists V1–V3 and what each adds.
 
 ## [0.4.0] - 2026-08-03
 
