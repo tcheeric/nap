@@ -448,6 +448,62 @@ describe('nap-adapter-fastify', () => {
     await app.close();
   });
 
+  it('clears the cookie with the attributes writeNapCookieSuccess set it with', async () => {
+    const options = buildServerOptions();
+    await seedSession(options.sessionStore as InMemorySessionStore);
+    const app = Fastify();
+    await app.register(napFastifyPlugin, {
+      routePrefix: '/auth',
+      server: options,
+      getExternalBaseUrl: () => 'https://api.example.com',
+      // No clearCookieOptions: the handler has to copy these, or the browser —
+      // which matches a deletion on name + domain + path — keeps the cookie.
+      writeSuccess: writeNapCookieSuccess('session', {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'lax',
+        domain: '.example.com',
+        maxAge: 900,
+      }),
+    });
+
+    const logout = await app.inject({
+      method: 'POST',
+      url: '/auth/logout',
+      headers: { cookie: 'session=token-1' },
+    });
+
+    expect(logout.statusCode).toBe(204);
+    const setCookie = logout.headers['set-cookie'] as string;
+    expect(setCookie).toContain('Domain=.example.com');
+    expect(setCookie).toContain('SameSite=Lax');
+    expect(setCookie).toContain('HttpOnly');
+    expect(setCookie).toContain('Secure');
+    // The set's lifetime is the one attribute that must not carry over.
+    expect(setCookie).toContain('Max-Age=0');
+    expect(setCookie).not.toContain('Max-Age=900');
+
+    await app.close();
+  });
+
+  it('lets clearCookieOptions override the attributes copied from the set', async () => {
+    const options = buildServerOptions();
+    const app = Fastify();
+    await app.register(napFastifyPlugin, {
+      routePrefix: '/auth',
+      server: options,
+      getExternalBaseUrl: () => 'https://api.example.com',
+      writeSuccess: writeNapCookieSuccess('session', { domain: '.example.com', path: '/app' }),
+      clearCookieOptions: { path: '/' },
+    });
+
+    const logout = await app.inject({ method: 'POST', url: '/auth/logout' });
+
+    expect(logout.headers['set-cookie'] as string).not.toContain('Domain=');
+
+    await app.close();
+  });
+
   it('returns 204 from POST /auth/logout when no session exists', async () => {
     const app = await createApp(buildServerOptions());
 

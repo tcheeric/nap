@@ -82,7 +82,7 @@ Each phase is independently verifiable, so a failure tells you which layer broke
 | Phase | Do | Done when |
 |---|---|---|
 | **0** | Router mounted, in-memory stores, bearer mode, pinned base URL, `AuditLogger` wired. No frontend. | `curl` completes `/auth/init` → `/auth/complete` and gets a session |
-| **1** | Swap in `@imani/nap-store-postgres`; switch to cookie mode via `writeNapCookieSuccess`; set `clearCookieOptions` to match | Sessions survive a server restart; logout clears the cookie |
+| **1** | Swap in `@imani/nap-store-postgres`; switch to cookie mode via `writeNapCookieSuccess` | Sessions survive a server restart; logout clears the cookie |
 | **2** | `createNapSession` + `createNip07Signer`; `resume()` on mount; `isRestoringSession` loading state | Reload keeps you logged in without a signing prompt |
 | **3** | Permission registry; `requirePermission` guards; `validatePermissions()` after routes register | A typo'd permission key fails at startup |
 | **4** | `rateLimiter` wired; outstanding-challenge caps sized; `aclResolver` passed to the guards; cookie flags reviewed | `/auth/init` is no longer an uncapped write, and revoking access takes effect on the next request |
@@ -119,7 +119,7 @@ Each phase is independently verifiable, so a failure tells you which layer broke
 **Before shipping**
 
 - [ ] HTTPS; cookie is `HttpOnly`, `Secure`, `SameSite` (§9.3)
-- [ ] `clearCookieOptions` matches the attributes the cookie was set with, or logout leaves a dead cookie (§6.1)
+- [ ] The cookie is set by `writeNapCookieSuccess` — the logout clear copies its attributes. A hand-rolled `writeSuccess` needs `clearCookieOptions` to match, or logout leaves a dead cookie (§6.1)
 - [ ] `nostr-tools` deduped to a single copy (§11.4)
 - [ ] Clock skew tolerance reviewed (§9.1)
 
@@ -1216,9 +1216,12 @@ The `NapSession` surface (`packages/nap-client-web/src/types.ts:38`):
 >
 > `POST /auth/logout` is idempotent — 204 whether or not a session was found — so
 > a client clearing local state never has to distinguish "logged out" from "was
-> already logged out". It clears the cookie using `clearCookieOptions`, which
-> **must match the attributes you set it with** (`path`, `domain`) or the browser
-> keeps the cookie.
+> already logged out". It clears the cookie with the attributes
+> `writeNapCookieSuccess` was given — the browser matches a deletion on
+> name + domain + path, so a clear that guesses at them leaves the cookie in
+> place. `clearCookieOptions` overrides that copy, and is only needed when
+> `writeSuccess` is your own function and there is nothing to copy from.
+> The lifetime is deliberately not copied: the clear sets its own.
 >
 > **`stepUp()` works as of 0.4.0.** It re-runs the full init/complete exchange
 > with `{"challenge_id": "...", "step_up": true}` as the body, and the server
@@ -2674,8 +2677,9 @@ normal authenticated requests as an explicit non-goal).
 - **The raw-body ordering** (§5.2) — wrong means a 500 on every completion.
 - **Sizing `rateLimiter`** (§9.5) — the default counts in one process, so behind
   a load balancer the real rate is N× what the number says.
-- **Cookie attributes on logout** (§6.1) — `clearCookieOptions` must match the
-  attributes you set the cookie with, or `/auth/logout` revokes server-side while
+- **Cookie attributes on logout** (§6.1) — handled for you as long as the cookie
+  is set by `writeNapCookieSuccess`; a hand-rolled `writeSuccess` needs
+  `clearCookieOptions` to match it, or `/auth/logout` revokes server-side while
   the browser keeps a now-dead cookie.
 
 ---
@@ -2869,7 +2873,7 @@ auditLogger: {
 | **429 with `Retry-After`** | The `rateLimiter` rejected, or the caller is holding more outstanding challenges than `maxOutstandingChallengesPerNpub` / `PerIp` allows (§9.5). Deliberately not a 401. |
 | **401 on every request despite a successful login (cookie mode)** | Missing `credentials: 'include'` on your API calls, or a CORS config without `Access-Control-Allow-Credentials: true` and explicit origins, or `secure: true` on a plain-HTTP dev origin. |
 | **Login works, page reload logs you out** | `resume()` is not being called on mount, or `/auth/session` is not mounted, or the cookie is not being sent — check `credentials: 'include'` and the cookie's `SameSite`/`path` (§6.1). |
-| **Logout returns 204 but the browser keeps the cookie** | `clearCookieOptions` does not match the attributes the cookie was set with. `path` and `domain` must be identical or the browser treats it as a different cookie (§6.1). |
+| **Logout returns 204 but the browser keeps the cookie** | The clear does not match the attributes the cookie was set with — `path` and `domain` must be identical or the browser treats it as a different cookie. The adapters copy them from `writeNapCookieSuccess`, so this means either a hand-rolled `writeSuccess`, or a `clearCookieOptions` that overrides the copy with something narrower (§6.1). |
 | **React: `useNapSession must be used within a <NapProvider>`** | Self-explanatory (`packages/nap-react/src/NapProvider.tsx:81`). |
 | **Login fails intermittently under load / with two server processes** | `InMemoryChallengeStore` is per-process. Nothing is shared. Move to Postgres (§5.4). |
 | **`nap_challenges` growing without bound** | Nobody calls `markExpired()`, and it only flips `state` anyway — it never deletes. Add a sweeper (§5.4). |

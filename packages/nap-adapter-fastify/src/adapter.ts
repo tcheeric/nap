@@ -62,7 +62,16 @@ export interface NapFastifyOptions {
   audienceResolver?: AudienceResolver<FastifyRequest>;
   /** Cookie carrying the access token, read by `/auth/session` and cleared by `/auth/logout`. Defaults to `session`. */
   cookieName?: string;
-  /** Attributes used when clearing the cookie on logout. Must match those used to set it, or the browser keeps it. Defaults to `{ path: '/' }`. */
+  /**
+   * Attributes used when clearing the cookie on logout. They must match the ones it was
+   * set with — a browser matches a deletion against name + domain + path — or the browser
+   * keeps it and the logout is cosmetic.
+   *
+   * Leave it unset and the handler reuses the attributes `writeNapCookieSuccess` was given,
+   * which is the only pairing that cannot drift. Set it only to override that, e.g. when
+   * `writeSuccess` is your own function and the adapter has nothing to copy. Falls back to
+   * `{ path: '/' }` when there is neither.
+   */
   clearCookieOptions?: SerializeOptions;
   /**
    * Maximum accepted body size on the NAP routes, in bytes. Defaults to 1024.
@@ -294,6 +303,32 @@ function discardsTokens(writeSuccess: NapFastifyOptions['writeSuccess']): boolea
   return Boolean(writeSuccess && (writeSuccess as unknown as Record<symbol, unknown>)[DISCARDS_TOKENS]);
 }
 
+/**
+ * Carries the attributes `writeNapCookieSuccess` set the cookie with, so `/auth/logout`
+ * can clear it with the same ones. A browser matches a deletion against name + domain +
+ * path and drops a `Set-Cookie` whose `SameSite` it disagrees with, so a clear guessing
+ * `{ path: '/' }` at a cookie set with a domain leaves it in the jar — a logout that
+ * returns 204 and does not log out. `Symbol.for` for the same reason as above.
+ */
+const COOKIE_ATTRS = Symbol.for('nap.writeSuccess.cookieAttrs');
+
+/**
+ * `maxAge` and `expires` are dropped deliberately: they are the one pair that must *not*
+ * carry over. The clear sets `maxAge: 0`, and an inherited `expires` in the future would
+ * argue with it — leave the lifetime to the caller of this.
+ */
+function setCookieAttrsOf(writeSuccess: NapFastifyOptions['writeSuccess']): SerializeOptions | undefined {
+  const attrs = writeSuccess && (writeSuccess as unknown as Record<symbol, unknown>)[COOKIE_ATTRS];
+
+  if (!attrs) {
+    return undefined;
+  }
+
+  const { maxAge: _maxAge, expires: _expires, ...rest } = attrs as SerializeOptions;
+
+  return rest;
+}
+
 function rawBodyOf(req: FastifyRequest, options: NapFastifyOptions): Uint8Array | null {
   return options.rawBodyExtractor ? options.rawBodyExtractor.extract(req) : getRawBody(req);
 }
@@ -390,6 +425,11 @@ export function writeNapCookieSuccess(
   // A `transformBody` is the caller taking the body over, so only the default is marked.
   if (!transformBody) {
     Object.defineProperty(write, DISCARDS_TOKENS, { value: true });
+  }
+
+  // So the logout handler can clear with what the set used, instead of guessing `path: '/'`.
+  if (cookieOptions) {
+    Object.defineProperty(write, COOKIE_ATTRS, { value: cookieOptions });
   }
 
   return write;
@@ -592,7 +632,7 @@ export function createNapFastifyLogoutHandler(options: NapFastifyOptions): Route
       'set-cookie',
       serialize(options.cookieName ?? 'session', '', {
         path: '/',
-        ...options.clearCookieOptions,
+        ...(options.clearCookieOptions ?? setCookieAttrsOf(options.writeSuccess)),
         maxAge: 0,
       })
     );

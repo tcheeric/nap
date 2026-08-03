@@ -9,6 +9,19 @@ All packages in this workspace share a single version.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/auth/logout` now clears the cookie with the attributes it was set with** in both
+  adapters. `writeNapCookieSuccess` stamps its `cookieOptions` onto the `writeSuccess`
+  function it returns, and the logout handler clears with those unless
+  `clearCookieOptions` overrides them. Previously the two were unrelated fields and the
+  clear defaulted to `{ path: '/' }`, so a cookie set with a `domain` — which a browser
+  matches a deletion against, along with name and path — survived a logout that returned
+  204. The lifetime is deliberately not copied: on Express a surviving `maxAge` would be
+  fed back through `res.cookie` and reissue the cookie the clear exists to remove.
+  `clearCookieOptions` keeps working and still wins, so a hand-rolled `writeSuccess` is
+  unaffected.
+
 ### Removed
 
 - **`NapClientOptions.cookie`** in `@imani/nap-client-web`. It was declared and never
