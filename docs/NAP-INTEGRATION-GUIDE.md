@@ -889,6 +889,14 @@ added. A third argument lets you keep part of the body — e.g.
 so the SPA can render without a second round trip. The guards read the cookie
 automatically (`cookieName` defaults to `session`).
 
+The name you pass to `writeNapCookieSuccess` and the adapter's `cookieName` are two
+separate settings and **both have to be the same string** — the writer sets the
+cookie, and `cookieName` is what `/auth/session`, the guards, and the logout clear
+look for. Set only the first and login succeeds while every later read misses, so
+`resume()` 401s on each page load and logout clears a cookie that was never written.
+The adapters refuse to wire that up rather than serve it: building the router (or
+registering the plugin) throws naming both strings.
+
 `writeFailure` is the matching hook for the 401 path
 (`adapter.ts:33`); it receives the internal `VerifyCompleteFailure` including
 the `NapErrorCode`, which is useful for metrics. Do not leak the code to the

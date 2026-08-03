@@ -708,6 +708,28 @@ describe('nap-adapter-express', () => {
     ).not.toThrow();
   });
 
+  it('refuses to start when the cookie writer writes a name nothing else reads', () => {
+    expect(() =>
+      createNapExpressRouter({
+        server: buildServerOptions(),
+        getExternalBaseUrl: () => 'https://api.example.com',
+        // cookieName omitted, so every read looks for `session`.
+        writeSuccess: writeNapCookieSuccess('merchant_session'),
+      })
+    ).toThrow(/writes 'merchant_session' but the adapter reads 'session'/);
+  });
+
+  it('starts once cookieName agrees with the name the writer uses', () => {
+    expect(() =>
+      createNapExpressRouter({
+        server: buildServerOptions(),
+        getExternalBaseUrl: () => 'https://api.example.com',
+        cookieName: 'merchant_session',
+        writeSuccess: writeNapCookieSuccess('merchant_session'),
+      })
+    ).not.toThrow();
+  });
+
   it('refuses to build a router with neither audience source', () => {
     expect(() =>
       createNapExpressRouter({ server: buildServerOptions() })

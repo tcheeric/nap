@@ -838,4 +838,32 @@ describe('nap-adapter-fastify', () => {
         .after()
     ).resolves.toBeUndefined();
   });
+
+  it('refuses to start when the cookie writer writes a name nothing else reads', async () => {
+    await expect(
+      Fastify()
+        .register(napFastifyPlugin, {
+          routePrefix: '/auth',
+          server: buildServerOptions(),
+          getExternalBaseUrl: () => 'https://api.example.com',
+          // cookieName omitted, so every read looks for `session`.
+          writeSuccess: writeNapCookieSuccess('merchant_session'),
+        })
+        .after()
+    ).rejects.toThrow(/writes 'merchant_session' but the adapter reads 'session'/);
+  });
+
+  it('starts once cookieName agrees with the name the writer uses', async () => {
+    await expect(
+      Fastify()
+        .register(napFastifyPlugin, {
+          routePrefix: '/auth',
+          server: buildServerOptions(),
+          getExternalBaseUrl: () => 'https://api.example.com',
+          cookieName: 'merchant_session',
+          writeSuccess: writeNapCookieSuccess('merchant_session'),
+        })
+        .after()
+    ).resolves.toBeUndefined();
+  });
 });

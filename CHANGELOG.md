@@ -9,6 +9,18 @@ All packages in this workspace share a single version.
 
 ## [Unreleased]
 
+### Added
+
+- **Both adapters refuse to start when the cookie name the writer uses is not the one
+  they read.** `writeNapCookieSuccess` takes the name as its own argument, while
+  `/auth/session`, the guards, and the logout clear all go through `cookieName`. Nothing
+  forced the two to agree, and the failure was mute: login returned 200 and set the
+  cookie, then every read looked for a different name and 401'd — `resume()` logging the
+  user out on each page load, logout clearing a cookie that was never written. Building
+  the router or registering the plugin now throws, naming both strings. Inert rather than
+  insecure, but silently inert, which is why it fails at wiring time — same reason as the
+  existing `refreshTtlSeconds` check.
+
 ### Fixed
 
 - **`/auth/logout` now clears the cookie with the attributes it was set with** in both

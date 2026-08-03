@@ -329,6 +329,38 @@ function setCookieAttrsOf(writeSuccess: NapFastifyOptions['writeSuccess']): Seri
   return rest;
 }
 
+/** The name `writeNapCookieSuccess` writes under, so wiring can check it against `cookieName`. */
+const COOKIE_NAME = Symbol.for('nap.writeSuccess.cookieName');
+
+/**
+ * `writeNapCookieSuccess` takes the cookie name as its own argument, but every read of that
+ * cookie — `/auth/session`, the guards, the logout clear — goes through `options.cookieName`.
+ * Nothing forces the two to be the same string, and when they are not, the failure is mute:
+ * login returns 200 and sets the cookie, then `/auth/session` looks for a different name,
+ * finds nothing, and 401s. Every page load logs the user back out, and logout clears a
+ * cookie that was never set.
+ *
+ * So refuse to wire it. Inert rather than insecure, but silently inert is the case worth
+ * failing loudly on — the same reason `assertRefreshIsWirable` exists.
+ */
+function assertCookieNamesAgree(options: NapFastifyOptions): void {
+  const written = options.writeSuccess && (options.writeSuccess as unknown as Record<symbol, unknown>)[COOKIE_NAME];
+
+  if (typeof written !== 'string') {
+    return;
+  }
+
+  const read = options.cookieName ?? 'session';
+
+  if (written !== read) {
+    throw new Error(
+      `NAP cookie name mismatch: writeNapCookieSuccess writes '${written}' but the adapter ` +
+        `reads '${read}'. /auth/session and /auth/logout would look for a cookie that is never ` +
+        `set. Pass cookieName: '${written}' alongside writeSuccess, or write under '${read}'.`
+    );
+  }
+}
+
 function rawBodyOf(req: FastifyRequest, options: NapFastifyOptions): Uint8Array | null {
   return options.rawBodyExtractor ? options.rawBodyExtractor.extract(req) : getRawBody(req);
 }
@@ -432,6 +464,8 @@ export function writeNapCookieSuccess(
     Object.defineProperty(write, COOKIE_ATTRS, { value: cookieOptions });
   }
 
+  Object.defineProperty(write, COOKIE_NAME, { value: cookieName });
+
   return write;
 }
 
@@ -470,6 +504,7 @@ export function createNapFastifyInitHandler(options: NapFastifyOptions): RouteHa
 
 export function createNapFastifyCompleteHandler(options: NapFastifyOptions): RouteHandlerMethod {
   assertOneAudienceSource(options);
+  assertCookieNamesAgree(options);
 
   return async (req, reply) => {
     const rawBody = rawBodyOf(req, options);
