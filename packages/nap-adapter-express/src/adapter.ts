@@ -9,6 +9,7 @@ import {
   issueChallenge,
   isMalformedRequestFailure,
   isVerifyFailure,
+  refreshSession,
   verifyCompletion,
   type AclResolver,
   type AudienceResolver,
@@ -284,6 +285,31 @@ function rawBodyOf(req: Request, options: NapExpressOptions): Uint8Array | null 
   return options.rawBodyExtractor ? options.rawBodyExtractor.extract(req) : getRawBody(req);
 }
 
+function bearerTokenOf(req: Request): string | undefined {
+  const header = req.header('authorization');
+
+  return header?.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : undefined;
+}
+
+/**
+ * A `refreshTtlSeconds` the store cannot honour would mint refresh tokens that
+ * every `/auth/refresh` then rejects — indistinguishable, from the client, from
+ * a stolen token. It is a wiring error, so it surfaces at startup.
+ */
+function assertRefreshIsWirable(options: NapExpressOptions): void {
+  const store = options.server.sessionStore;
+
+  if (!options.server.refreshTtlSeconds) {
+    throw new Error('NAP /auth/refresh requires server.refreshTtlSeconds to be set');
+  }
+
+  if (!store.getByRefreshToken || !store.rotateRefreshToken) {
+    throw new Error(
+      'NAP refreshTtlSeconds requires a SessionStore implementing getByRefreshToken and rotateRefreshToken'
+    );
+  }
+}
+
 function issueChallengeFailure(res: Response, result: Exclude<IssueChallengeResult, { ok: true }>): void {
   if (result.code === 'NAP_INIT_RATE_LIMITED') {
     rateLimited(res, result.retryAfterSeconds);
@@ -462,6 +488,51 @@ export function createNapExpressLogoutHandler(options: NapExpressOptions): Reque
   };
 }
 
+/**
+ * `POST /auth/refresh` — exchanges a rotating refresh token for a new access
+ * token (RFC §14.1). The token is read from `Authorization: Bearer`, never a
+ * cookie: a cookie would be attached by the browser to any request to the
+ * origin, which is exactly what a credential this long-lived must not be.
+ *
+ * Registered only when `refreshTtlSeconds` is configured.
+ */
+export function createNapExpressRefreshHandler(options: NapExpressOptions): RequestHandler {
+  assertRefreshIsWirable(options);
+
+  return async (req, res, next) => {
+    try {
+      const result = await refreshSession(
+        {
+          refreshToken: bearerTokenOf(req),
+          clientIp: clientIpOf(req, options),
+        },
+        options.server
+      );
+
+      if (!result.ok) {
+        if (result.code === 'NAP_REFRESH_RATE_LIMITED') {
+          rateLimited(res, result.retryAfterSeconds);
+          return;
+        }
+
+        defaultWriteFailure(res);
+        return;
+      }
+
+      const body = toPublicAuthSuccess(result.session);
+
+      if (options.writeSuccess) {
+        await options.writeSuccess({ req, res, body });
+        return;
+      }
+
+      res.status(200).json(body);
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
 export function createNapExpressRouter(options: NapExpressOptions): Router {
   const router = express.Router();
 
@@ -470,6 +541,10 @@ export function createNapExpressRouter(options: NapExpressOptions): Router {
   router.post('/complete', createNapExpressCompleteHandler(options));
   router.get('/session', createNapExpressSessionHandler(options));
   router.post('/logout', createNapExpressLogoutHandler(options));
+
+  if (options.server.refreshTtlSeconds) {
+    router.post('/refresh', createNapExpressRefreshHandler(options));
+  }
 
   return router;
 }

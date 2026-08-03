@@ -18,6 +18,7 @@ export {
   createSystemClock,
   issueChallenge,
   MAX_CHALLENGE_TTL_SECONDS,
+  refreshSession,
   constantTimeEquals,
   resolveEffectiveAcl,
   toPublicAuthFailure,
@@ -28,6 +29,8 @@ export {
 export type {
   EffectiveAcl,
   PublicSessionView,
+  RefreshSessionInput,
+  RefreshSessionOutcome,
   ResolveEffectiveAclOptions,
 } from './server.js';
 export type {
@@ -61,6 +64,7 @@ export type {
   RateLimiter,
   RecordChallengeFailureResult,
   RoleDefinition,
+  RotateRefreshTokenParams,
   SessionStore,
   VerifyCompletionInput,
   VerifyCompletionOutcome,

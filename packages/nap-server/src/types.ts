@@ -97,12 +97,53 @@ export interface ChallengeStore {
   ): Promise<RecordChallengeFailureResult | null>;
 }
 
+export interface RotateRefreshTokenParams {
+  /**
+   * The token the caller presented. The store must only rotate if the row still
+   * holds it — that compare-and-swap is what stops two concurrent refreshes off
+   * one credential from both succeeding.
+   */
+  expectedRefreshToken: string;
+  accessToken: string;
+  refreshToken: string;
+  now: number;
+  expiresAt: number;
+  refreshExpiresAt: number;
+  /** Re-resolved at refresh time, not carried over from login. */
+  roles: string[];
+  permissions: string[];
+}
+
 export interface SessionStore {
   createForChallenge(record: SessionRecord): Promise<SessionRecord>;
   getBySessionId(sessionId: string): Promise<SessionRecord | null>;
   getByAccessToken(token: string): Promise<SessionRecord | null>;
   revokeBySessionId(sessionId: string, now: number): Promise<void>;
   revokeByPrincipal(pubkey: string, now: number): Promise<number>;
+  /**
+   * Look up a session by either its current *or* its previous refresh token
+   * (RFC §14.1). Both, deliberately: returning nothing for a retired token
+   * would make a replay indistinguishable from a made-up one, and the whole
+   * point of rotation is that the difference is detectable.
+   *
+   * Optional so stores written before refresh tokens keep compiling. Leaving it
+   * out means `refreshTtlSeconds` cannot be configured — the adapters refuse to
+   * start rather than serve a `/auth/refresh` that always fails.
+   */
+  getByRefreshToken?(token: string): Promise<SessionRecord | null>;
+  /**
+   * Swap in a new access and refresh token on an existing session, retaining
+   * the outgoing refresh token as `previous_refresh_token`. Returns the updated
+   * record, or null if the session is gone.
+   *
+   * Rotation stays on the one row: the row *is* the token family, so revoking
+   * it on a replay revokes the lineage, and no separate family table has to be
+   * kept in step with it.
+   */
+  rotateRefreshToken?(
+    sessionId: string,
+    params: RotateRefreshTokenParams
+  ): Promise<SessionRecord | null>;
 }
 
 export interface RateLimitDecision {
@@ -113,7 +154,7 @@ export interface RateLimitDecision {
 
 export interface RateLimitKey {
   /** Which endpoint is being called. */
-  scope: 'init' | 'complete';
+  scope: 'init' | 'complete' | 'refresh';
   /** Principal the request claims, when the request names one. */
   npub?: string;
   /**
@@ -265,6 +306,18 @@ export interface NapServerOptions {
   upperBoundGraceSeconds?: number;
   /** Lifetime of a minted step-up token, in seconds. Defaults to 600. */
   stepUpTtlSeconds?: number;
+  /**
+   * Lifetime of a refresh token, in seconds (RFC §14.1). **Unset means no
+   * refresh tokens are issued at all** and `/auth/refresh` refuses everything —
+   * refresh is opt-in, since it trades a longer-lived credential for fewer
+   * NIP-98 signing prompts and only the deployment knows whether that is a
+   * trade it wants.
+   *
+   * The RFC recommends 8 to 24 hours. Setting it requires a `SessionStore` that
+   * implements `getByRefreshToken` and `rotateRefreshToken`; the adapters check
+   * at startup.
+   */
+  refreshTtlSeconds?: number;
   /**
    * Cap on unexpired `issued` challenges per principal (RFC §17.4). Defaults to
    * 10. Requires `ChallengeStore.countOutstanding`; skipped without it.

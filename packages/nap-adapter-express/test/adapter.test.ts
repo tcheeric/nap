@@ -12,6 +12,7 @@ import {
   createRegistryAclResolver,
   type NapServerOptions,
   type PermissionRegistry,
+  type SessionStore,
 } from '@imani/nap-server';
 import {
   createPermissionsRouter,
@@ -550,6 +551,85 @@ describe('nap-adapter-express', () => {
 
     expect(complete.status).toBe(200);
     expect(complete.body.status).toBe('ok');
+  });
+
+  it('rotates a refresh token over POST /auth/refresh', async () => {
+    let seed = 0;
+    const options: NapServerOptions = {
+      ...buildServerOptions(),
+      refreshTtlSeconds: 3600,
+      // The shared fixture's random source is constant, which would make a
+      // rotated token indistinguishable from the one it replaced.
+      randomSource: {
+        randomBytes(length: number) {
+          seed += 1;
+          return new Uint8Array(Array.from({ length }, (_, index) => (index + seed * 7) % 255));
+        },
+      },
+    };
+    const app = createApp(options);
+    const init = await request(app)
+      .post('/auth/init')
+      .set('host', 'api.example.com')
+      .set('x-forwarded-proto', 'https')
+      .send({ npub: NPUB });
+    const completion = await buildAuthCompleteRequest({
+      challenge: init.body,
+      signer: createPrivateKeySigner(PRIVATE_KEY_HEX),
+      createdAt: 1_710_000_000,
+    });
+    const complete = await request(app)
+      .post('/auth/complete')
+      .set('host', 'api.example.com')
+      .set('x-forwarded-proto', 'https')
+      .set('authorization', completion.authorization)
+      .set('content-type', 'application/json')
+      .send(new TextDecoder().decode(completion.rawBody));
+
+    expect(complete.body.refresh_token).toBeTypeOf('string');
+
+    const refreshed = await request(app)
+      .post('/auth/refresh')
+      .set('authorization', `Bearer ${complete.body.refresh_token}`);
+
+    expect(refreshed.status).toBe(200);
+    expect(refreshed.body.access_token).not.toBe(complete.body.access_token);
+    expect(refreshed.body.refresh_token).not.toBe(complete.body.refresh_token);
+
+    // The presented token is now retired, so presenting it again kills the family.
+    const replay = await request(app)
+      .post('/auth/refresh')
+      .set('authorization', `Bearer ${complete.body.refresh_token}`);
+
+    expect(replay.status).toBe(401);
+  });
+
+  it('does not register /auth/refresh when no refresh TTL is configured', async () => {
+    const app = createApp(buildServerOptions());
+
+    const refreshed = await request(app).post('/auth/refresh').set('authorization', 'Bearer x');
+
+    expect(refreshed.status).toBe(404);
+  });
+
+  it('refuses to start when the store cannot honour the configured refresh TTL', () => {
+    const capable = new InMemorySessionStore();
+    // A store predating refresh tokens: it satisfies the required members and
+    // nothing else.
+    const legacy: SessionStore = {
+      createForChallenge: (record) => capable.createForChallenge(record),
+      getBySessionId: (id) => capable.getBySessionId(id),
+      getByAccessToken: (token) => capable.getByAccessToken(token),
+      revokeBySessionId: (id, now) => capable.revokeBySessionId(id, now),
+      revokeByPrincipal: (pubkey, now) => capable.revokeByPrincipal(pubkey, now),
+    };
+
+    expect(() =>
+      createNapExpressRouter({
+        server: { ...buildServerOptions(), sessionStore: legacy, refreshTtlSeconds: 3600 },
+        getExternalBaseUrl: () => 'https://api.example.com',
+      })
+    ).toThrow(/getByRefreshToken and rotateRefreshToken/);
   });
 
   it('refuses to build a router with neither audience source', () => {

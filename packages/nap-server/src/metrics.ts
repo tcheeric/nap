@@ -68,7 +68,9 @@ export function withMetrics(
         metrics.increment(specific);
       }
 
-      if (event.outcome === 'success') {
+      // Keyed on the code, not the outcome: a refresh also succeeds, and it
+      // redeems no challenge.
+      if (event.code === 'NAP_COMPLETE_SUCCESS') {
         // A replayed completion returns the cached session rather than minting
         // one, so it is a retry hit and not a redemption. RFC §13.3 makes that
         // the correct response, which is exactly why the two are counted apart:

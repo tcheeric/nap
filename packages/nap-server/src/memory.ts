@@ -5,6 +5,7 @@ import type {
   ChallengeStore,
   OutstandingChallengeFilter,
   RecordChallengeFailureResult,
+  RotateRefreshTokenParams,
   SessionStore,
 } from './types.js';
 
@@ -109,6 +110,8 @@ export class InMemorySessionStore implements SessionStore {
   private readonly sessionsByChallengeId = new Map<string, SessionRecord>();
   private readonly sessionsById = new Map<string, SessionRecord>();
   private readonly sessionsByAccessToken = new Map<string, SessionRecord>();
+  /** Holds the current *and* previous token per session, so a replay is recognisable. */
+  private readonly sessionsByRefreshToken = new Map<string, SessionRecord>();
 
   async createForChallenge(record: SessionRecord): Promise<SessionRecord> {
     const existing = this.sessionsByChallengeId.get(record.challenge_id);
@@ -121,6 +124,10 @@ export class InMemorySessionStore implements SessionStore {
     this.sessionsByChallengeId.set(record.challenge_id, stored);
     this.sessionsById.set(record.session_id, stored);
     this.sessionsByAccessToken.set(record.access_token, stored);
+
+    if (stored.refresh_token) {
+      this.sessionsByRefreshToken.set(stored.refresh_token, stored);
+    }
 
     return stored;
   }
@@ -154,6 +161,42 @@ export class InMemorySessionStore implements SessionStore {
     }
 
     return count;
+  }
+
+  async getByRefreshToken(token: string): Promise<SessionRecord | null> {
+    return this.sessionsByRefreshToken.get(token) ?? null;
+  }
+
+  async rotateRefreshToken(
+    sessionId: string,
+    params: RotateRefreshTokenParams
+  ): Promise<SessionRecord | null> {
+    const session = this.sessionsById.get(sessionId);
+
+    if (!session || session.refresh_token !== params.expectedRefreshToken) {
+      return null;
+    }
+
+    // The token two rotations back stops being recognisable here. That is the
+    // intended bound: whoever rotated past it already answered for it.
+    if (session.previous_refresh_token) {
+      this.sessionsByRefreshToken.delete(session.previous_refresh_token);
+    }
+
+    this.sessionsByAccessToken.delete(session.access_token);
+
+    session.previous_refresh_token = session.refresh_token;
+    session.refresh_token = params.refreshToken;
+    session.access_token = params.accessToken;
+    session.expires_at = params.expiresAt;
+    session.refresh_expires_at = params.refreshExpiresAt;
+    session.roles = params.roles;
+    session.permissions = params.permissions;
+
+    this.sessionsByAccessToken.set(params.accessToken, session);
+    this.sessionsByRefreshToken.set(params.refreshToken, session);
+
+    return session;
   }
 }
 

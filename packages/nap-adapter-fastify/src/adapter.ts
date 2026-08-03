@@ -18,6 +18,7 @@ import {
   issueChallenge,
   isMalformedRequestFailure,
   isVerifyFailure,
+  refreshSession,
   verifyCompletion,
   type AclResolver,
   type AudienceResolver,
@@ -285,6 +286,31 @@ function rawBodyOf(req: FastifyRequest, options: NapFastifyOptions): Uint8Array 
   return options.rawBodyExtractor ? options.rawBodyExtractor.extract(req) : getRawBody(req);
 }
 
+function bearerTokenOf(req: FastifyRequest): string | undefined {
+  const header = req.headers.authorization;
+
+  return header?.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : undefined;
+}
+
+/**
+ * A `refreshTtlSeconds` the store cannot honour would mint refresh tokens that
+ * every `/auth/refresh` then rejects — indistinguishable, from the client, from
+ * a stolen token. It is a wiring error, so it surfaces at startup.
+ */
+function assertRefreshIsWirable(options: NapFastifyOptions): void {
+  const store = options.server.sessionStore;
+
+  if (!options.server.refreshTtlSeconds) {
+    throw new Error('NAP /auth/refresh requires server.refreshTtlSeconds to be set');
+  }
+
+  if (!store.getByRefreshToken || !store.rotateRefreshToken) {
+    throw new Error(
+      'NAP refreshTtlSeconds requires a SessionStore implementing getByRefreshToken and rotateRefreshToken'
+    );
+  }
+}
+
 function clientIpOf(req: FastifyRequest, options: NapFastifyOptions): string | undefined {
   return options.getClientIp ? options.getClientIp(req) : req.ip;
 }
@@ -446,6 +472,47 @@ function installNapJsonParser(instance: FastifyInstance, bodyLimitBytes = 1024):
 }
 
 /**
+ * `POST /auth/refresh` — exchanges a rotating refresh token for a new access
+ * token (RFC §14.1). The token is read from `Authorization: Bearer`, never a
+ * cookie: a cookie would be attached by the browser to any request to the
+ * origin, which is exactly what a credential this long-lived must not be.
+ *
+ * Registered only when `refreshTtlSeconds` is configured.
+ */
+export function createNapFastifyRefreshHandler(options: NapFastifyOptions): RouteHandlerMethod {
+  assertRefreshIsWirable(options);
+
+  return async (req, reply) => {
+    const result = await refreshSession(
+      {
+        refreshToken: bearerTokenOf(req),
+        clientIp: clientIpOf(req, options),
+      },
+      options.server
+    );
+
+    if (!result.ok) {
+      if (result.code === 'NAP_REFRESH_RATE_LIMITED') {
+        rateLimited(reply, result.retryAfterSeconds);
+        return;
+      }
+
+      defaultWriteFailure(reply);
+      return;
+    }
+
+    const body = toPublicAuthSuccess(result.session);
+
+    if (options.writeSuccess) {
+      await options.writeSuccess({ req, reply, body });
+      return;
+    }
+
+    reply.status(200).send(body);
+  };
+}
+
+/**
  * `GET /auth/session` — returns the current session, or 401 if there is none.
  *
  * The body omits `access_token` (see `toPublicSessionView`): in cookie mode the
@@ -510,6 +577,10 @@ export const napFastifyPlugin: FastifyPluginAsync<NapFastifyOptions> = async (fa
   fastify.post(`${prefix}/complete`, createNapFastifyCompleteHandler(options));
   fastify.get(`${prefix}/session`, createNapFastifySessionHandler(options));
   fastify.post(`${prefix}/logout`, createNapFastifyLogoutHandler(options));
+
+  if (options.server.refreshTtlSeconds) {
+    fastify.post(`${prefix}/refresh`, createNapFastifyRefreshHandler(options));
+  }
 };
 
 export function requirePermission(

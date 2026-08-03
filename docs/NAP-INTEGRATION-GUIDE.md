@@ -52,14 +52,14 @@ unlocked while hostile script runs (§9.7, RFC §28.5).
 
 ### 0.2 The thing that most often surprises people
 
-**The default session TTL is 900 seconds and there are no refresh tokens.**
-`AuthSuccessResponse.refresh_token` exists as a type, but nothing populates it and
-there is no refresh endpoint (§11.2). With a NIP-07 extension that means **a signing
-prompt every 15 minutes**.
+**The default session TTL is 900 seconds and refresh tokens are off by default.**
+With a NIP-07 extension that means **a signing prompt every 15 minutes** until you
+set `refreshTtlSeconds`, which registers `POST /auth/refresh` and starts issuing a
+rotating refresh token alongside the access token (§2.5).
 
-Your only lever today is `sessionTtlSeconds`
-(`packages/nap-server/src/server.ts:31`). Choose it deliberately and early — it is a
-product decision wearing a config parameter's clothes.
+Your other lever is `sessionTtlSeconds`
+(`packages/nap-server/src/server.ts:31`). Choose both deliberately and early — they
+are a product decision wearing config parameters' clothes.
 
 ### 0.3 Four mistakes that each cost an afternoon
 
@@ -433,13 +433,11 @@ The public body is `toPublicAuthSuccess()` (`server.ts:359`):
 }
 ```
 
-> **RFC-specified, not implemented in 0.2.0:** `AuthSuccessResponse` declares
-> optional `refresh_token` / `refresh_expires_at`
-> (`packages/nap-core/src/types.ts:25`) and `SessionRecord` has matching fields,
-> but `createSessionRecord()` never populates them and `toPublicAuthSuccess()`
-> never emits them. There is no refresh endpoint. The RFC's rotating-refresh
-> recommendation (`docs/NAP-v2-RFC.md:416`) is unimplemented — plan on
-> re-running the full flow when the 15-minute access token expires.
+> **`refresh_token` / `refresh_expires_at` appear only when the server is
+> configured for them.** Set `refreshTtlSeconds` and the completion response
+> carries both, and `POST /auth/refresh` is registered. Leave it unset — the
+> default — and the fields are absent, the route does not exist, and the client
+> re-runs the full flow when the access token expires. See §9.2.
 >
 > `step_up_token` / `step_up_expires_at` **are** populated as of 0.4.0, when the
 > completion body carries `"step_up": true`. See §6.1.
@@ -1049,6 +1047,11 @@ CREATE TABLE nap_sessions (
   expires_at        BIGINT NOT NULL,
   step_up_token     TEXT,
   step_up_expires_at BIGINT,
+  refresh_token     TEXT UNIQUE,                 -- RFC §14.1; NULL unless refreshTtlSeconds is set
+  refresh_expires_at BIGINT,
+  previous_refresh_token TEXT,                   -- the one token of history that makes a
+                                                 -- replay detectable; rotated in by
+                                                 -- rotateRefreshToken()
   revoked_at        BIGINT                       -- NULL = live; filtered at L248/L257/L271
 );
 
@@ -1067,6 +1070,11 @@ CREATE TABLE nap_acl (
 );
 
 CREATE INDEX idx_nap_sessions_principal ON nap_sessions (principal_pubkey);
+
+-- getByRefreshToken() matches either column, so both need an index or every
+-- refresh is a sequential scan of the session table.
+CREATE INDEX idx_nap_sessions_refresh_token ON nap_sessions (refresh_token);
+CREATE INDEX idx_nap_sessions_prev_refresh_token ON nap_sessions (previous_refresh_token);
 CREATE INDEX idx_nap_challenges_expiry  ON nap_challenges (expires_at) WHERE state = 'issued';
 
 -- countOutstanding() runs on every /auth/init. Without these it is a sequential
@@ -1451,9 +1459,11 @@ In bearer mode (not supported by `nap-client-web` — you would be driving
 bearer header first and fall back to the cookie, so a mixed deployment works
 (`adapter.ts:98`).
 
-Either way, re-authentication is a full `login()` — there is no refresh token in
-0.2.0 (§2.5). Handle a 401 by calling `login()` again; with a NIP-07 extension
-that is one more approval prompt.
+Either way, the client packages do not refresh for you: `createNapSession` has no
+auto-refresh loop, so handle a 401 by calling `login()` again, or — if the server
+sets `refreshTtlSeconds` — by posting the stored refresh token to `/auth/refresh`
+yourself and replacing both tokens with what comes back (§9.2). With a NIP-07
+extension, `login()` is one more approval prompt; a refresh is none.
 
 ---
 
@@ -2158,9 +2168,34 @@ bounded inter-node skew a cluster-safety requirement.
   issuance. `docs/NAP-IMPLEMENTATION-BEST-PRACTICES.md:282` recommends sliding
   expiration ("Touch Session on Activity"); 0.2.0 does not implement it. Add an
   `UPDATE nap_sessions SET expires_at = …` in your own guard if you want it.
-- **There is no rotation and no refresh token** (§2.5). At 15 minutes the user
-  re-signs. If that is too aggressive for your UX, raise `sessionTtlSeconds`
-  and accept the longer theft window, or implement `/auth/refresh` yourself.
+- **Rotating refresh tokens are available, and off unless you ask for them.**
+  Set `refreshTtlSeconds` on the server options and the adapters register
+  `POST /auth/refresh`, which reads the refresh token from
+  `Authorization: Bearer` — never a cookie, which the browser would attach to
+  every request to the origin. Each call mints a new access *and* refresh token
+  and retires the presented one. Leave `refreshTtlSeconds` unset and the user
+  re-signs at 15 minutes; the alternative is raising `sessionTtlSeconds` and
+  accepting the longer theft window.
+- **Presenting a retired refresh token revokes the session.** The row keeps one
+  step of history (`previous_refresh_token`), so a replay is distinguishable
+  from a made-up token, and the response is `NAP_REFRESH_REUSED` *after* the
+  session is revoked. A stolen token therefore buys the thief one rotation and
+  costs the legitimate holder their session — which is the intended trade: the
+  theft becomes visible instead of silent. Wire an `AuditLogger` and alert on
+  that code.
+- **The ACL is re-resolved on every refresh.** A refresh mints a full-TTL access
+  token, so trusting the login-time snapshot would let a suspended principal
+  extend access indefinitely. A denial fails the refresh; a denial carrying
+  `revoke_sessions` ends every session for that principal, matching §3.4.
+- **The refresh TTL slides.** Every rotation sets `refresh_expires_at` to
+  `now + refreshTtlSeconds`, and there is no absolute session lifetime cap — the
+  RFC §14.1 table specifies none. A continuously active client can stay signed
+  in indefinitely without re-proving key possession. If that is not acceptable,
+  cap it in your own store's `rotateRefreshToken`, or sweep on `issued_at`.
+- **The store must support it.** `SessionStore.getByRefreshToken` and
+  `rotateRefreshToken` are optional members; the adapters throw at construction
+  if `refreshTtlSeconds` is set and the store lacks either, rather than serve a
+  route that answers 401 to everything.
 - **Revocation works and is immediate**, because tokens are opaque and looked up
   server-side on every request. `revokeBySessionId()` and `revokeByPrincipal()`
   set `revoked_at`, and `findBy()` filters `revoked_at IS NULL`
@@ -2665,9 +2700,6 @@ Collected from the preceding sections:
 
 | RFC requirement | Where | Status |
 |---|---|---|
-| Refresh tokens, rotating (`§14.1`) | `docs/NAP-v2-RFC.md:416` | Types exist (`AuthSuccessResponse.refresh_token`), never populated. No refresh endpoint. |
-| `AudienceResolver` and `RawBodyExtractor` as named interfaces (`§20.2`) | `docs/NAP-v2-RFC.md:671` | Present in spirit — `getExternalBaseUrl` and the adapters' raw-body capture — but not as the named, swappable interfaces the RFC asks for. |
-| Recommended metrics (`§19.3`) | `docs/NAP-v2-RFC.md:614` | None emitted; derivable from `AuditLogger`. |
 | Official test vectors (`§20.3`) | `docs/NAP-v2-RFC.md:676` | No `test-vectors/` directory. The unit tests cover the same cases but are not exported as vectors for other implementations. |
 | WebSocket / relay profiles | `docs/NAP-v2-RFC.md:118` | Correctly out of scope, per `§20.4`. |
 
@@ -2682,8 +2714,18 @@ Closed in 0.4.0, kept here so the diff against an older deployment is visible:
 | ACL removal revokes active sessions (`§15`) | `docs/NAP-v2-RFC.md:467` | Guard-side on denial, or `createRevokingAclStore()` at the ACL write (§3.4). |
 | Bounded timing differences / jitter (`§15`) | `docs/NAP-v2-RFC.md:473` | `minAuthResponseMillis` floor + `responseJitterMillis` (§9.5.1). On by default. |
 | Challenge TTL ≤ 60s enforced (`§10.1`) | `docs/NAP-v2-RFC.md:198` | `createNapServer()` throws outside `1..60` (§9.1). |
+| Refresh tokens, rotating (`§14.1`) | `docs/NAP-v2-RFC.md:416` | `refreshTtlSeconds` + `POST /auth/refresh`. Rotates both tokens; a replayed token revokes the session (§9.2). Off unless configured. |
+| `AudienceResolver` and `RawBodyExtractor` as named interfaces (`§20.2`) | `docs/NAP-v2-RFC.md:671` | Both exported from `@imani/nap-server`; the adapters accept `audienceResolver` (mutually exclusive with `getExternalBaseUrl`) and `rawBodyExtractor`. |
+| Recommended metrics (`§19.3`) | `docs/NAP-v2-RFC.md:614` | `MetricsRecorder` interface, no-op by default; the ten named counters are incremented at the existing audit points (§9.6). |
 | `failed_terminal` challenge state (`§13`) | `docs/NAP-v2-RFC.md:335` | `maxFailuresPerChallenge` (default 5) via `ChallengeStore.recordFailure()`; further attempts get `NAP_COMPLETE_FAILED_TERMINAL`. |
 
+> **Custom `SessionStore` implementations:** `getByRefreshToken()` and
+> `rotateRefreshToken()` are **optional** members, so an existing store keeps
+> compiling — but setting `refreshTtlSeconds` against a store that lacks either
+> makes the adapters throw at construction. The Postgres store needs the new
+> `refresh_token`, `refresh_expires_at` and `previous_refresh_token` columns
+> (§5.5).
+>
 > **Custom `ChallengeStore` implementations:** `countOutstanding()` and
 > `recordFailure()` are **optional** members, so an existing store keeps
 > compiling — but a store that does not implement them silently skips the
