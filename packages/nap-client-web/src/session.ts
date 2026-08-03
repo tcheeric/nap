@@ -2,9 +2,10 @@ import { buildAuthCompleteRequest } from '@imani/nap-client-http';
 import type { AuthSuccessResponse } from '@imani/nap-core';
 import { createActivityLock } from './activityLock.js';
 import { createBroadcastBus } from './broadcast.js';
-import { fetchJson } from './httpClient.js';
+import { SessionLockedError, fetchJson } from './httpClient.js';
 import { reunlock as reunlockCore } from './reunlock.js';
 import type { KeyHolder } from './keyStore.js';
+import { isEvictableSigner } from './types.js';
 import type { NapClientOptions, NapSession, SessionState } from './types.js';
 
 function normalizeBaseUrl(value: string): string {
@@ -31,14 +32,41 @@ export function createNapSession(options: NapClientOptions): NapSession {
   let locked = false;
   let shutdownState = false;
 
+  // Null for NIP-07/NIP-46 signers, which hold no key in the page. Per RFC
+  // §28.6(4), a caller-supplied signer that holds a key without implementing
+  // EvictableSigner owns its own eviction — we cannot reach into its closure.
+  const evictable = isEvictableSigner(options.signer) ? options.signer : null;
+
+  // Evicting the key and marking the session locked are separate concerns:
+  // logout and destroy evict without locking, since "logged out" is not "locked".
+  const evictKey = (): void => {
+    evictable?.clearKey();
+  };
+
+  // RFC §28.6: locking must evict key material, not just flip a flag.
+  const keyHolder: KeyHolder = {
+    setKey(key: string) {
+      evictable?.setKey(key);
+      locked = false;
+      shutdownState = false;
+    },
+    clearKey() {
+      evictKey();
+      locked = true;
+    },
+    hasKey() {
+      return evictable ? evictable.hasKey() : !locked;
+    },
+  };
+
   const publishLock = (): void => {
-    locked = true;
+    keyHolder.clearKey();
     options.onLock?.();
     broadcast.publish('lock');
   };
 
   const publishShutdown = (): void => {
-    locked = true;
+    keyHolder.clearKey();
     shutdownState = true;
     options.onShutdown?.();
     broadcast.publish('shutdown');
@@ -50,6 +78,7 @@ export function createNapSession(options: NapClientOptions): NapSession {
     (type) => {
       if (type === 'logout') {
         sessionState = null;
+        evictKey();
         locked = false;
         shutdownState = false;
         options.onLogout?.();
@@ -62,16 +91,17 @@ export function createNapSession(options: NapClientOptions): NapSession {
       }
 
       if (type === 'shutdown') {
-        locked = true;
+        keyHolder.clearKey();
         shutdownState = true;
         options.onShutdown?.();
         return;
       }
 
       // Handle incoming lock from another tab without re-broadcasting
-      // to avoid ping-pong between tabs.
+      // to avoid ping-pong between tabs. This tab evicts its own key copy:
+      // a lock in one tab that left the key live in another would not be a lock.
       if (type === 'lock') {
-        locked = true;
+        keyHolder.clearKey();
         options.onLock?.();
         return;
       }
@@ -87,6 +117,12 @@ export function createNapSession(options: NapClientOptions): NapSession {
   );
 
   async function authenticate(stepUp = false): Promise<AuthSuccessResponse> {
+    // Fail before mutating state: with the key evicted, signEvent() would throw
+    // partway through and leave the session claiming to be unlocked.
+    if (evictable && !evictable.hasKey()) {
+      throw new SessionLockedError();
+    }
+
     locked = false;
     shutdownState = false;
     activityLock.touch();
@@ -145,6 +181,9 @@ export function createNapSession(options: NapClientOptions): NapSession {
         method: 'POST',
       });
       sessionState = null;
+      // RFC §28.3: zero the decrypted key on logout. A later login() therefore
+      // needs the key supplied again via reunlock() or a fresh signer.
+      evictKey();
       locked = false;
       shutdownState = false;
       options.onLogout?.();
@@ -210,20 +249,7 @@ export function createNapSession(options: NapClientOptions): NapSession {
         throw new Error('keyStore is required for reunlock');
       }
 
-      const holder: KeyHolder = {
-        setKey() {
-          locked = false;
-          shutdownState = false;
-        },
-        clearKey() {
-          locked = true;
-        },
-        hasKey() {
-          return !locked;
-        },
-      };
-
-      await reunlockCore(passphrase, options.keyStore, holder, {
+      await reunlockCore(passphrase, options.keyStore, keyHolder, {
         onTimerReset: () => activityLock.touch(),
         onBroadcast: () => broadcast.publish('unlock'),
       });
@@ -231,6 +257,8 @@ export function createNapSession(options: NapClientOptions): NapSession {
     destroy(): void {
       activityLock.stop();
       broadcast.close();
+      // Tearing down the session must not leave the key alive in the closure.
+      evictKey();
     },
   };
 }

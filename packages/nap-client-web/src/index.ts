@@ -10,6 +10,8 @@ export type {
   ReunlockOptions,
   ReunlockResult,
 } from './reunlock.js';
+export { isEvictableSigner } from './types.js';
+export type { EvictableSigner } from './types.js';
 export type { KeyStore, KeyHolder } from './keyStore.js';
 export type { BroadcastMessageType } from './broadcast.js';
 export type {

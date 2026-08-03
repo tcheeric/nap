@@ -1027,8 +1027,8 @@ The `NapSession` surface (`packages/nap-client-web/src/types.ts:38`):
 | `resume()` | Rehydrate from an existing cookie on page load. `null` on 401. Fires `onLogin` when it restores a session. | `GET /auth/session` |
 | `stepUp()` | Re-auth and return a step-up token. | `POST /auth/complete?step_up=true` — see below |
 | `isAuthenticated()` / `getSession()` / `hasPermission(k)` / `hasRole(k)` | Local reads of the cached `SessionState`. | — |
-| `lock()` / `isLocked()` / `shutdown()` / `isShutdown()` | Idle-lock state machine. | — |
-| `reunlock(passphrase)` | Decrypt a stored key via your `KeyStore`. | — |
+| `lock()` / `isLocked()` / `shutdown()` / `isShutdown()` | Idle-lock state machine. Zeroes the key on an `EvictableSigner` (§6.3). | — |
+| `reunlock(passphrase)` | Decrypt a stored key via your `KeyStore` and restore it to the signer. | — |
 | `destroy()` | Stop the idle timer, close the `BroadcastChannel`. Call on unmount. | — |
 
 > **`GET /auth/session` deliberately omits the access token.** Both adapters now
@@ -1163,22 +1163,38 @@ interface KeyStore {
 `INVALID_PASSPHRASE`. If you use a NIP-07 or NIP-46 signer you do not need any
 of this — there is no key in the browser to unlock.
 
-> **The lock does not evict key material.** `docs/NAP-v2-RFC.md` §28.6 requires
-> that a lock operation clear the decrypted key and that unlock restore access.
-> Neither happens today. The `KeyHolder` that `session.ts:209-220` hands to
-> `reunlock()` only flips booleans — `setKey(key)` ignores its argument — while
-> `options.signer` is captured at `session.ts:114` and never released, so
-> `createPrivateKeySessionSigner`'s closure keeps the private key for the life
-> of the session object. After an idle lock, script in the page can still sign.
+> **The lock evicts key material.** Per `docs/NAP-v2-RFC.md` §28.6, `lock()`
+> zeroes the private key and `reunlock()` puts it back. This works through
+> `EvictableSigner` — `createPrivateKeySessionSigner()` returns one, and the
+> session calls `clearKey()` / `setKey()` on it.
 >
-> The two halves mask each other: `reunlock()` decrypts the stored key and then
-> silently discards it, which is harmless only because lock never removed it.
-> Fix one side alone and the flow breaks.
+> What is evicted, and when: `lock()`, the idle `autoLock` timeout, `shutdown()`,
+> `logout()`, `destroy()`, and an incoming `lock` / `shutdown` / `logout`
+> broadcast from another tab. A lock in one tab that left the key live in
+> another would not be a lock.
 >
-> Treat `autoLock` as UI state, not a key-custody boundary. If you need the
-> guarantee, own eviction in your own `KeyStore` and drop your signer reference
-> on `onLock`. See §28.3–§28.6 of the RFC for the requirements, and §9.7 below
-> for what bounded key lifetime does and does not buy.
+> While evicted, `signEvent()` throws `SessionLockedError` and `login()` rejects
+> **before** touching the network. `getNpub()` keeps working — a public key is
+> not a secret, and the UI still needs an identity to show.
+>
+> Two consequences to design around:
+>
+> - **`logout()` zeroes the key** (RFC §28.3). A later `login()` needs it
+>   supplied again, via `reunlock(passphrase)` or a fresh signer. Note that
+>   `logout()` does **not** set `isLocked()` — logged out is not locked.
+> - **`reunlock()` will not restore a different identity.** `setKey()` compares
+>   the derived pubkey against the one the signer was built with and throws
+>   otherwise, so a wrong key cannot silently swap the signing account while
+>   `getNpub()` still reports the old one.
+>
+> **NIP-07 and NIP-46 signers are not evictable, by design** — they hold no key
+> in the page, so there is nothing to reach. `lock()` still works as session
+> state. Per RFC §28.6(4), if you supply your own key-holding signer without
+> implementing `EvictableSigner`, eviction is yours to do: `isEvictableSigner()`
+> is exported so you can assert it.
+>
+> Read §9.7 for what bounded key lifetime does and does not buy — it narrows the
+> window, it does not close it.
 
 ### 6.4 React
 
@@ -2204,8 +2220,12 @@ and `details.retry === true` gives you `challenge_retry_hit_total`.
   bounding the lifetime protects at-rest copies and narrows the window, but
   **does not** protect a key that is unlocked while hostile script runs, because
   your own code must be able to decrypt it. Only keeping the key out of the
-  page's origin removes it from reach. And §6.3's lock does not currently evict
-  key material, so today the real window is wider than the timeout implies.
+  page's origin removes it from reach. §6.3's lock does evict key material, so
+  the window really is the idle timeout — but only for the copy this library
+  holds. The hex string you passed to `createPrivateKeySessionSigner()` is an
+  immutable JS string that cannot be zeroed and lingers until garbage
+  collection; read it straight from your `KeyStore` rather than parking it in
+  application state.
 
 ---
 
