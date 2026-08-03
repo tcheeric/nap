@@ -2,10 +2,12 @@ import type { AclDecision } from '@imani/nap-core';
 import type {
   AclRecord,
   AclStore,
+  Clock,
   PermissionRegistry,
   PermissionOverride,
   RoleDefinition,
   AclResolver,
+  SessionStore,
 } from './types.js';
 
 export interface RegistryAclResolverOptions {
@@ -84,12 +86,13 @@ function applyOverrides(
   return Array.from(granted).filter((permission) => !denied.has(permission)).sort();
 }
 
-function denied(reason: string): AclDecision {
+function denied(reason: string, revokeSessions = false): AclDecision {
   return {
     allowed: false,
     roles: [],
     permissions: [],
     reason,
+    ...(revokeSessions ? { revoke_sessions: true } : {}),
   };
 }
 
@@ -158,12 +161,15 @@ export function createRegistryAclResolver(
         resolvedOptions
       );
 
+      // Not `revoke_sessions`: with auto-provisioning on, a missing record more
+      // often means the provisioning write failed than that access was pulled.
       if (!record) {
         return denied('no_acl_record');
       }
 
+      // The one deny we are certain about, so the one that ends sessions.
       if (record.suspended) {
-        return denied('suspended');
+        return denied('suspended', true);
       }
 
       const role = registry.roles.find(
@@ -174,6 +180,8 @@ export function createRegistryAclResolver(
         resolvedOptions.logger.warn(
           `PermissionRegistry role '${record.role}' is missing for pubkey '${pubkey}'`
         );
+        // A registry typo, not a revocation. Logging every holder of the role
+        // out over a config mistake is worse than denying their next request.
         return denied('unknown_role');
       }
 
@@ -181,6 +189,57 @@ export function createRegistryAclResolver(
         role.key,
         applyOverrides(role.permissions, record.permission_overrides)
       );
+    },
+  };
+}
+
+/**
+ * Wrap an `AclStore` so that losing access also ends the sessions that access
+ * was granted to (RFC §15 rule 2).
+ *
+ * Without this, `suspend()` marks the row and the suspended principal keeps
+ * working until their session TTL runs out — up to 15 minutes of continued
+ * access after you revoked it, which is the wrong answer for the case you
+ * suspend someone in a hurry.
+ *
+ * Only suspension and a role change revoke. Permission-override edits do not:
+ * those are picked up on the next request by guards configured with an
+ * `aclResolver`, and revoking a session for a routine grant would log everyone
+ * out for a permission being *added*.
+ *
+ * ```ts
+ * const aclStore = createRevokingAclStore(
+ *   new PostgresAclStore(pool),
+ *   sessionStore
+ * );
+ * ```
+ */
+export function createRevokingAclStore(
+  aclStore: AclStore,
+  sessionStore: SessionStore,
+  clock: Clock = { nowUnix: () => Math.floor(Date.now() / 1000) }
+): AclStore {
+  return {
+    get(pubkey: string, appId: string) {
+      return aclStore.get(pubkey, appId);
+    },
+
+    async upsert(record: AclRecord): Promise<void> {
+      const previous = await aclStore.get(record.principal_pubkey, record.app_id);
+      await aclStore.upsert(record);
+
+      if ((previous && previous.role !== record.role) || record.suspended) {
+        await sessionStore.revokeByPrincipal(record.principal_pubkey, clock.nowUnix());
+      }
+    },
+
+    async suspend(pubkey: string, appId: string, reason?: string): Promise<void> {
+      await aclStore.suspend(pubkey, appId, reason);
+      await sessionStore.revokeByPrincipal(pubkey, clock.nowUnix());
+    },
+
+    unsuspend(pubkey: string, appId: string) {
+      return aclStore.unsuspend(pubkey, appId);
     },
   };
 }

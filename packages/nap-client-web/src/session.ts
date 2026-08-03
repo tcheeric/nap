@@ -148,10 +148,11 @@ export function createNapSession(options: NapClientOptions): NapSession {
     const completion = await buildAuthCompleteRequest({
       challenge: initResponse.body,
       signer: options.signer,
+      stepUp,
     });
     const completeResponse = await fetchJson<AuthSuccessResponse>(
       fetchImpl,
-      `${sessionPath(options.baseUrl, 'complete')}${stepUp ? '?step_up=true' : ''}`,
+      sessionPath(options.baseUrl, 'complete'),
       {
         method: 'POST',
         headers: {

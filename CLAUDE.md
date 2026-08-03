@@ -65,8 +65,10 @@ relevant area.
   app's copy and NAP's surfaces as confusing `verifyEvent` failures.
 - **Every auth failure is an identical 401.** That is deliberate. Debugging is
   impossible without wiring an `AuditLogger` and reading the `code`.
-- **Rate limiting is not implemented.** `/auth/init` is unauthenticated and
-  writes a row per call. Anything production-facing needs a limiter in front.
+- **The default rate limiter is per-process.** It is on by default, but
+  `createInMemoryRateLimiter()` counts in one process, so behind N instances the
+  effective rate is N× what you configured. Anything production-facing wants a
+  shared backend behind the same `RateLimiter` interface.
 
 ## Known Gaps
 

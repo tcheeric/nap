@@ -9,6 +9,8 @@ import type {
   preHandlerHookHandler,
 } from 'fastify';
 import {
+  resolveEffectiveAcl,
+  constantTimeEquals,
   toPublicAuthFailure,
   toPublicAuthSuccess,
   toPublicSessionView,
@@ -17,12 +19,15 @@ import {
   isMalformedRequestFailure,
   isVerifyFailure,
   verifyCompletion,
+  type AclResolver,
+  type Clock,
+  type EffectiveAcl,
   type IssueChallengeResult,
   type NapServerOptions,
   type PermissionRegistry,
   type SessionStore,
 } from '@imani/nap-server';
-import type { VerifyCompleteFailure } from '@imani/nap-core';
+import type { SessionRecord, VerifyCompleteFailure } from '@imani/nap-core';
 
 const RAW_BODY_SYMBOL = Symbol.for('nap.fastify.rawBody');
 const REGISTERED_PERMISSIONS = new Set<string>();
@@ -44,6 +49,25 @@ export interface NapFastifyOptions {
   cookieName?: string;
   /** Attributes used when clearing the cookie on logout. Must match those used to set it, or the browser keeps it. Defaults to `{ path: '/' }`. */
   clearCookieOptions?: SerializeOptions;
+  /**
+   * Maximum accepted body size on the NAP routes, in bytes. Defaults to 1024.
+   *
+   * A valid `/auth/complete` body is around 40 bytes and `/auth/init` under
+   * 100; Fastify's own default is 1 MB, which on an unauthenticated endpoint is
+   * 1 MB of parsing an anonymous caller can buy per request. Oversized bodies
+   * are rejected with a 413.
+   */
+  bodyLimitBytes?: number;
+  /**
+   * Caller address for rate limiting and the per-IP outstanding-challenge cap.
+   *
+   * Defaults to `req.ip`, which honours `X-Forwarded-For` only when the app has
+   * set Fastify's `trustProxy` — so it is correct behind a configured proxy and
+   * correct on a direct connection, and wrong exactly when `trustProxy` is
+   * wrong. Return `undefined` to opt out: the per-IP cap is then skipped rather
+   * than enforced against a value anyone can forge.
+   */
+  getClientIp?: (req: FastifyRequest) => string | undefined;
   writeSuccess?: (ctx: {
     req: FastifyRequest;
     reply: FastifyReply;
@@ -59,6 +83,29 @@ export interface NapFastifyOptions {
 export interface NapFastifyGuardOptions {
   sessionStore: SessionStore;
   cookieName?: string;
+  /**
+   * Re-read the ACL on every guarded request instead of trusting the login-time
+   * snapshot in `session.permissions` (RFC §15 rule 1).
+   *
+   * Without it, a suspension or role change takes effect only when the session
+   * expires — up to the full session TTL, 15 minutes by default. With it, a
+   * principal who has lost access is denied on their next request and their
+   * sessions are revoked.
+   *
+   * Costs one ACL read per guarded request. Pass the same resolver you gave
+   * `NapServerOptions.aclResolver`.
+   */
+  aclResolver?: AclResolver;
+  /**
+   * Registry used to decide whether a permission requires a step-up token.
+   *
+   * When supplied, `requirePermission('stripe:manage')` additionally demands a
+   * valid `X-Step-Up-Token` if the registry marks that permission
+   * `stepUp: true` — so the flag on the definition is enforced rather than
+   * documentation.
+   */
+  registry?: PermissionRegistry;
+  clock?: Clock;
 }
 
 function setRawBody(req: FastifyRequest, rawBody: Uint8Array): void {
@@ -120,11 +167,89 @@ async function loadSession(
   return session;
 }
 
+function unauthorized(reply: FastifyReply): void {
+  const failure = toPublicAuthFailure();
+  reply.status(failure.status).send(failure.body);
+}
+
+function forbidden(reply: FastifyReply, reason = 'forbidden'): void {
+  reply.status(403).send({
+    status: 'error',
+    message: reason,
+  });
+}
+
+function rateLimited(reply: FastifyReply, retryAfterSeconds?: number): void {
+  if (retryAfterSeconds !== undefined) {
+    reply.header('retry-after', String(retryAfterSeconds));
+  }
+
+  // Not the generic auth-failure body: the whole reason this is a 429 and not a
+  // 401 is to stop the client retrying harder, and telling it the credentials
+  // were rejected undoes that. The status code has already leaked everything
+  // this message could.
+  reply.status(429).send({
+    status: 'error',
+    message: 'rate limited',
+  });
+}
+
+function hasValidStepUpToken(req: FastifyRequest, session: SessionRecord): boolean {
+  const providedToken = req.headers['x-step-up-token'];
+  const stepUpToken = Array.isArray(providedToken) ? providedToken[0] : providedToken;
+
+  return Boolean(
+    stepUpToken &&
+      session.step_up_token &&
+      constantTimeEquals(session.step_up_token, stepUpToken) &&
+      session.step_up_expires_at &&
+      session.step_up_expires_at > currentEpochSeconds()
+  );
+}
+
+function requiresStepUp(permission: string, registry: PermissionRegistry | undefined): boolean {
+  return registry?.permissions.some(
+    (definition) => definition.key === permission && definition.stepUp
+  ) === true;
+}
+
+/**
+ * Load the session and the roles/permissions the request should be judged
+ * against, or null when either step denies.
+ */
+async function loadGuardContext(
+  req: FastifyRequest,
+  options: NapFastifyGuardOptions
+): Promise<{ session: SessionRecord; acl: EffectiveAcl } | null> {
+  const session = await loadSession(req, options);
+
+  if (!session) {
+    return null;
+  }
+
+  const acl = await resolveEffectiveAcl(session, {
+    aclResolver: options.aclResolver,
+    sessionStore: options.sessionStore,
+    clock: options.clock,
+  });
+
+  return acl ? { session, acl } : null;
+}
+
 function authCompleteUrl(req: FastifyRequest, options: NapFastifyOptions): string {
   return `${normalizeBaseUrl(options.getExternalBaseUrl(req))}/auth/complete`;
 }
 
+function clientIpOf(req: FastifyRequest, options: NapFastifyOptions): string | undefined {
+  return options.getClientIp ? options.getClientIp(req) : req.ip;
+}
+
 function issueChallengeFailure(reply: FastifyReply, result: Exclude<IssueChallengeResult, { ok: true }>): void {
+  if (result.code === 'NAP_INIT_RATE_LIMITED') {
+    rateLimited(reply, result.retryAfterSeconds);
+    return;
+  }
+
   const status = result.code === 'NAP_INIT_INVALID_NPUB' ? 400 : 500;
   reply.status(status).send({
     status: 'error',
@@ -184,6 +309,7 @@ export function createNapFastifyInitHandler(options: NapFastifyOptions): RouteHa
         npub,
         authUrl: authCompleteUrl(req, options),
         authMethod: 'POST',
+        clientIp: clientIpOf(req, options),
       },
       options.server
     );
@@ -211,6 +337,7 @@ export function createNapFastifyCompleteHandler(options: NapFastifyOptions): Rou
         method: req.method,
         url: authCompleteUrl(req, options),
         rawBody,
+        clientIp: clientIpOf(req, options),
       },
       options.server
     );
@@ -221,6 +348,11 @@ export function createNapFastifyCompleteHandler(options: NapFastifyOptions): Rou
     }
 
     if (isVerifyFailure(result)) {
+      if (result.code === 'NAP_COMPLETE_RATE_LIMITED') {
+        rateLimited(reply, result.retryAfterSeconds);
+        return;
+      }
+
       if (options.writeFailure) {
         await options.writeFailure({ req, reply, result });
         return;
@@ -241,10 +373,10 @@ export function createNapFastifyCompleteHandler(options: NapFastifyOptions): Rou
   };
 }
 
-function installNapJsonParser(instance: FastifyInstance): void {
+function installNapJsonParser(instance: FastifyInstance, bodyLimitBytes = 1024): void {
   instance.addContentTypeParser(
     'application/json',
-    { parseAs: 'buffer' },
+    { parseAs: 'buffer', bodyLimit: bodyLimitBytes },
     (req, body, done) => {
       try {
         const rawBody =
@@ -279,8 +411,7 @@ export function createNapFastifySessionHandler(options: NapFastifyOptions): Rout
     });
 
     if (!session) {
-      const failure = toPublicAuthFailure();
-      reply.status(failure.status).send(failure.body);
+      unauthorized(reply);
       return;
     }
 
@@ -322,7 +453,7 @@ export function createNapFastifyLogoutHandler(options: NapFastifyOptions): Route
 }
 
 export const napFastifyPlugin: FastifyPluginAsync<NapFastifyOptions> = async (fastify, options) => {
-  installNapJsonParser(fastify);
+  installNapJsonParser(fastify, options.bodyLimitBytes);
 
   const prefix = normalizeBaseUrl(options.routePrefix ?? '');
 
@@ -339,19 +470,26 @@ export function requirePermission(
   REGISTERED_PERMISSIONS.add(permission);
 
   return async (req, reply) => {
-    const session = await loadSession(req, options);
+    const context = await loadGuardContext(req, options);
 
-    if (!session) {
-      const failure = toPublicAuthFailure();
-      reply.status(failure.status).send(failure.body);
+    if (!context) {
+      unauthorized(reply);
       return;
     }
 
-    if (!session.permissions.includes(permission)) {
-      reply.status(403).send({
-        status: 'error',
-        message: 'forbidden',
-      });
+    if (!context.acl.permissions.includes(permission)) {
+      forbidden(reply);
+      return;
+    }
+
+    // `stepUp: true` on the registry definition is enforced here rather than
+    // needing requireStepUp() chained at every call site, where forgetting it
+    // is silent.
+    if (
+      requiresStepUp(permission, options.registry) &&
+      !hasValidStepUpToken(req, context.session)
+    ) {
+      forbidden(reply, 'step-up required');
       return;
     }
   };
@@ -378,9 +516,10 @@ export function requirePermission(
  * Registered roles are checked against the registry by `validatePermissions()`,
  * so a typo fails at startup rather than silently 403ing forever.
  *
- * Note that `session.roles` is a login-time snapshot, exactly like
- * `session.permissions`: a role revoked mid-session still passes until the
- * session TTL expires.
+ * Without `aclResolver` in the guard options the check runs against
+ * `session.roles`, a login-time snapshot: a role revoked mid-session still
+ * passes until the session TTL expires. Pass the resolver to re-read the ACL per
+ * request.
  */
 export function requireRole(
   role: string | string[],
@@ -390,19 +529,15 @@ export function requireRole(
   accepted.forEach((entry) => REGISTERED_ROLES.add(entry));
 
   return async (req, reply) => {
-    const session = await loadSession(req, options);
+    const context = await loadGuardContext(req, options);
 
-    if (!session) {
-      const failure = toPublicAuthFailure();
-      reply.status(failure.status).send(failure.body);
+    if (!context) {
+      unauthorized(reply);
       return;
     }
 
-    if (!accepted.some((entry) => session.roles.includes(entry))) {
-      reply.status(403).send({
-        status: 'error',
-        message: 'forbidden',
-      });
+    if (!accepted.some((entry) => context.acl.roles.includes(entry))) {
+      forbidden(reply);
       return;
     }
   };
@@ -413,25 +548,12 @@ export function requireStepUp(options: NapFastifyGuardOptions): preHandlerHookHa
     const session = await loadSession(req, options);
 
     if (!session) {
-      const failure = toPublicAuthFailure();
-      reply.status(failure.status).send(failure.body);
+      unauthorized(reply);
       return;
     }
 
-    const providedToken = req.headers['x-step-up-token'];
-    const stepUpToken = Array.isArray(providedToken) ? providedToken[0] : providedToken;
-
-    if (
-      !stepUpToken ||
-      !session.step_up_token ||
-      session.step_up_token !== stepUpToken ||
-      !session.step_up_expires_at ||
-      session.step_up_expires_at <= currentEpochSeconds()
-    ) {
-      reply.status(403).send({
-        status: 'error',
-        message: 'step-up required',
-      });
+    if (!hasValidStepUpToken(req, session)) {
+      forbidden(reply, 'step-up required');
       return;
     }
   };

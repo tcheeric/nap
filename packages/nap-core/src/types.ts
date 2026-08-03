@@ -13,6 +13,15 @@ export interface AuthInitResponse {
 
 export interface AuthCompleteRequest {
   challenge_id: string;
+  /**
+   * Request a step-up token alongside the session.
+   *
+   * Carried in the body rather than a query parameter so it falls under the
+   * NIP-98 `payload` hash and cannot be added or stripped in transit. The
+   * signed `u` tag stays query-free and keeps matching the audience the server
+   * computes.
+   */
+  step_up?: boolean;
 }
 
 export interface AuthSuccessResponse {
@@ -56,6 +65,10 @@ export interface ChallengeRecord {
   redeemed_event_id?: string;
   redeemed_session_id?: string;
   result_cache_until?: number;
+  /** Caller address at issuance, used for the per-IP outstanding-challenge cap (RFC §17.4). */
+  client_ip?: string;
+  /** Completion attempts that failed after this challenge was loaded and matched (RFC §13.4). */
+  failure_count?: number;
 }
 
 export interface SessionRecord {
@@ -80,6 +93,17 @@ export interface AclDecision {
   roles: string[];
   permissions: string[];
   reason?: string;
+  /**
+   * Set on a denial the resolver is *certain* about — the principal was
+   * suspended, not merely unreadable. Only then does `resolveEffectiveAcl()`
+   * revoke every session they hold.
+   *
+   * Omitting it denies the one request and leaves sessions intact, which is the
+   * safe default: a resolver that answers `allowed: false` because a replica
+   * lagged or a row was mid-rewrite would otherwise log the principal out
+   * everywhere, and only a fresh NIP-98 login gets them back.
+   */
+  revoke_sessions?: boolean;
 }
 
 export type NapErrorCode =
@@ -105,6 +129,7 @@ export type NapErrorCode =
   | 'NAP_COMPLETE_PRINCIPAL_MISMATCH'
   | 'NAP_COMPLETE_ACL_DENIED'
   | 'NAP_COMPLETE_RATE_LIMITED'
+  | 'NAP_COMPLETE_FAILED_TERMINAL'
   | 'NAP_COMPLETE_INTERNAL';
 
 export interface VerifyCompleteSuccess {
@@ -116,6 +141,8 @@ export interface VerifyCompleteFailure {
   ok: false;
   code: NapErrorCode;
   retryable: boolean;
+  /** Set on `NAP_COMPLETE_RATE_LIMITED`, for the adapter's `Retry-After` header. */
+  retryAfterSeconds?: number;
 }
 
 export type VerifyCompleteResult =

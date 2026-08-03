@@ -1,5 +1,7 @@
 import express, { type CookieOptions, type Request, type RequestHandler, type Response, type Router } from 'express';
 import {
+  resolveEffectiveAcl,
+  constantTimeEquals,
   toPublicAuthFailure,
   toPublicAuthSuccess,
   toPublicSessionView,
@@ -8,12 +10,15 @@ import {
   isMalformedRequestFailure,
   isVerifyFailure,
   verifyCompletion,
+  type AclResolver,
+  type Clock,
+  type EffectiveAcl,
   type IssueChallengeResult,
   type NapServerOptions,
   type PermissionRegistry,
   type SessionStore,
 } from '@imani/nap-server';
-import type { VerifyCompleteFailure } from '@imani/nap-core';
+import type { SessionRecord, VerifyCompleteFailure } from '@imani/nap-core';
 
 const RAW_BODY_SYMBOL = Symbol.for('nap.rawBody');
 const REGISTERED_PERMISSIONS = new Set<string>();
@@ -30,6 +35,25 @@ export interface NapExpressOptions {
   cookieName?: string;
   /** Attributes used when clearing the cookie on logout. Must match those used to set it, or the browser keeps it. Defaults to `{ path: '/' }`. */
   clearCookieOptions?: CookieOptions;
+  /**
+   * Maximum accepted body size on the NAP routes. Defaults to `'1kb'`.
+   *
+   * A valid `/auth/complete` body is around 40 bytes and `/auth/init` under
+   * 100; `express.json()`'s own default is 100 kB, which on an unauthenticated
+   * endpoint is 100 kB of parsing an anonymous caller can buy per request.
+   * Oversized bodies are rejected by `express.json()` with a 413.
+   */
+  bodyLimit?: string | number;
+  /**
+   * Caller address for rate limiting and the per-IP outstanding-challenge cap.
+   *
+   * Defaults to `req.ip`, which honours `X-Forwarded-For` only when the app has
+   * set Express's `trust proxy` — so it is correct behind a configured proxy and
+   * correct on a direct connection, and wrong exactly when `trust proxy` is
+   * wrong. Return `undefined` to opt out: the per-IP cap is then skipped rather
+   * than enforced against a value anyone can forge.
+   */
+  getClientIp?: (req: Request) => string | undefined;
   writeSuccess?: (ctx: {
     req: Request;
     res: Response;
@@ -49,6 +73,29 @@ export interface NapExpressRequest extends Request {
 export interface NapExpressGuardOptions {
   sessionStore: SessionStore;
   cookieName?: string;
+  /**
+   * Re-read the ACL on every guarded request instead of trusting the login-time
+   * snapshot in `session.permissions` (RFC §15 rule 1).
+   *
+   * Without it, a suspension or role change takes effect only when the session
+   * expires — up to the full session TTL, 15 minutes by default. With it, a
+   * principal who has lost access is denied on their next request and their
+   * sessions are revoked.
+   *
+   * Costs one ACL read per guarded request. Pass the same resolver you gave
+   * `NapServerOptions.aclResolver`.
+   */
+  aclResolver?: AclResolver;
+  /**
+   * Registry used to decide whether a permission requires a step-up token.
+   *
+   * When supplied, `requirePermission('stripe:manage')` additionally demands a
+   * valid `X-Step-Up-Token` if the registry marks that permission
+   * `stepUp: true` — so the flag on the definition is enforced rather than
+   * documentation.
+   */
+  registry?: PermissionRegistry;
+  clock?: Clock;
 }
 
 function getRawBody(req: Request): Uint8Array | null {
@@ -78,6 +125,62 @@ function forbidden(res: Response, reason = 'forbidden'): void {
     status: 'error',
     message: reason,
   });
+}
+
+function rateLimited(res: Response, retryAfterSeconds?: number): void {
+  if (retryAfterSeconds !== undefined) {
+    res.setHeader('Retry-After', String(retryAfterSeconds));
+  }
+
+  // Not the generic auth-failure body: the whole reason this is a 429 and not a
+  // 401 is to stop the client retrying harder, and telling it the credentials
+  // were rejected undoes that. The status code has already leaked everything
+  // this message could.
+  res.status(429).json({
+    status: 'error',
+    message: 'rate limited',
+  });
+}
+
+function hasValidStepUpToken(req: Request, session: SessionRecord): boolean {
+  const providedToken = req.header('x-step-up-token');
+
+  return Boolean(
+    providedToken &&
+      session.step_up_token &&
+      constantTimeEquals(session.step_up_token, providedToken) &&
+      session.step_up_expires_at &&
+      session.step_up_expires_at > currentEpochSeconds()
+  );
+}
+
+function requiresStepUp(permission: string, registry: PermissionRegistry | undefined): boolean {
+  return registry?.permissions.some(
+    (definition) => definition.key === permission && definition.stepUp
+  ) === true;
+}
+
+/**
+ * Load the session and the roles/permissions the request should be judged
+ * against, or null when either step denies.
+ */
+async function loadGuardContext(
+  req: Request,
+  options: NapExpressGuardOptions
+): Promise<{ session: SessionRecord; acl: EffectiveAcl } | null> {
+  const session = await loadSession(req, options);
+
+  if (!session) {
+    return null;
+  }
+
+  const acl = await resolveEffectiveAcl(session, {
+    aclResolver: options.aclResolver,
+    sessionStore: options.sessionStore,
+    clock: options.clock,
+  });
+
+  return acl ? { session, acl } : null;
 }
 
 function parseCookieValue(header: string | undefined, cookieName: string): string | null {
@@ -132,6 +235,11 @@ function authCompleteUrl(req: Request, options: NapExpressOptions): string {
 }
 
 function issueChallengeFailure(res: Response, result: Exclude<IssueChallengeResult, { ok: true }>): void {
+  if (result.code === 'NAP_INIT_RATE_LIMITED') {
+    rateLimited(res, result.retryAfterSeconds);
+    return;
+  }
+
   const status = result.code === 'NAP_INIT_INVALID_NPUB' ? 400 : 500;
   res.status(status).json({
     status: 'error',
@@ -139,8 +247,13 @@ function issueChallengeFailure(res: Response, result: Exclude<IssueChallengeResu
   });
 }
 
-export function createNapExpressJsonParser(): RequestHandler {
+function clientIpOf(req: Request, options: NapExpressOptions): string | undefined {
+  return options.getClientIp ? options.getClientIp(req) : req.ip;
+}
+
+export function createNapExpressJsonParser(bodyLimit: string | number = '1kb'): RequestHandler {
   return express.json({
+    limit: bodyLimit,
     verify(req, _res, buf) {
       setRawBody(req, new Uint8Array(buf));
     },
@@ -165,6 +278,7 @@ export function createNapExpressInitHandler(options: NapExpressOptions): Request
           npub,
           authUrl: authCompleteUrl(req, options),
           authMethod: 'POST',
+          clientIp: clientIpOf(req, options),
         },
         options.server
       );
@@ -198,6 +312,7 @@ export function createNapExpressCompleteHandler(options: NapExpressOptions): Req
           method: req.method,
           url: authCompleteUrl(req, options),
           rawBody,
+          clientIp: clientIpOf(req, options),
         },
         options.server
       );
@@ -208,6 +323,11 @@ export function createNapExpressCompleteHandler(options: NapExpressOptions): Req
       }
 
       if (isVerifyFailure(result)) {
+        if (result.code === 'NAP_COMPLETE_RATE_LIMITED') {
+          rateLimited(res, result.retryAfterSeconds);
+          return;
+        }
+
         if (options.writeFailure) {
           await options.writeFailure({ req, res, result });
           return;
@@ -291,7 +411,7 @@ export function createNapExpressLogoutHandler(options: NapExpressOptions): Reque
 export function createNapExpressRouter(options: NapExpressOptions): Router {
   const router = express.Router();
 
-  router.use(createNapExpressJsonParser());
+  router.use(createNapExpressJsonParser(options.bodyLimit));
   router.post('/init', createNapExpressInitHandler(options));
   router.post('/complete', createNapExpressCompleteHandler(options));
   router.get('/session', createNapExpressSessionHandler(options));
@@ -308,15 +428,26 @@ export function requirePermission(
 
   return async (req, res, next) => {
     try {
-      const session = await loadSession(req, options);
+      const context = await loadGuardContext(req, options);
 
-      if (!session) {
+      if (!context) {
         unauthorized(res);
         return;
       }
 
-      if (!session.permissions.includes(permission)) {
+      if (!context.acl.permissions.includes(permission)) {
         forbidden(res);
+        return;
+      }
+
+      // `stepUp: true` on the registry definition is enforced here rather than
+      // needing requireStepUp() chained at every call site, where forgetting it
+      // is silent.
+      if (
+        requiresStepUp(permission, options.registry) &&
+        !hasValidStepUpToken(req, context.session)
+      ) {
+        forbidden(res, 'step-up required');
         return;
       }
 
@@ -348,9 +479,10 @@ export function requirePermission(
  * Registered roles are checked against the registry by `validatePermissions()`,
  * so a typo fails at startup rather than silently 403ing forever.
  *
- * Note that `session.roles` is a login-time snapshot, exactly like
- * `session.permissions`: a role revoked mid-session still passes until the
- * session TTL expires.
+ * Without `aclResolver` in the guard options the check runs against
+ * `session.roles`, a login-time snapshot: a role revoked mid-session still
+ * passes until the session TTL expires. Pass the resolver to re-read the ACL per
+ * request.
  */
 export function requireRole(
   role: string | string[],
@@ -361,14 +493,14 @@ export function requireRole(
 
   return async (req, res, next) => {
     try {
-      const session = await loadSession(req, options);
+      const context = await loadGuardContext(req, options);
 
-      if (!session) {
+      if (!context) {
         unauthorized(res);
         return;
       }
 
-      if (!accepted.some((entry) => session.roles.includes(entry))) {
+      if (!accepted.some((entry) => context.acl.roles.includes(entry))) {
         forbidden(res);
         return;
       }
@@ -390,15 +522,7 @@ export function requireStepUp(options: NapExpressGuardOptions): RequestHandler {
         return;
       }
 
-      const providedToken = req.header('x-step-up-token');
-
-      if (
-        !providedToken ||
-        !session.step_up_token ||
-        session.step_up_token !== providedToken ||
-        !session.step_up_expires_at ||
-        session.step_up_expires_at <= currentEpochSeconds()
-      ) {
+      if (!hasValidStepUpToken(req, session)) {
         forbidden(res, 'step-up required');
         return;
       }

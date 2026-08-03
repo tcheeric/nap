@@ -29,6 +29,9 @@ function buildOptions(now = 1_710_000_000): NapServerOptions {
         };
       },
     },
+    // The 100 ms response floor is a production timing defence; paying it on
+    // every assertion here would cost more wall-clock than the suite.
+    minAuthResponseMillis: 0,
     clock: {
       nowUnix() {
         return now;

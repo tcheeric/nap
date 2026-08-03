@@ -89,6 +89,8 @@ describe('registry ACL support', () => {
       roles: [],
       permissions: [],
       reason: 'suspended',
+      // The only deny certain enough to end the principal's sessions.
+      revoke_sessions: true,
     });
   });
 

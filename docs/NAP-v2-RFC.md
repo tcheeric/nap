@@ -216,11 +216,33 @@ Request body:
 
 ```json
 {
-  "challenge_id": "chlg_01HT..."
+  "challenge_id": "chlg_01HT...",
+  "step_up": false
 }
 ```
 
+`step_up` is OPTIONAL and defaults to `false`. When `true`, the server MUST additionally issue a step-up token on the resulting session (§10.3). When present it MUST be a boolean; any other type is a malformed request.
+
 The request body SHOULD be minimal. Avoid putting the raw challenge in the body because the body is not the authoritative proof; the NIP-98 event is.
+
+Implementation flags such as `step_up` MUST travel in the body, never in the query string. The body is covered by the `payload` tag hash, so a flag placed there cannot be added or stripped in transit; a query parameter is covered only by the `u` tag, which §11 requires to equal the audience the server computes and which therefore cannot carry per-request state.
+
+### 10.3 Step-up authentication
+
+A step-up is a **complete re-run of §9 and §10 with `"step_up": true`** in the completion body. It is not a token refresh: the client proves key control again, at that moment.
+
+On success the server MUST include in the response:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `step_up_token` | string | Opaque token, generated with the same CSPRNG requirements as `access_token` (§14) |
+| `step_up_expires_at` | integer | Unix seconds; SHOULD be significantly shorter than the session lifetime |
+
+A step-up token MUST NOT be accepted as an `access_token`, and MUST NOT extend the session's own expiry. Clients SHOULD present it in an `X-Step-Up-Token` request header for the operations that require it.
+
+Which operations require step-up is an application decision, carried in the permission registry (§15) as `stepUp: true` on a permission definition. A conforming server that receives a request for a step-up-marked permission without a valid, unexpired step-up token MUST refuse it, and SHOULD do so with the same status it uses for any other authorization failure on that route.
+
+If a server does not implement step-up, it MUST ignore `step_up` rather than fail the completion, and MUST omit both response fields. Clients MUST treat a missing `step_up_token` as "step-up unavailable" and MUST NOT proceed as though it had been granted.
 
 ---
 
@@ -817,6 +839,8 @@ Constraints:
 ```ts
 export interface AuthCompleteRequest {
   challenge_id: string;
+  /** Request a step-up token on the resulting session (§10.3). */
+  step_up?: boolean;
 }
 ```
 
@@ -830,6 +854,9 @@ export interface AuthSuccessResponse {
   expires_at: number;
   refresh_token?: string;
   refresh_expires_at?: number;
+  /** Present only when the completion body asked for a step-up (§10.3). */
+  step_up_token?: string;
+  step_up_expires_at?: number;
   principal: {
     npub: string;
     pubkey: string;

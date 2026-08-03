@@ -17,6 +17,14 @@ export interface BuildAuthCompleteRequestInput {
   challenge: AuthInitResponse;
   signer: EventSigner;
   createdAt?: number;
+  /**
+   * Ask for a step-up token on the resulting session.
+   *
+   * Goes in the body, so it is covered by the `payload` hash and cannot be
+   * added or stripped in transit — unlike a `?step_up=true` query parameter,
+   * which the signed `u` tag does not cover.
+   */
+  stepUp?: boolean;
 }
 
 export interface BuiltAuthCompleteRequest {
@@ -48,6 +56,7 @@ export async function buildAuthCompleteRequest(
 ): Promise<BuiltAuthCompleteRequest> {
   const body: AuthCompleteRequest = {
     challenge_id: input.challenge.challenge_id,
+    ...(input.stepUp ? { step_up: true } : {}),
   };
   const rawBody = serializeAuthCompleteBody(body);
   const payloadHash = sha256Hex(rawBody);

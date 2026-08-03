@@ -3,7 +3,9 @@ import type {
   AclRecord,
   AclStore,
   ChallengeStore,
+  OutstandingChallengeFilter,
   PermissionOverride,
+  RecordChallengeFailureResult,
   SessionStore,
 } from '@imani/nap-server';
 import type { QueryResultRow } from 'pg';
@@ -82,6 +84,8 @@ function mapChallengeRecord(row: QueryResultRow): ChallengeRecord {
     redeemed_event_id: row.redeemed_event_id as string | undefined,
     redeemed_session_id: row.redeemed_session_id as string | undefined,
     result_cache_until: asNullableNumber(row.result_cache_until),
+    client_ip: (row.client_ip as string | null) ?? undefined,
+    failure_count: asNullableNumber(row.failure_count),
   };
 }
 
@@ -122,8 +126,9 @@ export class PostgresChallengeStore implements ChallengeStore {
   async create(record: ChallengeRecord): Promise<void> {
     await this.pool.query(
       `INSERT INTO nap_challenges (
-        challenge_id, challenge, npub, pubkey, auth_url, auth_method, state, issued_at, expires_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        challenge_id, challenge, npub, pubkey, auth_url, auth_method, state, issued_at, expires_at,
+        client_ip
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [
         record.challenge_id,
         record.challenge,
@@ -134,6 +139,7 @@ export class PostgresChallengeStore implements ChallengeStore {
         record.state,
         record.issued_at,
         record.expires_at,
+        record.client_ip ?? null,
       ]
     );
   }
@@ -190,6 +196,51 @@ export class PostgresChallengeStore implements ChallengeStore {
     );
 
     return result.rowCount ?? 0;
+  }
+
+  async countOutstanding(filter: OutstandingChallengeFilter): Promise<number> {
+    const result = await this.pool.query(
+      `SELECT COUNT(*)::int AS count
+       FROM nap_challenges
+       WHERE state = 'issued'
+         AND expires_at >= $1
+         AND ($2::text IS NULL OR npub = $2)
+         AND ($3::text IS NULL OR client_ip = $3)`,
+      [filter.now, filter.npub ?? null, filter.clientIp ?? null]
+    );
+
+    return (result.rows[0]?.count as number | undefined) ?? 0;
+  }
+
+  /**
+   * Increments and flips to `failed_terminal` in one statement so concurrent
+   * attempts on the same challenge cannot lose increments to a read-modify-write
+   * race and slip past the cap.
+   */
+  async recordFailure(
+    challengeId: string,
+    params: { now: number; maxFailures: number }
+  ): Promise<RecordChallengeFailureResult | null> {
+    const result = await this.pool.query(
+      `UPDATE nap_challenges
+       SET failure_count = COALESCE(failure_count, 0) + 1,
+           state = CASE
+             WHEN COALESCE(failure_count, 0) + 1 >= $2 THEN 'failed_terminal'
+             ELSE state
+           END
+       WHERE challenge_id = $1 AND state = 'issued'
+       RETURNING failure_count, state`,
+      [challengeId, params.maxFailures]
+    );
+
+    if (result.rowCount === 0) {
+      return null;
+    }
+
+    return {
+      failure_count: result.rows[0].failure_count as number,
+      state: result.rows[0].state as ChallengeRecord['state'],
+    };
   }
 }
 
