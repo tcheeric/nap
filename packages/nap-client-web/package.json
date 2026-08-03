@@ -1,12 +1,12 @@
 {
   "name": "@imani/nap-client-web",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "exports": "./src/index.ts",
   "types": "./src/index.ts",
   "dependencies": {
-    "@imani/nap-client-http": "0.2.0",
-    "@imani/nap-core": "0.2.0",
+    "@imani/nap-client-http": "0.3.0",
+    "@imani/nap-core": "0.3.0",
     "nostr-tools": "^2.10.4"
   }
 }
