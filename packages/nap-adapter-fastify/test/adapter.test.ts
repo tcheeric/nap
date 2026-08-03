@@ -12,7 +12,7 @@ import {
   type PermissionRegistry,
 } from '@imani/nap-server';
 import {
-  createTrustedProxyAwareBaseUrlResolver,
+  createRequestDerivedBaseUrlResolver,
   napFastifyPlugin,
   permissionsFastifyPlugin,
   requirePermission,
@@ -85,7 +85,7 @@ async function createApp(options: NapServerOptions) {
   await app.register(napFastifyPlugin, {
     routePrefix: '/auth',
     server: options,
-    getExternalBaseUrl: createTrustedProxyAwareBaseUrlResolver(),
+    getExternalBaseUrl: createRequestDerivedBaseUrlResolver(),
   });
 
   return app;
@@ -147,7 +147,7 @@ describe('nap-adapter-fastify', () => {
     await app.register(napFastifyPlugin, {
       routePrefix: '/auth',
       server: buildServerOptions(),
-      getExternalBaseUrl: createTrustedProxyAwareBaseUrlResolver(),
+      getExternalBaseUrl: createRequestDerivedBaseUrlResolver(),
       writeSuccess: writeNapCookieSuccess('session', {
         httpOnly: true,
         secure: true,

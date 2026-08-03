@@ -334,7 +334,14 @@ export function writeNapCookieSuccess(
   };
 }
 
-export function createTrustedProxyAwareBaseUrlResolver(): NapExpressOptions['getExternalBaseUrl'] {
+/**
+ * Derives the audience from the incoming request. Contains no trust policy:
+ * `Host` is read raw, and whether `X-Forwarded-Proto` is believed is entirely
+ * Express's `trust proxy` setting. Prefer a pinned constant
+ * (`() => 'https://api.example.com'`) or a Host allowlist. See §9.4 of
+ * docs/NAP-INTEGRATION-GUIDE.md.
+ */
+export function createRequestDerivedBaseUrlResolver(): NapExpressOptions['getExternalBaseUrl'] {
   return (req) => {
     const host = req.get('host');
 

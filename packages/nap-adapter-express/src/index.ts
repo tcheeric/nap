@@ -4,7 +4,7 @@ export {
   createNapExpressInitHandler,
   createNapExpressJsonParser,
   createNapExpressRouter,
-  createTrustedProxyAwareBaseUrlResolver,
+  createRequestDerivedBaseUrlResolver,
   requirePermission,
   requireStepUp,
   resetPermissionValidationState,

@@ -15,7 +15,7 @@ import {
 import {
   createPermissionsRouter,
   createNapExpressRouter,
-  createTrustedProxyAwareBaseUrlResolver,
+  createRequestDerivedBaseUrlResolver,
   requirePermission,
   requireStepUp,
   resetPermissionValidationState,
@@ -87,7 +87,7 @@ function createApp(options: NapServerOptions) {
     '/auth',
     createNapExpressRouter({
       server: options,
-      getExternalBaseUrl: createTrustedProxyAwareBaseUrlResolver(),
+      getExternalBaseUrl: createRequestDerivedBaseUrlResolver(),
     })
   );
   app.use((error: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -139,7 +139,7 @@ describe('nap-adapter-express', () => {
       '/auth',
       createNapExpressRouter({
         server: buildServerOptions(),
-        getExternalBaseUrl: createTrustedProxyAwareBaseUrlResolver(),
+        getExternalBaseUrl: createRequestDerivedBaseUrlResolver(),
         writeSuccess: writeNapCookieSuccess('session', {
           httpOnly: true,
           secure: true,

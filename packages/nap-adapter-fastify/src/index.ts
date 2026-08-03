@@ -2,7 +2,7 @@ export {
   permissionsFastifyPlugin,
   createNapFastifyCompleteHandler,
   createNapFastifyInitHandler,
-  createTrustedProxyAwareBaseUrlResolver,
+  createRequestDerivedBaseUrlResolver,
   napFastifyPlugin,
   requirePermission,
   requireStepUp,
