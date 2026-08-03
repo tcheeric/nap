@@ -135,8 +135,10 @@ export function createNapSession(options: NapClientOptions): NapSession {
   }
 
   return {
-    login(): Promise<AuthSuccessResponse> {
-      return authenticate(false);
+    async login(): Promise<AuthSuccessResponse> {
+      const response = await authenticate(false);
+      options.onLogin?.();
+      return response;
     },
     async logout(): Promise<void> {
       await fetchJson(fetchImpl, sessionPath(options.baseUrl, 'logout'), {
@@ -166,6 +168,8 @@ export function createNapSession(options: NapClientOptions): NapSession {
       }
 
       sessionState = toSessionState(response.body);
+      locked = false;
+      options.onLogin?.();
       return response.body;
     },
     async stepUp(): Promise<string> {

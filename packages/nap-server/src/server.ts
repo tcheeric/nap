@@ -373,6 +373,33 @@ export function toPublicAuthSuccess(session: SessionRecord): AuthSuccessResponse
   };
 }
 
+/**
+ * Session view for `GET /auth/session`.
+ *
+ * Deliberately omits `access_token`, `token_type`, and the step-up fields. In
+ * cookie mode the access token lives in an HttpOnly cookie; echoing it into a
+ * JSON body would make it readable by script and undo that protection. The
+ * browser client only reads `principal`, `roles`, `permissions`, and
+ * `expires_at` when resuming.
+ */
+export type PublicSessionView = Omit<
+  AuthSuccessResponse,
+  'access_token' | 'token_type' | 'step_up_token' | 'step_up_expires_at'
+>;
+
+export function toPublicSessionView(session: SessionRecord): PublicSessionView {
+  return {
+    status: 'ok',
+    expires_at: session.expires_at,
+    principal: {
+      npub: session.principal_npub,
+      pubkey: session.principal_pubkey,
+    },
+    roles: session.roles,
+    permissions: session.permissions,
+  };
+}
+
 export function toPublicAuthFailure(): { status: 401; body: AuthFailureResponse } {
   return {
     status: 401,

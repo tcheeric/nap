@@ -2,6 +2,8 @@ export {
   permissionsFastifyPlugin,
   createNapFastifyCompleteHandler,
   createNapFastifyInitHandler,
+  createNapFastifyLogoutHandler,
+  createNapFastifySessionHandler,
   createRequestDerivedBaseUrlResolver,
   napFastifyPlugin,
   requirePermission,

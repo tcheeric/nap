@@ -1023,22 +1023,28 @@ The `NapSession` surface (`packages/nap-client-web/src/types.ts:38`):
 | Method | Does what | Server endpoint |
 |---|---|---|
 | `login()` | Full init → sign → complete. Returns `AuthSuccessResponse`. | `POST /auth/init`, `POST /auth/complete` |
-| `logout()` | Clears local state, fires `onLogout`, broadcasts to other tabs. | `POST /auth/logout` — **not implemented server-side** |
-| `resume()` | Rehydrate from an existing cookie on page load. `null` on 401. | `GET /auth/session` — **not implemented server-side** |
+| `logout()` | Clears local state, fires `onLogout`, broadcasts to other tabs. | `POST /auth/logout` |
+| `resume()` | Rehydrate from an existing cookie on page load. `null` on 401. Fires `onLogin` when it restores a session. | `GET /auth/session` |
 | `stepUp()` | Re-auth and return a step-up token. | `POST /auth/complete?step_up=true` — see below |
 | `isAuthenticated()` / `getSession()` / `hasPermission(k)` / `hasRole(k)` | Local reads of the cached `SessionState`. | — |
 | `lock()` / `isLocked()` / `shutdown()` / `isShutdown()` | Idle-lock state machine. | — |
 | `reunlock(passphrase)` | Decrypt a stored key via your `KeyStore`. | — |
 | `destroy()` | Stop the idle timer, close the `BroadcastChannel`. Call on unmount. | — |
 
-> **Not implemented in 0.2.0 — you must write these yourself.** Neither adapter
-> defines `/auth/session` or `/auth/logout`; `createNapExpressRouter()` mounts
-> exactly two routes (`packages/nap-adapter-express/src/adapter.ts:232`) and
-> `napFastifyPlugin` the same two (`.../nap-adapter-fastify/src/adapter.ts:259`).
-> `resume()` will throw on a 404 and `logout()` will fail. Both are easy —
-> `/auth/session` is `sessionStore.getByAccessToken(cookieToken)` rendered with
-> `toPublicAuthSuccess()`, `/auth/logout` is `revokeBySessionId()` plus a cookie
-> clear. Add them before shipping.
+> **`GET /auth/session` deliberately omits the access token.** Both adapters now
+> mount all four routes, but `/auth/session` renders `toPublicSessionView()`
+> rather than `toPublicAuthSuccess()` — so the body carries `principal`, `roles`,
+> `permissions`, and `expires_at`, and **not** `access_token` or `step_up_token`.
+> In cookie mode the token is `HttpOnly`; echoing it into a JSON body would hand
+> a working bearer credential to any script on the page and undo that protection.
+> `toSessionState()` (`packages/nap-client-web/src/session.ts:18`) never reads the
+> token, so nothing is lost.
+>
+> `POST /auth/logout` is idempotent — 204 whether or not a session was found — so
+> a client clearing local state never has to distinguish "logged out" from "was
+> already logged out". It clears the cookie using `clearCookieOptions`, which
+> **must match the attributes you set it with** (`path`, `domain`) or the browser
+> keeps the cookie.
 >
 > **`stepUp()` cannot succeed in 0.2.0.** Nothing ever populates
 > `SessionRecord.step_up_token`, so the response has no `step_up_token` and
@@ -1227,16 +1233,15 @@ Two implementation details you should know about:
    mutations that bypass the callbacks. A 500 ms interval per provider is cheap
    but not free, and it means up to half a second of staleness after
    `session.lock()`.
-2. **`useNapCallbacks()` returns an `onLogin` callback that `NapClientOptions`
-   does not accept.** The hook returns `{ onLock, onUnlock, onShutdown,
-   onLogout, onLogin }` (`NapProvider.tsx:139`) but `NapClientOptions`
-   (`packages/nap-client-web/src/types.ts:28`) declares only `onSessionExpired`,
-   `onLock`, `onUnlock`, `onShutdown`, `onLogout`. Spreading `...callbacks` into
-   `createNapSession()` therefore passes an ignored `onLogin`, and — because
-   nothing calls it — the hook's `isAuthenticated` boolean **never becomes
-   true**. Use `useNapSession().isAuthenticated` (which reads through
-   `session.isAuthenticated()` on the poll) rather than the tuple's first
-   element, or call `onLogin` yourself after `await session.login()`.
+2. **`onLogin` fires on `login()` and on a `resume()` that restores a session.**
+   The hook returns `{ onLock, onUnlock, onShutdown, onLogout, onLogin }`
+   (`NapProvider.tsx:139`) and `NapClientOptions` accepts all five, so spreading
+   `...callbacks` into `createNapSession()` wires the tuple's `isAuthenticated`
+   correctly. A `resume()` that finds no session does **not** fire it — that path
+   calls `onSessionExpired` instead. Either source of truth works:
+   `useNapSession().isAuthenticated` reads through `session.isAuthenticated()` on
+   the poll, while the `useNapCallbacks()` tuple is event-driven and has no
+   polling latency.
 
 `useReunlock()` (`packages/nap-react/src/useReunlock.ts`) manages a modal
 lifecycle around `session.reunlock()`. Its `withSigningGuard(fn)` wraps an async
@@ -2318,9 +2323,10 @@ Practical notes for this phase:
   case out as a top pitfall). If your API client is bearer-token-shaped today,
   driving `@imani/nap-client-http` yourself and keeping the token in memory is
   the smaller diff.
-- **Implement `/auth/session` before you ship session resume** (§6.1). Without
-  it, every page reload is a fresh signing prompt, and users will notice that
-  more than they noticed NIP-98.
+- **Mount `/auth/session` before you ship session resume** (§6.1). Both adapters
+  provide it now, but if you wire handlers individually rather than using the
+  router, omitting it makes every page reload a fresh signing prompt — and users
+  will notice that more than they noticed NIP-98.
 - Add an `isRestoringSession` loading state so the app does not flash the login
   screen on reload (`docs/NAP-IMPLEMENTATION-BEST-PRACTICES.md:129`).
 
@@ -2379,8 +2385,9 @@ normal authenticated requests as an explicit non-goal).
 - **The raw-body ordering** (§5.2) — wrong means a 500 on every completion.
 - **Rate limiting on `/auth/init`** (§9.5) — you are exposing a new
   unauthenticated write endpoint to the internet.
-- **`/auth/session` and `/auth/logout`** (§6.1) — if you use `nap-client-web`,
-  two of its seven methods are dead without them.
+- **Cookie attributes on logout** (§6.1) — `clearCookieOptions` must match the
+  attributes you set the cookie with, or `/auth/logout` revokes server-side while
+  the browser keeps a now-dead cookie.
 
 ---
 
@@ -2432,11 +2439,14 @@ Collected from the preceding sections:
   issues a step-up token, and nothing connects `stepUp: true` on a permission to
   the guard. `session.stepUp()` throws (§6.1). This is a half-built feature —
   the plumbing is there, the source is not.
-- **`/auth/session` and `/auth/logout`.** `nap-client-web` calls both; no
-  adapter provides them (§6.1).
+- ~~**`/auth/session` and `/auth/logout`.**~~ **Fixed.** Both adapters mount all
+  four routes. `/auth/session` returns `toPublicSessionView()` — no access token
+  in the body — and `/auth/logout` revokes the session and clears the cookie
+  idempotently (§6.1).
 - **`NapClientOptions.cookie`.** Declared, never read (§6.1).
-- **`useNapCallbacks().onLogin`.** Returned by the hook, not accepted by
-  `NapClientOptions`, so the hook's `isAuthenticated` never flips (§6.4).
+- ~~**`useNapCallbacks().onLogin`.**~~ **Fixed.** `NapClientOptions` accepts
+  `onLogin`, and `session.login()` and a session-restoring `session.resume()`
+  both fire it, so the hook's `isAuthenticated` flips (§6.4).
 - **Expired-row sweeping.** `markExpired()` marks but never deletes; sessions
   are not swept at all (§5.4).
 
@@ -2521,13 +2531,13 @@ auditLogger: {
 | **Throws `Permissions used in middleware but missing from registry: …` at boot** | A `requirePermission('…')` string is not declared in the registry. Note the check is against a module-level set, so in tests you need `resetPermissionValidationState()` between cases (`packages/nap-adapter-express/test/adapter.test.ts:101`). |
 | **`PostgresSessionStore could not reload session for challenge '…'`** | The `ON CONFLICT (challenge_id) DO NOTHING` insert was a no-op but the reload found nothing. Almost certainly a missing `UNIQUE` constraint on `nap_sessions.challenge_id` (§5.5), or a concurrent delete. |
 | **`syntax error at or near "ON CONFLICT"` / `no unique or exclusion constraint matching`** | Missing `UNIQUE (challenge_id)` on `nap_sessions` or `PRIMARY KEY (app_id, pubkey)` on `nap_acl` (§5.5). |
-| **404 on `GET /auth/session` or `POST /auth/logout`** | Those endpoints do not exist in 0.2.0. You have to write them (§6.1). |
+| **404 on `GET /auth/session` or `POST /auth/logout`** | You wired the init/complete handlers individually instead of mounting `createNapExpressRouter()` / `napFastifyPlugin`, which mount all four. Add `createNapExpressSessionHandler` / `createNapExpressLogoutHandler` (or the Fastify equivalents) (§6.1). |
 | **`NAP step-up response did not include a step-up token`** | `session.stepUp()` cannot work in 0.2.0 — nothing issues step-up tokens (§6.1). |
 | **403 `{"message":"forbidden"}` on a guarded route** | Valid session, but `session.permissions` lacks the key. Remember permissions are a **login-time snapshot** — if you just granted the permission, the user must re-login or you must `revokeByPrincipal()` (§3.4). |
 | **403 `{"message":"step-up required"}`** | `requireStepUp()` found no `X-Step-Up-Token`, a mismatch, or an expired one. In 0.2.0 this is unavoidable unless you populate `step_up_token` yourself. |
 | **401 on every request despite a successful login (cookie mode)** | Missing `credentials: 'include'` on your API calls, or a CORS config without `Access-Control-Allow-Credentials: true` and explicit origins, or `secure: true` on a plain-HTTP dev origin. |
-| **Login works, page reload logs you out** | You have not implemented `/auth/session`, so `resume()` cannot rehydrate (§6.1). |
-| **React: `isAuthenticated` stays `false` after a successful login** | You are reading the tuple from `useNapCallbacks()`, whose `onLogin` is never called by the client. Read `useNapSession().isAuthenticated` instead (§6.4). |
+| **Login works, page reload logs you out** | `resume()` is not being called on mount, or `/auth/session` is not mounted, or the cookie is not being sent — check `credentials: 'include'` and the cookie's `SameSite`/`path` (§6.1). |
+| **Logout returns 204 but the browser keeps the cookie** | `clearCookieOptions` does not match the attributes the cookie was set with. `path` and `domain` must be identical or the browser treats it as a different cookie (§6.1). |
 | **React: `useNapSession must be used within a <NapProvider>`** | Self-explanatory (`packages/nap-react/src/NapProvider.tsx:81`). |
 | **Login fails intermittently under load / with two server processes** | `InMemoryChallengeStore` is per-process. Nothing is shared. Move to Postgres (§5.4). |
 | **`nap_challenges` growing without bound** | Nobody calls `markExpired()`, and it only flips `state` anyway — it never deletes. Add a sweeper (§5.4). |

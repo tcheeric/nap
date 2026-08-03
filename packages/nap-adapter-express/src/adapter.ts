@@ -2,6 +2,7 @@ import express, { type CookieOptions, type Request, type RequestHandler, type Re
 import {
   toPublicAuthFailure,
   toPublicAuthSuccess,
+  toPublicSessionView,
   validatePermissionRegistry,
   issueChallenge,
   isMalformedRequestFailure,
@@ -24,6 +25,10 @@ function currentEpochSeconds(): number {
 export interface NapExpressOptions {
   server: NapServerOptions;
   getExternalBaseUrl(req: Request): string;
+  /** Cookie carrying the access token, read by `/auth/session` and cleared by `/auth/logout`. Defaults to `session`. */
+  cookieName?: string;
+  /** Attributes used when clearing the cookie on logout. Must match those used to set it, or the browser keeps it. Defaults to `{ path: '/' }`. */
+  clearCookieOptions?: CookieOptions;
   writeSuccess?: (ctx: {
     req: Request;
     res: Response;
@@ -225,12 +230,71 @@ export function createNapExpressCompleteHandler(options: NapExpressOptions): Req
   };
 }
 
+/**
+ * `GET /auth/session` — returns the current session, or 401 if there is none.
+ *
+ * The body omits `access_token` (see `toPublicSessionView`): in cookie mode the
+ * token is HttpOnly, and echoing it here would hand it to any script on the
+ * page.
+ */
+export function createNapExpressSessionHandler(options: NapExpressOptions): RequestHandler {
+  return async (req, res, next) => {
+    try {
+      const session = await loadSession(req, {
+        sessionStore: options.server.sessionStore,
+        cookieName: options.cookieName,
+      });
+
+      if (!session) {
+        unauthorized(res);
+        return;
+      }
+
+      res.status(200).json(toPublicSessionView(session));
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
+/**
+ * `POST /auth/logout` — revokes the current session and clears the cookie.
+ *
+ * Idempotent: returns 204 whether or not a session was found, so a client
+ * clearing local state never has to distinguish "logged out" from "was already
+ * logged out".
+ */
+export function createNapExpressLogoutHandler(options: NapExpressOptions): RequestHandler {
+  return async (req, res, next) => {
+    try {
+      const session = await loadSession(req, {
+        sessionStore: options.server.sessionStore,
+        cookieName: options.cookieName,
+      });
+
+      if (session) {
+        await options.server.sessionStore.revokeBySessionId(
+          session.session_id,
+          currentEpochSeconds()
+        );
+      }
+
+      res.clearCookie(options.cookieName ?? 'session', options.clearCookieOptions ?? { path: '/' });
+      res.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
 export function createNapExpressRouter(options: NapExpressOptions): Router {
   const router = express.Router();
 
   router.use(createNapExpressJsonParser());
   router.post('/init', createNapExpressInitHandler(options));
   router.post('/complete', createNapExpressCompleteHandler(options));
+  router.get('/session', createNapExpressSessionHandler(options));
+  router.post('/logout', createNapExpressLogoutHandler(options));
 
   return router;
 }

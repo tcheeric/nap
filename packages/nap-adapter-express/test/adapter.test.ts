@@ -248,6 +248,71 @@ describe('nap-adapter-express', () => {
     expect(response.body.message).toBe('step-up required');
   });
 
+  it('returns the current session from GET /auth/session', async () => {
+    const options = buildServerOptions();
+    await seedSession(options.sessionStore as InMemorySessionStore);
+    const app = createApp(options);
+
+    const response = await request(app)
+      .get('/auth/session')
+      .set('cookie', 'session=token-1');
+
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe('ok');
+    expect(response.body.principal.npub).toBe(NPUB);
+    expect(response.body.roles).toEqual(['merchant']);
+  });
+
+  it('does not leak the access token from GET /auth/session', async () => {
+    const options = buildServerOptions();
+    await seedSession(options.sessionStore as InMemorySessionStore);
+    const app = createApp(options);
+
+    const response = await request(app)
+      .get('/auth/session')
+      .set('cookie', 'session=token-1');
+
+    // In cookie mode the token is HttpOnly. Echoing it into a JSON body would
+    // hand a working bearer credential to any script on the page.
+    expect(response.body.access_token).toBeUndefined();
+    expect(response.body.step_up_token).toBeUndefined();
+  });
+
+  it('returns 401 from GET /auth/session without a session', async () => {
+    const app = createApp(buildServerOptions());
+
+    const response = await request(app).get('/auth/session');
+
+    expect(response.status).toBe(401);
+  });
+
+  it('revokes the session and clears the cookie on POST /auth/logout', async () => {
+    const options = buildServerOptions();
+    await seedSession(options.sessionStore as InMemorySessionStore);
+    const app = createApp(options);
+
+    const logout = await request(app)
+      .post('/auth/logout')
+      .set('cookie', 'session=token-1');
+
+    expect(logout.status).toBe(204);
+    expect(logout.headers['set-cookie']?.[0]).toContain('session=;');
+
+    const after = await request(app)
+      .get('/auth/session')
+      .set('cookie', 'session=token-1');
+
+    expect(after.status).toBe(401);
+  });
+
+  it('returns 204 from POST /auth/logout when no session exists', async () => {
+    const app = createApp(buildServerOptions());
+
+    const response = await request(app).post('/auth/logout');
+
+    expect(response.status).toBe(204);
+  });
+
   it('fails startup validation for unknown permission keys', () => {
     const sessionStore = new InMemorySessionStore();
     requirePermission('unknown:permission', {

@@ -11,6 +11,7 @@ import type {
 import {
   toPublicAuthFailure,
   toPublicAuthSuccess,
+  toPublicSessionView,
   validatePermissionRegistry,
   issueChallenge,
   isMalformedRequestFailure,
@@ -38,6 +39,10 @@ export interface NapFastifyOptions {
   server: NapServerOptions;
   routePrefix?: string;
   getExternalBaseUrl(req: FastifyRequest): string;
+  /** Cookie carrying the access token, read by `/auth/session` and cleared by `/auth/logout`. Defaults to `session`. */
+  cookieName?: string;
+  /** Attributes used when clearing the cookie on logout. Must match those used to set it, or the browser keeps it. Defaults to `{ path: '/' }`. */
+  clearCookieOptions?: SerializeOptions;
   writeSuccess?: (ctx: {
     req: FastifyRequest;
     reply: FastifyReply;
@@ -258,6 +263,63 @@ function installNapJsonParser(instance: FastifyInstance): void {
   );
 }
 
+/**
+ * `GET /auth/session` — returns the current session, or 401 if there is none.
+ *
+ * The body omits `access_token` (see `toPublicSessionView`): in cookie mode the
+ * token is HttpOnly, and echoing it here would hand it to any script on the
+ * page.
+ */
+export function createNapFastifySessionHandler(options: NapFastifyOptions): RouteHandlerMethod {
+  return async (req, reply) => {
+    const session = await loadSession(req, {
+      sessionStore: options.server.sessionStore,
+      cookieName: options.cookieName,
+    });
+
+    if (!session) {
+      const failure = toPublicAuthFailure();
+      reply.status(failure.status).send(failure.body);
+      return;
+    }
+
+    reply.status(200).send(toPublicSessionView(session));
+  };
+}
+
+/**
+ * `POST /auth/logout` — revokes the current session and clears the cookie.
+ *
+ * Idempotent: returns 204 whether or not a session was found, so a client
+ * clearing local state never has to distinguish "logged out" from "was already
+ * logged out".
+ */
+export function createNapFastifyLogoutHandler(options: NapFastifyOptions): RouteHandlerMethod {
+  return async (req, reply) => {
+    const session = await loadSession(req, {
+      sessionStore: options.server.sessionStore,
+      cookieName: options.cookieName,
+    });
+
+    if (session) {
+      await options.server.sessionStore.revokeBySessionId(
+        session.session_id,
+        currentEpochSeconds()
+      );
+    }
+
+    reply.header(
+      'set-cookie',
+      serialize(options.cookieName ?? 'session', '', {
+        path: '/',
+        ...options.clearCookieOptions,
+        maxAge: 0,
+      })
+    );
+    reply.status(204).send();
+  };
+}
+
 export const napFastifyPlugin: FastifyPluginAsync<NapFastifyOptions> = async (fastify, options) => {
   installNapJsonParser(fastify);
 
@@ -265,6 +327,8 @@ export const napFastifyPlugin: FastifyPluginAsync<NapFastifyOptions> = async (fa
 
   fastify.post(`${prefix}/init`, createNapFastifyInitHandler(options));
   fastify.post(`${prefix}/complete`, createNapFastifyCompleteHandler(options));
+  fastify.get(`${prefix}/session`, createNapFastifySessionHandler(options));
+  fastify.post(`${prefix}/logout`, createNapFastifyLogoutHandler(options));
 };
 
 export function requirePermission(

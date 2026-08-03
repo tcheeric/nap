@@ -26,6 +26,8 @@ export interface NapClientOptions {
   };
   broadcast?: { enabled: boolean; channelName?: string };
   onSessionExpired?: () => void;
+  /** Called after a successful login() or a resume() that restored a session. */
+  onLogin?: () => void;
   onLock?: () => void;
   onUnlock?: () => void;
   /** Called when the shutdown timer fires (extended inactivity). */
