@@ -1,0 +1,110 @@
+{
+  "description": "Cases that need challenge state. Seed the challenge store with `challenge`, set the clock to each step's `now`, and run the steps in order against one server instance. `same_session_as_step` on an expected result names the earlier step whose session it must equal.",
+  "cases": [
+    {
+      "name": "expired-challenge",
+      "rfc": "§20.3 expired challenge rejection",
+      "description": "The challenge expired 10 seconds ago while the signature is still inside the clock-skew window — so this reaches the expiry check rather than failing earlier on `created_at`.",
+      "challenge": {
+        "challenge_id": "chal-0000000000000000",
+        "challenge": "Zm9yLXRlc3QtdmVjdG9ycy1vbmx5LW5vdC1yYW5kb20",
+        "npub": "npub1fu64hh9hes90w2808n8tjc2ajp5yhddjef0ctx4s7zmsgp6cwx4qgy4eg9",
+        "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+        "auth_url": "https://api.example.com/auth/complete",
+        "auth_method": "POST",
+        "issued_at": 1709999960,
+        "expires_at": 1709999990,
+        "state": "issued"
+      },
+      "steps": [
+        {
+          "now": 1710000000,
+          "authorization": "Nostr eyJraW5kIjoyNzIzNSwiY3JlYXRlZF9hdCI6MTcwOTk5OTk2NSwidGFncyI6W1sidSIsImh0dHBzOi8vYXBpLmV4YW1wbGUuY29tL2F1dGgvY29tcGxldGUiXSxbIm1ldGhvZCIsIlBPU1QiXSxbInBheWxvYWQiLCI1YjMyNWUwZmE0MmU5OTA5YTQ2N2UzYzIxN2EzZjc0MWU5ZjY5ODJhNTFmNWMzNTJlNmQyM2FjNTJlMmFhZjQyIl0sWyJjaGFsbGVuZ2UiLCJabTl5TFhSbGMzUXRkbVZqZEc5eWN5MXZibXg1TFc1dmRDMXlZVzVrYjIwIl0sWyJjaGFsbGVuZ2VfaWQiLCJjaGFsLTAwMDAwMDAwMDAwMDAwMDAiXV0sImNvbnRlbnQiOiIiLCJwdWJrZXkiOiI0ZjM1NWJkY2I3Y2MwYWY3MjhlZjNjY2ViOTYxNWQ5MDY4NGJiNWIyY2E1Zjg1OWFiMGYwYjcwNDA3NTg3MWFhIiwiaWQiOiI2MWMyMWM0Yjk3ZWUwODczN2FmZGRkYTQzYjBiY2Q1ZTU1ZTY2YWYyYTNkOTBlMjhlZWNiMmExMTJhYzI1NWM3Iiwic2lnIjoiNmM3MzA4NTQzNWNlN2E1ZGRmNGMwZTlkODcyNjkzYTQxOTc0ZWNiMjM3ODRiYWY1OTZjYTlkMmE4NmM5Njg3ZDk5Zjc5Yjg3MTIwN2NlMmFkNTYyM2E5NzE0MGIxNjdlZDFlOTNlOTNlOWMzNzUxZTVkZWVmNTA5ODFjYzU3ZDQifQ==",
+          "request": {
+            "method": "POST",
+            "url": "https://api.example.com/auth/complete",
+            "body": "{\"challenge_id\":\"chal-0000000000000000\"}"
+          },
+          "expect": {
+            "ok": false,
+            "code": "NAP_COMPLETE_EXPIRED_CHALLENGE"
+          }
+        }
+      ]
+    },
+    {
+      "name": "retry-same-completion",
+      "rfc": "§20.3 retrying the same valid completion request",
+      "description": "A retried completion returns the session the first attempt minted, rather than a second session or a replay error (RFC §13.3). Both steps send byte-identical requests.",
+      "challenge": {
+        "challenge_id": "chal-0000000000000000",
+        "challenge": "Zm9yLXRlc3QtdmVjdG9ycy1vbmx5LW5vdC1yYW5kb20",
+        "npub": "npub1fu64hh9hes90w2808n8tjc2ajp5yhddjef0ctx4s7zmsgp6cwx4qgy4eg9",
+        "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+        "auth_url": "https://api.example.com/auth/complete",
+        "auth_method": "POST",
+        "issued_at": 1709999970,
+        "expires_at": 1710000030,
+        "state": "issued"
+      },
+      "steps": [
+        {
+          "now": 1710000000,
+          "authorization": "Nostr eyJraW5kIjoyNzIzNSwiY3JlYXRlZF9hdCI6MTcxMDAwMDAwMCwidGFncyI6W1sidSIsImh0dHBzOi8vYXBpLmV4YW1wbGUuY29tL2F1dGgvY29tcGxldGUiXSxbIm1ldGhvZCIsIlBPU1QiXSxbInBheWxvYWQiLCI1YjMyNWUwZmE0MmU5OTA5YTQ2N2UzYzIxN2EzZjc0MWU5ZjY5ODJhNTFmNWMzNTJlNmQyM2FjNTJlMmFhZjQyIl0sWyJjaGFsbGVuZ2UiLCJabTl5TFhSbGMzUXRkbVZqZEc5eWN5MXZibXg1TFc1dmRDMXlZVzVrYjIwIl0sWyJjaGFsbGVuZ2VfaWQiLCJjaGFsLTAwMDAwMDAwMDAwMDAwMDAiXV0sImNvbnRlbnQiOiIiLCJwdWJrZXkiOiI0ZjM1NWJkY2I3Y2MwYWY3MjhlZjNjY2ViOTYxNWQ5MDY4NGJiNWIyY2E1Zjg1OWFiMGYwYjcwNDA3NTg3MWFhIiwiaWQiOiI4MmNjYTMxY2QxYTc2OTRhMjI4ZmJkYWQ1Yzc3NWQzNTYxZmEzYjk1OGQ1MGFjYTBlM2I0MmY4YjExNzNmZGMwIiwic2lnIjoiNDZkZDY3NThmM2Q5ZGNmOTY1OGYwZTM4OTllYTBiMWEwMTYzODU4NjQ0NjA1YmNjMWQwMWU4YTAzYjkzMDlkNjQ3MmRjY2NkY2MyNjgwOTNiY2RjMmQzNWQzMzlhNjQzMTk3YmZmMTgzMjYxMTg0YWE5MDAzYmNmZWI1MGZlYWUifQ==",
+          "request": {
+            "method": "POST",
+            "url": "https://api.example.com/auth/complete",
+            "body": "{\"challenge_id\":\"chal-0000000000000000\"}"
+          },
+          "expect": {
+            "ok": true
+          }
+        },
+        {
+          "now": 1710000001,
+          "authorization": "Nostr eyJraW5kIjoyNzIzNSwiY3JlYXRlZF9hdCI6MTcxMDAwMDAwMCwidGFncyI6W1sidSIsImh0dHBzOi8vYXBpLmV4YW1wbGUuY29tL2F1dGgvY29tcGxldGUiXSxbIm1ldGhvZCIsIlBPU1QiXSxbInBheWxvYWQiLCI1YjMyNWUwZmE0MmU5OTA5YTQ2N2UzYzIxN2EzZjc0MWU5ZjY5ODJhNTFmNWMzNTJlNmQyM2FjNTJlMmFhZjQyIl0sWyJjaGFsbGVuZ2UiLCJabTl5TFhSbGMzUXRkbVZqZEc5eWN5MXZibXg1TFc1dmRDMXlZVzVrYjIwIl0sWyJjaGFsbGVuZ2VfaWQiLCJjaGFsLTAwMDAwMDAwMDAwMDAwMDAiXV0sImNvbnRlbnQiOiIiLCJwdWJrZXkiOiI0ZjM1NWJkY2I3Y2MwYWY3MjhlZjNjY2ViOTYxNWQ5MDY4NGJiNWIyY2E1Zjg1OWFiMGYwYjcwNDA3NTg3MWFhIiwiaWQiOiI4MmNjYTMxY2QxYTc2OTRhMjI4ZmJkYWQ1Yzc3NWQzNTYxZmEzYjk1OGQ1MGFjYTBlM2I0MmY4YjExNzNmZGMwIiwic2lnIjoiZmM3YjgzMTU3NzlmNTA2OTU5MWYyOTM3M2Q3OTk1Njk3NzYzY2NmYmNiODgyYmE4YjE2YTg3YTk3ZjQ0M2U4ZWFkNjhmMWUxYmY1NDMxOTk2M2U5YTkxMzQwODgwZGU5ODQxZWYwNWFiOTE3NzYzZDQyYTBiMzUxOGVjNWZjNmEifQ==",
+          "request": {
+            "method": "POST",
+            "url": "https://api.example.com/auth/complete",
+            "body": "{\"challenge_id\":\"chal-0000000000000000\"}"
+          },
+          "expect": {
+            "ok": true,
+            "same_session_as_step": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "pubkey-npub-mismatch",
+      "rfc": "§20.3 pubkey/npub mismatch",
+      "description": "The challenge was issued to key A; the proof is signed by key B. The proof is valid — it just proves the wrong key. Rejected before any failure budget is spent, because a `challenge_id` is not a secret and burning a victim's challenge must not be free.",
+      "challenge": {
+        "challenge_id": "chal-0000000000000000",
+        "challenge": "Zm9yLXRlc3QtdmVjdG9ycy1vbmx5LW5vdC1yYW5kb20",
+        "npub": "npub1fu64hh9hes90w2808n8tjc2ajp5yhddjef0ctx4s7zmsgp6cwx4qgy4eg9",
+        "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+        "auth_url": "https://api.example.com/auth/complete",
+        "auth_method": "POST",
+        "issued_at": 1709999970,
+        "expires_at": 1710000030,
+        "state": "issued"
+      },
+      "steps": [
+        {
+          "now": 1710000000,
+          "authorization": "Nostr eyJraW5kIjoyNzIzNSwiY3JlYXRlZF9hdCI6MTcxMDAwMDAwMCwidGFncyI6W1sidSIsImh0dHBzOi8vYXBpLmV4YW1wbGUuY29tL2F1dGgvY29tcGxldGUiXSxbIm1ldGhvZCIsIlBPU1QiXSxbInBheWxvYWQiLCI1YjMyNWUwZmE0MmU5OTA5YTQ2N2UzYzIxN2EzZjc0MWU5ZjY5ODJhNTFmNWMzNTJlNmQyM2FjNTJlMmFhZjQyIl0sWyJjaGFsbGVuZ2UiLCJabTl5TFhSbGMzUXRkbVZqZEc5eWN5MXZibXg1TFc1dmRDMXlZVzVrYjIwIl0sWyJjaGFsbGVuZ2VfaWQiLCJjaGFsLTAwMDAwMDAwMDAwMDAwMDAiXV0sImNvbnRlbnQiOiIiLCJwdWJrZXkiOiI0NjZkN2ZjYWU1NjNlNWNiMDlhMGQxODcwYmI1ODAzNDQ4MDQ2MTc4NzlhMTQ5NDljZjIyMjg1ZjFiYWUzZjI3IiwiaWQiOiIyNGY4OWJhMzhjZGZhMzg1YTA2MGI0ZjkwMzI1ZGVlYTBjZDZjYzIxZDZmNjVlMzdjZTQzYTEwNzU4YWYwYjhiIiwic2lnIjoiNzA3ZDFiNzhiNzM4OWQ3MDIxMjk5MzU5MDgyM2IwYjUxYTIzNDExNGQ2ODQxOTg5ZDc0MjZjNTQ5OTk0OGM1OTc0ZGIyMDc1MzgxNzljODlmNTg1MGY2MWYwN2VhOTBiNzMzZDNkYTE1Y2RhNDlkNTg3Y2FmNTBiOTdhYzUxMWEifQ==",
+          "request": {
+            "method": "POST",
+            "url": "https://api.example.com/auth/complete",
+            "body": "{\"challenge_id\":\"chal-0000000000000000\"}"
+          },
+          "expect": {
+            "ok": false,
+            "code": "NAP_COMPLETE_PRINCIPAL_MISMATCH"
+          }
+        }
+      ]
+    }
+  ]
+}
