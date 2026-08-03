@@ -3,12 +3,16 @@
 A practical guide for engineers who already run a Nostr web app and need NAP for
 authentication and authorisation.
 
-This guide is written against the `nap` TypeScript monorepo at version **0.2.0**
-(branch `develop`). Anything specified by the RFC but not present in the 0.2.0
-source is marked explicitly.
+This guide is written against the `nap` TypeScript monorepo at version **0.3.0**
+(branch `develop`). Anything specified by the RFC but not present in the source is
+marked explicitly.
+
+**New to NAP? Read §0 first** — it covers what to decide before writing code, what
+order to build in, and the four mistakes that each cost an afternoon.
 
 ## Table of contents
 
+0. [Before you start](#0-before-you-start)
 1. [What NAP is and the problem it solves](#1-what-nap-is-and-the-problem-it-solves)
 2. [Protocol walkthrough](#2-protocol-walkthrough)
 3. [Authorisation model](#3-authorisation-model)
@@ -21,6 +25,109 @@ source is marked explicitly.
 10. [Migration path](#10-migration-path)
 11. [Current limitations and roadmap](#11-current-limitations-and-roadmap)
 12. [Troubleshooting](#12-troubleshooting)
+
+---
+
+## 0. Before you start
+
+The rest of this guide explains NAP thoroughly. This section is the part you need
+first: what to decide before writing code, what order to build in, and the small
+number of mistakes that cost real time.
+
+### 0.1 The decision that shapes everything else
+
+**Pick the signer first.** It determines your key-custody burden and is expensive
+to change later.
+
+| Signer | Key in your page? | Cost |
+|---|---|---|
+| NIP-07 extension (`createNip07Signer`) | No | Users need an extension installed |
+| NIP-46 remote signer | No | **Not implemented** — spec only, `specs/001-nip46-signer-support/` |
+| Local nsec (`createPrivateKeySessionSigner`) | Yes | You own encryption, eviction, and all of RFC §28 |
+
+If you can live with NIP-07, take it. A local key means implementing a `KeyStore`
+yourself — NAP ships the *interface*, not an implementation — plus WebCrypto
+encryption and passphrase UX, and even then you cannot defend a key that is
+unlocked while hostile script runs (§9.7, RFC §28.5).
+
+### 0.2 The thing that most often surprises people
+
+**The default session TTL is 900 seconds and there are no refresh tokens.**
+`AuthSuccessResponse.refresh_token` exists as a type, but nothing populates it and
+there is no refresh endpoint (§11.2). With a NIP-07 extension that means **a signing
+prompt every 15 minutes**.
+
+Your only lever today is `sessionTtlSeconds`
+(`packages/nap-server/src/server.ts:31`). Choose it deliberately and early — it is a
+product decision wearing a config parameter's clothes.
+
+### 0.3 Four mistakes that each cost an afternoon
+
+1. **A global body parser running before the NAP router.** The NIP-98 `payload` tag
+   is `sha256(rawBody)`, so any middleware that re-serialises JSON breaks every
+   completion with `NAP_COMPLETE_PAYLOAD_MISMATCH`. Mount NAP first (§5.2).
+2. **A request-derived `getExternalBaseUrl`.** Get the audience wrong and *every*
+   login fails as an indistinguishable 401. Use a pinned constant unless you are
+   genuinely multi-domain (§9.4).
+3. **No `AuditLogger`.** Every failure is an identical
+   `401 {"status":"error","message":"authentication failed"}` — by design. Without
+   the audit `code` you cannot debug any of them (§9.6).
+4. **Missing `credentials: 'include'`.** `nap-client-web` is cookie-mode only, so
+   every API call your app makes needs it (§6.1).
+
+### 0.4 Build in this order
+
+Each phase is independently verifiable, so a failure tells you which layer broke.
+
+| Phase | Do | Done when |
+|---|---|---|
+| **0** | Router mounted, in-memory stores, bearer mode, pinned base URL, `AuditLogger` wired. No frontend. | `curl` completes `/auth/init` → `/auth/complete` and gets a session |
+| **1** | Swap in `@imani/nap-store-postgres`; switch to cookie mode via `writeNapCookieSuccess`; set `clearCookieOptions` to match | Sessions survive a server restart; logout clears the cookie |
+| **2** | `createNapSession` + `createNip07Signer`; `resume()` on mount; `isRestoringSession` loading state | Reload keeps you logged in without a signing prompt |
+| **3** | Permission registry; `requirePermission` guards; `validatePermissions()` after routes register | A typo'd permission key fails at startup |
+| **4** | Rate limiter in front of `/auth`; body-size cap; cookie flags reviewed | `/auth/init` is no longer an uncapped write |
+
+### 0.5 Checklist
+
+**Before writing code**
+
+- [ ] Signer chosen; if local key, you accept owning encryption and eviction (§0.1)
+- [ ] `sessionTtlSeconds` chosen against the re-signing prompt (§0.2)
+- [ ] Cookie or bearer decided — cookie if you use `nap-client-web` (§6.1)
+- [ ] Permission registry drafted: roles and permissions named (§3)
+
+**Server**
+
+- [ ] `getExternalBaseUrl` is a constant or a Host allowlist (§9.4)
+- [ ] NAP router mounted **before** any global body parser (§5.2)
+- [ ] `AuditLogger` wired, `code` reaching your logs (§9.6)
+- [ ] Durable store configured, with a plan for sweeping expired rows — `markExpired()` marks but never deletes (§5.4)
+- [ ] Rate limiter in front of `/auth` — **NAP does not implement one** (§9.5)
+- [ ] Body size capped, e.g. `express.json({ limit: '1kb' })` (§9.5)
+- [ ] `validatePermissions(registry)` called at startup (§5.2)
+
+**Client**
+
+- [ ] `credentials: 'include'` on every API call (§6.5)
+- [ ] `resume()` on mount, with a loading state (§6.1)
+- [ ] `destroy()` on unmount (§6.1)
+- [ ] If holding a local key: `KeyStore` using WebCrypto AES-GCM under a slow KDF, and you have read what that does *not* buy (§9.7)
+
+**Before shipping**
+
+- [ ] HTTPS; cookie is `HttpOnly`, `Secure`, `SameSite` (§9.3)
+- [ ] `clearCookieOptions` matches the attributes the cookie was set with, or logout leaves a dead cookie (§6.1)
+- [ ] `nostr-tools` deduped to a single copy (§11.4)
+- [ ] Clock skew tolerance reviewed (§9.1)
+
+### 0.6 Plan around these, not on them
+
+- **`stepUp()` always throws.** Nothing issues a step-up token (§11.3).
+- **Permissions are a login-time snapshot.** An ACL revocation takes up to one
+  session TTL to take effect (§3.4).
+- **Packages are not npm-publishable as they stand** — `exports` points at
+  `./src/index.ts` and there is no build step, so you consume from the monorepo or
+  vendor them (§11.4).
 
 ---
 
