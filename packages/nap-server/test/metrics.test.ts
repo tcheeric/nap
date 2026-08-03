@@ -217,6 +217,24 @@ describe('metrics recorder (RFC §19.3)', () => {
     expect(metrics.counts.auth_failure_total).toBeUndefined();
   });
 
+  it('keeps authenticating when the recorder itself throws', async () => {
+    options = buildOptions({
+      metrics: {
+        increment() {
+          throw new Error('collector is down');
+        },
+      },
+    });
+
+    const challenge = await issue(options);
+    const outcome = await complete(
+      options,
+      completionFor(challenge.challenge_id, challenge.challenge)
+    );
+
+    expect(outcome.ok).toBe(true);
+  });
+
   it('still calls the audit logger it decorates', async () => {
     const seen: string[] = [];
     options = buildOptions({

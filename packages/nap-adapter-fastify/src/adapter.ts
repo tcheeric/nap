@@ -282,6 +282,18 @@ function assertOneAudienceSource(options: NapFastifyOptions): void {
   }
 }
 
+/**
+ * Marks a `writeSuccess` that replies without the tokens. `Symbol.for` rather than a
+ * module-local symbol so it survives an adapter loaded twice through different paths —
+ * a duplicated copy failing this check open would be exactly the silent case it exists
+ * to catch.
+ */
+const DISCARDS_TOKENS = Symbol.for('nap.writeSuccess.discardsTokens');
+
+function discardsTokens(writeSuccess: NapFastifyOptions['writeSuccess']): boolean {
+  return Boolean(writeSuccess && (writeSuccess as unknown as Record<symbol, unknown>)[DISCARDS_TOKENS]);
+}
+
 function rawBodyOf(req: FastifyRequest, options: NapFastifyOptions): Uint8Array | null {
   return options.rawBodyExtractor ? options.rawBodyExtractor.extract(req) : getRawBody(req);
 }
@@ -307,6 +319,19 @@ function assertRefreshIsWirable(options: NapFastifyOptions): void {
   if (!store.getByRefreshToken || !store.rotateRefreshToken) {
     throw new Error(
       'NAP refreshTtlSeconds requires a SessionStore implementing getByRefreshToken and rotateRefreshToken'
+    );
+  }
+
+  // The refresh token would be minted, stored, and then dropped on the floor by a
+  // `writeSuccess` that replies `{ status: 'ok' }` — leaving a client that can never
+  // present the credential this endpoint exists to accept. Inert rather than insecure,
+  // but silently inert, which is why it fails here.
+  if (discardsTokens(options.writeSuccess)) {
+    throw new Error(
+      'NAP refreshTtlSeconds cannot be combined with the default writeNapCookieSuccess body: ' +
+        'it replies {status:"ok"}, so the client never receives the refresh token that ' +
+        '/auth/refresh requires. Pass a transformBody that returns refresh_token, or leave ' +
+        'refreshTtlSeconds unset.'
     );
   }
 }
@@ -357,10 +382,17 @@ export function writeNapCookieSuccess(
   cookieOptions?: SerializeOptions,
   transformBody?: (body: ReturnType<typeof toPublicAuthSuccess>) => unknown
 ): NapFastifyOptions['writeSuccess'] {
-  return ({ reply, body }) => {
+  const write: NonNullable<NapFastifyOptions['writeSuccess']> = ({ reply, body }) => {
     reply.header('set-cookie', serialize(cookieName, body.access_token, cookieOptions));
     reply.status(200).send(transformBody ? transformBody(body) : { status: 'ok' });
   };
+
+  // A `transformBody` is the caller taking the body over, so only the default is marked.
+  if (!transformBody) {
+    Object.defineProperty(write, DISCARDS_TOKENS, { value: true });
+  }
+
+  return write;
 }
 
 export function createNapFastifyInitHandler(options: NapFastifyOptions): RouteHandlerMethod {

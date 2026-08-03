@@ -632,6 +632,28 @@ describe('nap-adapter-express', () => {
     ).toThrow(/getByRefreshToken and rotateRefreshToken/);
   });
 
+  it('refuses to start when the cookie writer would throw the refresh token away', () => {
+    expect(() =>
+      createNapExpressRouter({
+        server: { ...buildServerOptions(), refreshTtlSeconds: 3600 },
+        getExternalBaseUrl: () => 'https://api.example.com',
+        writeSuccess: writeNapCookieSuccess('session'),
+      })
+    ).toThrow(/never receives the refresh token/);
+  });
+
+  it('accepts the cookie writer once a transformBody carries the refresh token', () => {
+    expect(() =>
+      createNapExpressRouter({
+        server: { ...buildServerOptions(), refreshTtlSeconds: 3600 },
+        getExternalBaseUrl: () => 'https://api.example.com',
+        writeSuccess: writeNapCookieSuccess('session', undefined, (body) => ({
+          refresh_token: body.refresh_token,
+        })),
+      })
+    ).not.toThrow();
+  });
+
   it('refuses to build a router with neither audience source', () => {
     expect(() =>
       createNapExpressRouter({ server: buildServerOptions() })

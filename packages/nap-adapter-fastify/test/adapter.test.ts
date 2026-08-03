@@ -754,4 +754,32 @@ describe('nap-adapter-fastify', () => {
         .after()
     ).rejects.toThrow(/getByRefreshToken and rotateRefreshToken/);
   });
+
+  it('refuses to start when the cookie writer would throw the refresh token away', async () => {
+    await expect(
+      Fastify()
+        .register(napFastifyPlugin, {
+          routePrefix: '/auth',
+          server: { ...buildServerOptions(), refreshTtlSeconds: 3600 },
+          getExternalBaseUrl: () => 'https://api.example.com',
+          writeSuccess: writeNapCookieSuccess('session'),
+        })
+        .after()
+    ).rejects.toThrow(/never receives the refresh token/);
+  });
+
+  it('accepts the cookie writer once a transformBody carries the refresh token', async () => {
+    await expect(
+      Fastify()
+        .register(napFastifyPlugin, {
+          routePrefix: '/auth',
+          server: { ...buildServerOptions(), refreshTtlSeconds: 3600 },
+          getExternalBaseUrl: () => 'https://api.example.com',
+          writeSuccess: writeNapCookieSuccess('session', undefined, (body) => ({
+            refresh_token: body.refresh_token,
+          })),
+        })
+        .after()
+    ).resolves.toBeUndefined();
+  });
 });

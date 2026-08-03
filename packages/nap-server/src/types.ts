@@ -106,6 +106,13 @@ export interface RotateRefreshTokenParams {
   expectedRefreshToken: string;
   accessToken: string;
   refreshToken: string;
+  /**
+   * Read from the configured `Clock`, not the store's own wall clock. Neither
+   * bundled store needs it — there is no `last_activity_at` in the TypeScript
+   * schema, where the JVM implementation writes it — but a store that stamps a
+   * row of its own must have the same `now` the rotation was decided against, or
+   * it desynchronises from every test that injects a clock.
+   */
   now: number;
   expiresAt: number;
   refreshExpiresAt: number;

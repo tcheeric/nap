@@ -10,8 +10,33 @@ export function createNoopMetricsRecorder(): MetricsRecorder {
   return noopMetrics;
 }
 
-export function resolveMetrics(metrics: MetricsRecorder | undefined): MetricsRecorder {
-  return metrics ?? noopMetrics;
+/**
+ * The two counters that cannot be derived from an audit event, because they must
+ * include requests too malformed to reach one. Takes the optional recorder so the
+ * unconfigured case stays a single null check at the call site.
+ */
+export function countTotal(
+  metrics: MetricsRecorder | undefined,
+  counter: NapCounter
+): void {
+  if (metrics) {
+    increment(metrics, counter);
+  }
+}
+
+/**
+ * Every increment goes through here, so a recorder that throws costs a counter and
+ * nothing else. Without it a metrics backend that is merely down turns the uniform
+ * 401 into a 500 — and a 500 that appears on exactly one branch is the timing
+ * side channel the uniform failure exists to close, in a louder form.
+ */
+function increment(metrics: MetricsRecorder, counter: NapCounter): void {
+  try {
+    metrics.increment(counter);
+  } catch {
+    // Deliberately swallowed, and deliberately not logged: the audit logger is the
+    // caller's, and a broken metrics sink must not be able to flood it either.
+  }
 }
 
 /**
@@ -60,12 +85,12 @@ export function withMetrics(
 
   return {
     async log(event) {
-      metrics.increment(COUNTER_BY_OUTCOME[event.outcome]);
+      increment(metrics, COUNTER_BY_OUTCOME[event.outcome]);
 
       const specific = COUNTER_BY_CODE[event.code];
 
       if (specific) {
-        metrics.increment(specific);
+        increment(metrics, specific);
       }
 
       // Keyed on the code, not the outcome: a refresh also succeeds, and it
@@ -75,7 +100,8 @@ export function withMetrics(
         // one, so it is a retry hit and not a redemption. RFC §13.3 makes that
         // the correct response, which is exactly why the two are counted apart:
         // a retry rate that climbs is a client bug, not an attack.
-        metrics.increment(
+        increment(
+          metrics,
           event.details?.retry === true ? 'challenge_retry_hit_total' : 'challenge_redeemed_total'
         );
       }

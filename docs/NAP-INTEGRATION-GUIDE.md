@@ -1671,8 +1671,9 @@ The SQL is **PostgreSQL-specific**: `?::jsonb` casts and `ON CONFLICT` in
 
 #### Schema
 
-The repo ships one migration,
-`nap-jdbc/src/main/resources/db/migration/V1__create_nap_tables.sql` (verbatim):
+The repo ships three migrations in
+`nap-jdbc/src/main/resources/db/migration/`, and **all three are required** — the store
+reads columns added by each. `V1__create_nap_tables.sql` (verbatim):
 
 ```sql
 CREATE TABLE nap_challenges (
@@ -1721,20 +1722,19 @@ CREATE TABLE nap_acl (
 CREATE INDEX idx_nap_acl_pubkey ON nap_acl (pubkey);
 ```
 
-**This migration is out of date and will not work as-is.** `JdbcSessionStore` reads and
-writes `last_activity_at` and `absolute_expiry_at`, which `V1` does not create. The
-follow-up DDL exists only as a Javadoc comment on `JdbcSessionStore.java:22-31` and has
-**no** corresponding `V2__*.sql` file in the repo. A consumer must apply it manually:
+**`V1` alone will not work.** Two later migrations add columns `JdbcSessionStore` and
+`JdbcChallengeStore` read and write unconditionally:
 
-```sql
-ALTER TABLE nap_sessions ADD COLUMN last_activity_at    BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE nap_sessions ADD COLUMN absolute_expiry_at  BIGINT NOT NULL DEFAULT 0;
-UPDATE nap_sessions SET last_activity_at = issued_at,
-                        absolute_expiry_at = expires_at
-  WHERE last_activity_at = 0 OR absolute_expiry_at = 0;
-```
+- `V2__nap_security_hardening.sql` — `nap_challenges.client_ip` and
+  `nap_challenges.failure_count`, for the outstanding-challenge caps (§17.4) and the
+  per-challenge failure budget (§13.4), plus the two partial indexes
+  `countOutstanding()` needs on every `/auth/init`.
+- `V3__sliding_window_and_refresh_tokens.sql` — `nap_sessions.last_activity_at` and
+  `absolute_expiry_at` (sliding sessions, spec 006) and `refresh_token`,
+  `refresh_expires_at`, `previous_refresh_token` (§14.1), with a partial **unique**
+  index on `refresh_token` that the rotation compare-and-swap assumes.
 
-`JdbcSessionStore.mapRow` treats a `0` in either new column as "pre-006 row" and
+`JdbcSessionStore.mapRow` treats a `0` in either sliding-window column as "pre-006 row" and
 back-fills from `issued_at`/`expires_at` at read time (`JdbcSessionStore.java:160-167`).
 Nothing in the repo runs migrations — there is no Flyway/Liquibase dependency; the
 `db/migration` path is a naming convention only.

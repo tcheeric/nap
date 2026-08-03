@@ -281,6 +281,18 @@ function assertOneAudienceSource(options: {
   }
 }
 
+/**
+ * Marks a `writeSuccess` that replies without the tokens. `Symbol.for` rather than a
+ * module-local symbol so it survives an adapter loaded twice through different paths —
+ * a duplicated copy failing this check open would be exactly the silent case it exists
+ * to catch.
+ */
+const DISCARDS_TOKENS = Symbol.for('nap.writeSuccess.discardsTokens');
+
+function discardsTokens(writeSuccess: NapExpressOptions['writeSuccess']): boolean {
+  return Boolean(writeSuccess && (writeSuccess as unknown as Record<symbol, unknown>)[DISCARDS_TOKENS]);
+}
+
 function rawBodyOf(req: Request, options: NapExpressOptions): Uint8Array | null {
   return options.rawBodyExtractor ? options.rawBodyExtractor.extract(req) : getRawBody(req);
 }
@@ -306,6 +318,19 @@ function assertRefreshIsWirable(options: NapExpressOptions): void {
   if (!store.getByRefreshToken || !store.rotateRefreshToken) {
     throw new Error(
       'NAP refreshTtlSeconds requires a SessionStore implementing getByRefreshToken and rotateRefreshToken'
+    );
+  }
+
+  // The refresh token would be minted, stored, and then dropped on the floor by a
+  // `writeSuccess` that replies `{ status: 'ok' }` — leaving a client that can never
+  // present the credential this endpoint exists to accept. Inert rather than insecure,
+  // but silently inert, which is why it fails here.
+  if (discardsTokens(options.writeSuccess)) {
+    throw new Error(
+      'NAP refreshTtlSeconds cannot be combined with the default writeNapCookieSuccess body: ' +
+        'it replies {status:"ok"}, so the client never receives the refresh token that ' +
+        '/auth/refresh requires. Pass a transformBody that returns refresh_token, or leave ' +
+        'refreshTtlSeconds unset.'
     );
   }
 }
@@ -698,12 +723,23 @@ export function createPermissionsRouter(registry: PermissionRegistry): Router {
   return router;
 }
 
+/**
+ * Puts the access token in a cookie and replies `{ status: 'ok' }`, so no credential
+ * reaches script.
+ *
+ * That default is incompatible with refresh tokens, and deliberately so: the refresh
+ * token would be dropped along with the access token, and `/auth/refresh` reads
+ * `Authorization: Bearer`, which a cookie-only browser client cannot produce. The
+ * combination is refused at startup rather than left to mint credentials nothing can
+ * spend — pass a `transformBody` that returns `refresh_token` if the client really is
+ * holding it, or leave `refreshTtlSeconds` unset.
+ */
 export function writeNapCookieSuccess(
   cookieName: string,
   cookieOptions?: CookieOptions,
   transformBody?: (body: ReturnType<typeof toPublicAuthSuccess>) => unknown
 ): NapExpressOptions['writeSuccess'] {
-  return ({ res, body }) => {
+  const write: NonNullable<NapExpressOptions['writeSuccess']> = ({ res, body }) => {
     if (cookieOptions) {
       res.cookie(cookieName, body.access_token, cookieOptions);
     } else {
@@ -711,6 +747,13 @@ export function writeNapCookieSuccess(
     }
     res.status(200).json(transformBody ? transformBody(body) : { status: 'ok' });
   };
+
+  // A `transformBody` is the caller taking the body over, so only the default is marked.
+  if (!transformBody) {
+    Object.defineProperty(write, DISCARDS_TOKENS, { value: true });
+  }
+
+  return write;
 }
 
 /**

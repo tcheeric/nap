@@ -14,7 +14,7 @@ import {
   verifyNip98Completion,
 } from '@imani/nap-core';
 import { nip19 } from 'nostr-tools';
-import { resolveMetrics, withMetrics } from './metrics.js';
+import { countTotal, withMetrics } from './metrics.js';
 import { createInMemoryRateLimiter } from './rateLimit.js';
 import type {
   AclResolver,
@@ -433,7 +433,7 @@ async function issueChallengeUnpadded(
   const auditLogger = withMetrics(options.auditLogger ?? noopAuditLogger, options.metrics);
   const ttl = resolveChallengeTtl(options);
 
-  resolveMetrics(options.metrics).increment('auth_init_total');
+  countTotal(options.metrics, 'auth_init_total');
 
   const rateLimit = await checkRateLimit(options, {
     scope: 'init',
@@ -559,7 +559,7 @@ async function verifyCompletionUnpadded(
 
   // Counted before the body is parsed, so a malformed request — which returns
   // below without reaching any audit point — still shows up as attempted load.
-  resolveMetrics(options.metrics).increment('auth_complete_total');
+  countTotal(options.metrics, 'auth_complete_total');
 
   const body = parseAuthCompleteRequest(input.rawBody);
 
@@ -865,9 +865,15 @@ async function refreshSessionUnpadded(
     constantTimeEquals(session.previous_refresh_token, input.refreshToken)
   ) {
     await store.revokeBySessionId(session.session_id, now);
-    await logFailure(auditLogger, 'NAP_REFRESH_REUSED', {
-      session_id: session.session_id,
+    // Logged directly rather than through `logFailure`, which has nowhere to put a
+    // pubkey: this is the one event that says a credential leaked, and a sink that
+    // alerts on `event.pubkey` must be able to name the principal whose session
+    // just ended. Buried in `details` it would only be greppable after the fact.
+    await auditLogger.log({
+      code: 'NAP_REFRESH_REUSED',
       pubkey: session.principal_pubkey,
+      outcome: 'failure',
+      details: { session_id: session.session_id },
     });
     return failure('NAP_REFRESH_REUSED');
   }

@@ -179,6 +179,24 @@ describe('refresh tokens (RFC §14.1)', () => {
     expect(afterTheft.ok === false && afterTheft.code).toBe('NAP_REFRESH_REVOKED');
   });
 
+  it('names the principal on the reuse event, so an alert can say whose session died', async () => {
+    const events: { code: string; pubkey?: string }[] = [];
+    const harness = buildHarness({
+      auditLogger: {
+        log(event) {
+          events.push({ code: event.code, pubkey: event.pubkey });
+        },
+      },
+    });
+    const session = await login(harness.options);
+    const stolen = session.refresh_token;
+
+    await refreshSession({ refreshToken: stolen }, harness.options);
+    await refreshSession({ refreshToken: stolen }, harness.options);
+
+    expect(events).toContainEqual({ code: 'NAP_REFRESH_REUSED', pubkey: PUBKEY });
+  });
+
   it('rejects an unknown token', async () => {
     const harness = buildHarness();
     await login(harness.options);
