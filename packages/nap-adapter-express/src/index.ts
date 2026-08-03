@@ -8,6 +8,7 @@ export {
   createNapExpressSessionHandler,
   createRequestDerivedBaseUrlResolver,
   requirePermission,
+  requireRole,
   requireStepUp,
   resetPermissionValidationState,
   validatePermissions,

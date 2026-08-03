@@ -16,6 +16,7 @@ import {
   napFastifyPlugin,
   permissionsFastifyPlugin,
   requirePermission,
+  requireRole,
   requireStepUp,
   resetPermissionValidationState,
   validatePermissions,
@@ -352,6 +353,74 @@ describe('nap-adapter-fastify', () => {
     expect(response.statusCode).toBe(204);
 
     await app.close();
+  });
+
+  it('guards routes with requireRole, including any-of', async () => {
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore);
+    const app = Fastify();
+
+    app.get(
+      '/staff',
+      { preHandler: requireRole('merchant', { sessionStore, cookieName: 'session' }) },
+      async () => ({ status: 'ok' })
+    );
+    app.get(
+      '/either',
+      // Chaining hooks is AND, so any-of has to be expressed in one guard.
+      { preHandler: requireRole(['admin', 'merchant'], { sessionStore, cookieName: 'session' }) },
+      async () => ({ status: 'ok' })
+    );
+
+    const single = await app.inject({
+      method: 'GET',
+      url: '/staff',
+      headers: { cookie: 'session=token-1' },
+    });
+    const anyOf = await app.inject({
+      method: 'GET',
+      url: '/either',
+      headers: { cookie: 'session=token-1' },
+    });
+
+    expect(single.statusCode).toBe(200);
+    expect(anyOf.statusCode).toBe(200);
+
+    await app.close();
+  });
+
+  it('forbids a session lacking the role and 401s without one', async () => {
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore, { roles: ['viewer'] });
+    const app = Fastify();
+
+    app.get(
+      '/staff',
+      { preHandler: requireRole('merchant', { sessionStore, cookieName: 'session' }) },
+      async () => ({ status: 'ok' })
+    );
+
+    const forbidden = await app.inject({
+      method: 'GET',
+      url: '/staff',
+      headers: { cookie: 'session=token-1' },
+    });
+    const anonymous = await app.inject({ method: 'GET', url: '/staff' });
+
+    expect(forbidden.statusCode).toBe(403);
+    expect(anonymous.statusCode).toBe(401);
+
+    await app.close();
+  });
+
+  it('fails startup validation for unknown role keys', () => {
+    const sessionStore = new InMemorySessionStore();
+    requireRole('nonexistent-role', { sessionStore, cookieName: 'session' });
+
+    // Without this, a typo'd role silently 403s forever.
+    expect(() => validatePermissions(REGISTRY)).toThrow(
+      'Roles used in middleware but missing from registry: nonexistent-role'
+    );
   });
 
   it('fails startup validation for unknown permission keys', () => {

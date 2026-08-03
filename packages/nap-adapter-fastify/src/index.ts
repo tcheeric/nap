@@ -7,6 +7,7 @@ export {
   createRequestDerivedBaseUrlResolver,
   napFastifyPlugin,
   requirePermission,
+  requireRole,
   requireStepUp,
   resetPermissionValidationState,
   validatePermissions,

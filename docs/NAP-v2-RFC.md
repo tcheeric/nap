@@ -472,6 +472,24 @@ Anti-enumeration guidance:
 - unknown principals and unauthorized principals SHOULD fail with the same generic auth failure shape
 - timing differences SHOULD be bounded; implementations MAY add response jitter or minimum processing time
 
+### 15.1 Guarding On Permissions, Not Roles
+
+A role is a named set of permissions. The ACL resolver expands roles into the session's permission set, so every role check is expressible as a permission check. The two are not equivalent in maintenance cost.
+
+Route guards SHOULD authorize on permissions.
+
+The difference is which direction change flows. A guard naming a permission absorbs a new role through one registry edit — the role declares the permission and the guard is untouched. A guard naming a role must itself be edited at every site that should also accept the new role. The registry exists to centralize that mapping; role guards route around it, and the failure is silent: the new role holds every permission it needs and the route still refuses it.
+
+Role guards remain legitimate where the role, not a capability, is the thing being authorized — break-glass and staff-only routes are the usual cases.
+
+Implementations that offer a role guard:
+
+1. MUST validate role keys against the registry at startup, as they do for permission keys — an unvalidated typo fails closed forever and is indistinguishable from a legitimate denial
+2. SHOULD accept a set of roles with any-of semantics, since composing guards yields conjunction and disjunction is otherwise inexpressible
+3. SHOULD document the preference for permission guards at the API surface
+
+Role membership carries the same freshness constraint as permissions under rule 1 of this section: where roles are resolved once at login, a revoked role remains effective until the session ends.
+
 ---
 
 ## 16. Error Handling

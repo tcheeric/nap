@@ -17,6 +17,7 @@ import type { VerifyCompleteFailure } from '@imani/nap-core';
 
 const RAW_BODY_SYMBOL = Symbol.for('nap.rawBody');
 const REGISTERED_PERMISSIONS = new Set<string>();
+const REGISTERED_ROLES = new Set<string>();
 
 function currentEpochSeconds(): number {
   return Math.floor(Date.now() / 1000);
@@ -326,6 +327,59 @@ export function requirePermission(
   };
 }
 
+/**
+ * Guard a route on role membership.
+ *
+ * **Prefer `requirePermission()`.** Roles are already expanded into
+ * `session.permissions` by the ACL resolver, so any role check is expressible as
+ * a permission check — and the two differ in which direction maintenance flows.
+ * Guarding on `voucher:issue` means a new role that should have access is one
+ * registry edit; guarding on `merchant` means editing every guard site that
+ * should now also accept it. The registry exists to centralise that mapping, and
+ * role guards route around it.
+ *
+ * Reach for this when the role genuinely is the thing being authorised —
+ * break-glass or staff-only routes — rather than as the default.
+ *
+ * Pass an array for any-of semantics (`['admin', 'owner']`). Chaining middleware
+ * gives you AND, so OR is otherwise unexpressible without a hand-rolled check
+ * that skips the startup validation below.
+ *
+ * Registered roles are checked against the registry by `validatePermissions()`,
+ * so a typo fails at startup rather than silently 403ing forever.
+ *
+ * Note that `session.roles` is a login-time snapshot, exactly like
+ * `session.permissions`: a role revoked mid-session still passes until the
+ * session TTL expires.
+ */
+export function requireRole(
+  role: string | string[],
+  options: NapExpressGuardOptions
+): RequestHandler {
+  const accepted = Array.isArray(role) ? role : [role];
+  accepted.forEach((entry) => REGISTERED_ROLES.add(entry));
+
+  return async (req, res, next) => {
+    try {
+      const session = await loadSession(req, options);
+
+      if (!session) {
+        unauthorized(res);
+        return;
+      }
+
+      if (!accepted.some((entry) => session.roles.includes(entry))) {
+        forbidden(res);
+        return;
+      }
+
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
 export function requireStepUp(options: NapExpressGuardOptions): RequestHandler {
   return async (req, res, next) => {
     try {
@@ -369,10 +423,18 @@ export function validatePermissions(registry: PermissionRegistry): void {
       `Permissions used in middleware but missing from registry: ${unknown.join(', ')}`
     );
   }
+
+  const declaredRoles = new Set(registry.roles.map((role) => role.key));
+  const unknownRoles = Array.from(REGISTERED_ROLES).filter((role) => !declaredRoles.has(role));
+
+  if (unknownRoles.length > 0) {
+    throw new Error(`Roles used in middleware but missing from registry: ${unknownRoles.join(', ')}`);
+  }
 }
 
 export function resetPermissionValidationState(): void {
   REGISTERED_PERMISSIONS.clear();
+  REGISTERED_ROLES.clear();
 }
 
 export function createPermissionsRouter(registry: PermissionRegistry): Router {
