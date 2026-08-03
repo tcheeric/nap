@@ -172,6 +172,67 @@ export interface AuditLogger {
   }): Promise<void> | void;
 }
 
+/**
+ * Resolves the audience NIP-98 is checked against (RFC §17.3, §20.2).
+ *
+ * NIP-98 compares the exact absolute URL, so behind a proxy, gateway, or mesh
+ * the URL the application sees is not the one the client signed. This is the
+ * seam where that is corrected, and it is security-relevant: whatever it
+ * returns *is* the audience. Prefer a pinned constant or a Host allowlist over
+ * anything derived from request headers, which an arbitrary client can set.
+ *
+ * Generic over the request type because each adapter has its own — the server
+ * core never sees a request object.
+ */
+export interface AudienceResolver<TRequest = unknown> {
+  resolve(request: TRequest): string;
+}
+
+/**
+ * Produces the exact bytes the NIP-98 `payload` tag hashes (RFC §20.2).
+ *
+ * `payload` is `sha256(rawBody)`, so this must return the bytes as they arrived.
+ * Anything that re-serialises the parsed body — a global `express.json()` ahead
+ * of the NAP router, a logging middleware that round-trips JSON — produces
+ * different bytes and fails every completion with
+ * `NAP_COMPLETE_PAYLOAD_MISMATCH`.
+ *
+ * Returns `null` when no raw body was captured, which is a wiring error rather
+ * than a client error and is reported as one.
+ */
+export interface RawBodyExtractor<TRequest = unknown> {
+  extract(request: TRequest): Uint8Array | null;
+}
+
+/** The counters RFC §19.3 asks implementations to emit. */
+export type NapCounter =
+  | 'auth_init_total'
+  | 'auth_complete_total'
+  | 'auth_success_total'
+  | 'auth_failure_total'
+  | 'auth_rate_limited_total'
+  | 'challenge_redeemed_total'
+  | 'challenge_retry_hit_total'
+  | 'challenge_expired_total'
+  | 'audience_mismatch_total'
+  | 'payload_mismatch_total';
+
+/**
+ * Pluggable counter sink (RFC §19.3).
+ *
+ * Deliberately counters only, and deliberately separate from `AuditLogger`:
+ * audit events carry per-request identifiers that must not become metric labels
+ * — an `npub` or `challenge_id` label is unbounded cardinality, and §19.2
+ * forbids exporting several of the values an audit event carries.
+ *
+ * `increment` is called on the request path, so it must not block or throw.
+ * Failures are swallowed rather than allowed to fail a login: a metrics backend
+ * being down is not a reason to stop authenticating.
+ */
+export interface MetricsRecorder {
+  increment(counter: NapCounter, labels?: Record<string, string>): void;
+}
+
 export interface NapServerOptions {
   challengeStore: ChallengeStore;
   sessionStore: SessionStore;
@@ -179,6 +240,11 @@ export interface NapServerOptions {
   clock?: Clock;
   randomSource?: RandomSource;
   auditLogger?: AuditLogger;
+  /**
+   * Counter sink for the RFC §19.3 metrics. Defaults to a no-op, so the
+   * counters cost nothing until something is bound to them.
+   */
+  metrics?: MetricsRecorder;
   /**
    * Defaults to a per-options `createInMemoryRateLimiter()`.
    *

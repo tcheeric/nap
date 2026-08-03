@@ -20,11 +20,13 @@ import {
   isVerifyFailure,
   verifyCompletion,
   type AclResolver,
+  type AudienceResolver,
   type Clock,
   type EffectiveAcl,
   type IssueChallengeResult,
   type NapServerOptions,
   type PermissionRegistry,
+  type RawBodyExtractor,
   type SessionStore,
 } from '@imani/nap-server';
 import type { SessionRecord, VerifyCompleteFailure } from '@imani/nap-core';
@@ -44,7 +46,19 @@ export interface NapFastifyRequest extends FastifyRequest {
 export interface NapFastifyOptions {
   server: NapServerOptions;
   routePrefix?: string;
-  getExternalBaseUrl(req: FastifyRequest): string;
+  /**
+   * Shorthand for the common case: return the external origin and the adapter
+   * appends `/auth/complete`. Mutually exclusive with `audienceResolver` —
+   * supply exactly one.
+   */
+  getExternalBaseUrl?: (req: FastifyRequest) => string;
+  /**
+   * The RFC §20.2 form, for when the completion endpoint is not
+   * `<base>/auth/complete` — a rewriting gateway, a `routePrefix` the request
+   * does not carry. Whatever it returns *is* the audience the NIP-98 `u` tag
+   * must equal, so it takes the full URL rather than an origin.
+   */
+  audienceResolver?: AudienceResolver<FastifyRequest>;
   /** Cookie carrying the access token, read by `/auth/session` and cleared by `/auth/logout`. Defaults to `session`. */
   cookieName?: string;
   /** Attributes used when clearing the cookie on logout. Must match those used to set it, or the browser keeps it. Defaults to `{ path: '/' }`. */
@@ -68,6 +82,15 @@ export interface NapFastifyOptions {
    * than enforced against a value anyone can forge.
    */
   getClientIp?: (req: FastifyRequest) => string | undefined;
+  /**
+   * Where `/auth/complete` reads the exact bytes the NIP-98 `payload` tag hashed.
+   *
+   * Defaults to the buffer the plugin's content-type parser stashes on the
+   * request. Supply your own only if the raw body is captured somewhere else —
+   * never one that re-stringifies `req.body`, which changes key order and
+   * whitespace and fails every completion with `NAP_COMPLETE_PAYLOAD_MISMATCH`.
+   */
+  rawBodyExtractor?: RawBodyExtractor<FastifyRequest>;
   writeSuccess?: (ctx: {
     req: FastifyRequest;
     reply: FastifyReply;
@@ -237,7 +260,29 @@ async function loadGuardContext(
 }
 
 function authCompleteUrl(req: FastifyRequest, options: NapFastifyOptions): string {
-  return `${normalizeBaseUrl(options.getExternalBaseUrl(req))}/auth/complete`;
+  return options.audienceResolver
+    ? options.audienceResolver.resolve(req)
+    : `${normalizeBaseUrl(options.getExternalBaseUrl!(req))}/auth/complete`;
+}
+
+/**
+ * Both options set means two answers to "what is the audience", and the wrong
+ * one silently becomes the value every NIP-98 proof is checked against. Neither
+ * means the adapter would have to guess from the request, which is exactly the
+ * trust decision `createRequestDerivedBaseUrlResolver()` documents as the
+ * caller's to make. Either way it is a wiring mistake, so it fails at startup
+ * rather than as a uniform 401 per request.
+ */
+function assertOneAudienceSource(options: NapFastifyOptions): void {
+  const supplied = [options.getExternalBaseUrl, options.audienceResolver].filter(Boolean).length;
+
+  if (supplied !== 1) {
+    throw new Error('NAP adapter requires exactly one of getExternalBaseUrl or audienceResolver');
+  }
+}
+
+function rawBodyOf(req: FastifyRequest, options: NapFastifyOptions): Uint8Array | null {
+  return options.rawBodyExtractor ? options.rawBodyExtractor.extract(req) : getRawBody(req);
 }
 
 function clientIpOf(req: FastifyRequest, options: NapFastifyOptions): string | undefined {
@@ -269,7 +314,7 @@ function defaultWriteFailure(reply: FastifyReply): void {
  * (`() => 'https://api.example.com'`) or a Host allowlist. See §9.4 of
  * docs/NAP-INTEGRATION-GUIDE.md.
  */
-export function createRequestDerivedBaseUrlResolver(): NapFastifyOptions['getExternalBaseUrl'] {
+export function createRequestDerivedBaseUrlResolver(): (req: FastifyRequest) => string {
   return (req) => {
     const host = req.headers.host;
 
@@ -293,6 +338,8 @@ export function writeNapCookieSuccess(
 }
 
 export function createNapFastifyInitHandler(options: NapFastifyOptions): RouteHandlerMethod {
+  assertOneAudienceSource(options);
+
   return async (req, reply) => {
     const npub = (req.body as Record<string, unknown> | undefined)?.npub;
 
@@ -324,8 +371,10 @@ export function createNapFastifyInitHandler(options: NapFastifyOptions): RouteHa
 }
 
 export function createNapFastifyCompleteHandler(options: NapFastifyOptions): RouteHandlerMethod {
+  assertOneAudienceSource(options);
+
   return async (req, reply) => {
-    const rawBody = getRawBody(req);
+    const rawBody = rawBodyOf(req, options);
 
     if (!rawBody) {
       throw new Error('nap-adapter-fastify requires raw body capture for /auth/complete');

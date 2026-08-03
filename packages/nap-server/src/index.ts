@@ -8,6 +8,7 @@ export {
   createRevokingAclStore,
   validatePermissionRegistry,
 } from './acl.js';
+export { createNoopMetricsRecorder, withMetrics } from './metrics.js';
 export { createInMemoryRateLimiter } from './rateLimit.js';
 export type { InMemoryRateLimiterOptions } from './rateLimit.js';
 export {
@@ -33,6 +34,7 @@ export type {
   AclRecord,
   AclStore,
   AclResolver,
+  AudienceResolver,
   AuditLogger,
   ChallengeStore,
   Clock,
@@ -41,6 +43,8 @@ export type {
   IssueChallengeResult,
   IssueChallengeSuccess,
   MalformedRequestFailure,
+  MetricsRecorder,
+  NapCounter,
   NapServer,
   NapServerOptions,
   OutstandingChallengeFilter,
@@ -51,6 +55,7 @@ export type {
   PublicFailureResponse,
   PublicSuccessResponse,
   RandomSource,
+  RawBodyExtractor,
   RateLimitDecision,
   RateLimitKey,
   RateLimiter,

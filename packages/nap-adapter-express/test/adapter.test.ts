@@ -517,4 +517,102 @@ describe('nap-adapter-express', () => {
       'Permissions used in middleware but missing from registry: unknown:permission'
     );
   });
+
+  it('takes the audience verbatim from an audienceResolver (RFC §20.2)', async () => {
+    const app = express();
+    app.use(
+      '/auth',
+      createNapExpressRouter({
+        server: buildServerOptions(),
+        // A path the request itself does not carry, which is the case
+        // getExternalBaseUrl cannot express.
+        audienceResolver: { resolve: () => 'https://gateway.example.com/v2/nap/finish' },
+      })
+    );
+
+    const init = await request(app).post('/auth/init').send({ npub: NPUB });
+
+    expect(init.status).toBe(200);
+    expect(init.body.auth_url).toBe('https://gateway.example.com/v2/nap/finish');
+
+    const completion = await buildAuthCompleteRequest({
+      challenge: init.body,
+      signer: createPrivateKeySigner(PRIVATE_KEY_HEX),
+      createdAt: 1_710_000_000,
+    });
+
+    // The proof is signed against that same audience, so it verifies.
+    const complete = await request(app)
+      .post('/auth/complete')
+      .set('authorization', completion.authorization)
+      .set('content-type', 'application/json')
+      .send(new TextDecoder().decode(completion.rawBody));
+
+    expect(complete.status).toBe(200);
+    expect(complete.body.status).toBe('ok');
+  });
+
+  it('refuses to build a router with neither audience source', () => {
+    expect(() =>
+      createNapExpressRouter({ server: buildServerOptions() })
+    ).toThrow(/exactly one of getExternalBaseUrl or audienceResolver/);
+  });
+
+  it('refuses to build a router with both audience sources', () => {
+    expect(() =>
+      createNapExpressRouter({
+        server: buildServerOptions(),
+        getExternalBaseUrl: () => 'https://api.example.com',
+        audienceResolver: { resolve: () => 'https://other.example.com/auth/complete' },
+      })
+    ).toThrow(/exactly one of getExternalBaseUrl or audienceResolver/);
+  });
+
+  it('reads the signed bytes through a supplied rawBodyExtractor (RFC §20.2)', async () => {
+    const seen: number[] = [];
+    const app = express();
+    app.use(
+      '/auth',
+      createNapExpressRouter({
+        server: buildServerOptions(),
+        getExternalBaseUrl: () => 'https://api.example.com',
+        rawBodyExtractor: {
+          extract(req) {
+            const captured = (req as { rawBody?: Uint8Array }).rawBody ?? null;
+
+            if (captured) {
+              seen.push(captured.length);
+            }
+
+            return captured;
+          },
+        },
+      })
+    );
+    app.use(
+      (error: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+        res.status(500).json({ error: error.message });
+      }
+    );
+
+    const init = await request(app).post('/auth/init').send({ npub: NPUB });
+    const completion = await buildAuthCompleteRequest({
+      challenge: init.body,
+      signer: createPrivateKeySigner(PRIVATE_KEY_HEX),
+      createdAt: 1_710_000_000,
+    });
+
+    const complete = await request(app)
+      .post('/auth/complete')
+      .set('authorization', completion.authorization)
+      .set('content-type', 'application/json')
+      .send(new TextDecoder().decode(completion.rawBody));
+
+    // Nothing populates `req.rawBody`, so the extractor is genuinely the only
+    // source consulted — had the default symbol reader still run, this would
+    // have completed.
+    expect(seen).toEqual([]);
+    expect(complete.status).toBe(500);
+    expect(complete.body.error).toMatch(/requires createNapExpressJsonParser/);
+  });
 });

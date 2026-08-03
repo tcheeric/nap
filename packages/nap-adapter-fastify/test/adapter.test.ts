@@ -536,4 +536,122 @@ describe('nap-adapter-fastify', () => {
       'Permissions used in middleware but missing from registry: unknown:permission'
     );
   });
+
+  it('takes the audience verbatim from an audienceResolver (RFC §20.2)', async () => {
+    const app = Fastify();
+
+    await app.register(napFastifyPlugin, {
+      routePrefix: '/auth',
+      server: buildServerOptions(),
+      // A path the request itself does not carry, which is the case
+      // getExternalBaseUrl cannot express.
+      audienceResolver: { resolve: () => 'https://gateway.example.com/v2/nap/finish' },
+    });
+
+    const init = await app.inject({
+      method: 'POST',
+      url: '/auth/init',
+      payload: { npub: NPUB },
+    });
+
+    expect(init.statusCode).toBe(200);
+    expect(init.json().auth_url).toBe('https://gateway.example.com/v2/nap/finish');
+
+    const completion = await buildAuthCompleteRequest({
+      challenge: init.json(),
+      signer: createPrivateKeySigner(PRIVATE_KEY_HEX),
+      createdAt: 1_710_000_000,
+    });
+
+    // The proof is signed against that same audience, so it verifies.
+    const complete = await app.inject({
+      method: 'POST',
+      url: '/auth/complete',
+      headers: {
+        authorization: completion.authorization,
+        'content-type': 'application/json',
+      },
+      payload: new TextDecoder().decode(completion.rawBody),
+    });
+
+    expect(complete.statusCode).toBe(200);
+    expect(complete.json().status).toBe('ok');
+
+    await app.close();
+  });
+
+  it('refuses to register the plugin with neither audience source', async () => {
+    const app = Fastify();
+
+    await expect(
+      app.register(napFastifyPlugin, { routePrefix: '/auth', server: buildServerOptions() })
+        .after()
+    ).rejects.toThrow(/exactly one of getExternalBaseUrl or audienceResolver/);
+  });
+
+  it('refuses to register the plugin with both audience sources', async () => {
+    const app = Fastify();
+
+    await expect(
+      app
+        .register(napFastifyPlugin, {
+          routePrefix: '/auth',
+          server: buildServerOptions(),
+          getExternalBaseUrl: () => 'https://api.example.com',
+          audienceResolver: { resolve: () => 'https://other.example.com/auth/complete' },
+        })
+        .after()
+    ).rejects.toThrow(/exactly one of getExternalBaseUrl or audienceResolver/);
+  });
+
+  it('reads the signed bytes through a supplied rawBodyExtractor (RFC §20.2)', async () => {
+    const seen: number[] = [];
+    const app = Fastify();
+
+    await app.register(napFastifyPlugin, {
+      routePrefix: '/auth',
+      server: buildServerOptions(),
+      getExternalBaseUrl: () => 'https://api.example.com',
+      rawBodyExtractor: {
+        extract(req) {
+          const captured = (req as { rawBody?: Uint8Array }).rawBody ?? null;
+
+          if (captured) {
+            seen.push(captured.length);
+          }
+
+          return captured;
+        },
+      },
+    });
+
+    const init = await app.inject({
+      method: 'POST',
+      url: '/auth/init',
+      payload: { npub: NPUB },
+    });
+    const completion = await buildAuthCompleteRequest({
+      challenge: init.json(),
+      signer: createPrivateKeySigner(PRIVATE_KEY_HEX),
+      createdAt: 1_710_000_000,
+    });
+
+    const complete = await app.inject({
+      method: 'POST',
+      url: '/auth/complete',
+      headers: {
+        authorization: completion.authorization,
+        'content-type': 'application/json',
+      },
+      payload: new TextDecoder().decode(completion.rawBody),
+    });
+
+    // Nothing populates `req.rawBody`, so the extractor is genuinely the only
+    // source consulted — had the default symbol reader still run, this would
+    // have completed.
+    expect(seen).toEqual([]);
+    expect(complete.statusCode).toBe(500);
+
+    await app.close();
+  });
 });

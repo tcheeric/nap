@@ -13,6 +13,7 @@ import {
   verifyNip98Completion,
 } from '@imani/nap-core';
 import { nip19 } from 'nostr-tools';
+import { resolveMetrics, withMetrics } from './metrics.js';
 import { createInMemoryRateLimiter } from './rateLimit.js';
 import type {
   AclResolver,
@@ -421,8 +422,11 @@ async function issueChallengeUnpadded(
 ): Promise<IssueChallengeResult> {
   const clock = options.clock ?? defaultClock;
   const randomSource = options.randomSource ?? defaultRandomSource;
-  const auditLogger = options.auditLogger ?? noopAuditLogger;
+  const auditLogger = withMetrics(options.auditLogger ?? noopAuditLogger, options.metrics);
   const ttl = resolveChallengeTtl(options);
+
+  resolveMetrics(options.metrics).increment('auth_init_total');
+
   const rateLimit = await checkRateLimit(options, {
     scope: 'init',
     npub: boundedNpub(input.npub),
@@ -537,13 +541,18 @@ async function verifyCompletionUnpadded(
 ): Promise<VerifyCompletionOutcome> {
   const clock = options.clock ?? defaultClock;
   const randomSource = options.randomSource ?? defaultRandomSource;
-  const auditLogger = options.auditLogger ?? noopAuditLogger;
+  const auditLogger = withMetrics(options.auditLogger ?? noopAuditLogger, options.metrics);
   const maxClockSkewSeconds = options.maxClockSkewSeconds ?? DEFAULT_MAX_CLOCK_SKEW_SECONDS;
   const lowerBoundGraceSeconds = options.lowerBoundGraceSeconds ?? DEFAULT_LOWER_BOUND_GRACE_SECONDS;
   const upperBoundGraceSeconds = options.upperBoundGraceSeconds ?? DEFAULT_UPPER_BOUND_GRACE_SECONDS;
   const sessionTtlSeconds = options.sessionTtlSeconds ?? DEFAULT_SESSION_TTL_SECONDS;
   const resultCacheTtlSeconds = options.resultCacheTtlSeconds ?? DEFAULT_RESULT_CACHE_TTL_SECONDS;
   const stepUpTtlSeconds = options.stepUpTtlSeconds ?? DEFAULT_STEP_UP_TTL_SECONDS;
+
+  // Counted before the body is parsed, so a malformed request — which returns
+  // below without reaching any audit point — still shows up as attempted load.
+  resolveMetrics(options.metrics).increment('auth_complete_total');
+
   const body = parseAuthCompleteRequest(input.rawBody);
 
   // RFC §13.4(1): reject malformed requests before touching challenge state.
