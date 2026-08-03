@@ -12,6 +12,7 @@ import {
   verifyNip98Completion,
 } from '@imani/nap-core';
 import { nip19 } from 'nostr-tools';
+import { createInMemoryRateLimiter } from './rateLimit.js';
 import type {
   AclResolver,
   AuditLogger,
@@ -23,6 +24,8 @@ import type {
   ParsedAuthCompleteRequest,
   NapServer,
   RandomSource,
+  RateLimiter,
+  RateLimitKey,
   SessionStore,
   VerifyCompletionInput,
   VerifyCompletionOutcome,
@@ -191,7 +194,7 @@ async function padAuthResponse(
   }
 
   const jitter =
-    jitterRange > 0 ? (randomSource.randomBytes(2)[0] ?? 0) % (jitterRange + 1) : 0;
+    jitterRange > 0 ? (randomSource.randomBytes(1)[0] ?? 0) % (jitterRange + 1) : 0;
   const remaining = floor + jitter - (Date.now() - startedAtMillis);
 
   if (remaining > 0) {
@@ -199,15 +202,47 @@ async function padAuthResponse(
   }
 }
 
+/**
+ * Default limiters, one per options object so repeated calls share a window.
+ *
+ * Keyed on `options` rather than held in a module-level singleton because two
+ * servers in one process — a test suite, a multi-tenant host — must not share a
+ * budget. `WeakMap` so an options object going out of scope takes its counters
+ * with it.
+ */
+const defaultRateLimiters = new WeakMap<NapServerOptions, RateLimiter>();
+
+function resolveRateLimiter(options: NapServerOptions): RateLimiter | null {
+  // `null` is an explicit opt-out; `undefined` just means "not configured".
+  if (options.rateLimiter === null) {
+    return null;
+  }
+
+  if (options.rateLimiter) {
+    return options.rateLimiter;
+  }
+
+  let limiter = defaultRateLimiters.get(options);
+
+  if (!limiter) {
+    limiter = createInMemoryRateLimiter();
+    defaultRateLimiters.set(options, limiter);
+  }
+
+  return limiter;
+}
+
 async function checkRateLimit(
   options: NapServerOptions,
-  key: { scope: 'init' | 'complete'; npub?: string; clientIp?: string }
+  key: RateLimitKey
 ): Promise<{ allowed: true } | { allowed: false; retryAfterSeconds?: number }> {
-  if (!options.rateLimiter) {
+  const rateLimiter = resolveRateLimiter(options);
+
+  if (!rateLimiter) {
     return { allowed: true };
   }
 
-  const decision = await options.rateLimiter.check(key);
+  const decision = await rateLimiter.check(key);
 
   return decision.allowed
     ? { allowed: true }
@@ -236,14 +271,22 @@ async function findExceededOutstandingCap(
   }
 
   const perNpub = options.maxOutstandingChallengesPerNpub ?? DEFAULT_MAX_OUTSTANDING_PER_NPUB;
+  const perIp = options.maxOutstandingChallengesPerIp ?? DEFAULT_MAX_OUTSTANDING_PER_IP;
+  const countsIp = Boolean(clientIp) && perIp > 0;
 
-  if (perNpub > 0 && (await countOutstanding({ npub, now })) >= perNpub) {
+  // Both counts in flight together: they are independent, and the npub check
+  // rejecting is the rare case, so serialising them just paid a round trip on
+  // every /auth/init to save a query on almost none of them.
+  const [npubCount, ipCount] = await Promise.all([
+    perNpub > 0 ? countOutstanding({ npub, now }) : Promise.resolve(0),
+    countsIp ? countOutstanding({ clientIp, now }) : Promise.resolve(0),
+  ]);
+
+  if (perNpub > 0 && npubCount >= perNpub) {
     return 'npub';
   }
 
-  const perIp = options.maxOutstandingChallengesPerIp ?? DEFAULT_MAX_OUTSTANDING_PER_IP;
-
-  if (clientIp && perIp > 0 && (await countOutstanding({ clientIp, now })) >= perIp) {
+  if (countsIp && ipCount >= perIp) {
     return 'ip';
   }
 
@@ -325,9 +368,14 @@ export async function issueChallenge(
 ): Promise<IssueChallengeResult> {
   const startedAtMillis = Date.now();
   const randomSource = options.randomSource ?? defaultRandomSource;
-  const result = await issueChallengeUnpadded(input, options);
-  await padAuthResponse(startedAtMillis, options, randomSource);
-  return result;
+
+  // `finally`, so a store outage answers on the same schedule as a refusal. An
+  // unpadded 500 next to padded 401s is itself a distinguishable response.
+  try {
+    return await issueChallengeUnpadded(input, options);
+  } finally {
+    await padAuthResponse(startedAtMillis, options, randomSource);
+  }
 }
 
 async function issueChallengeUnpadded(
@@ -430,9 +478,12 @@ export async function verifyCompletion(
 ): Promise<VerifyCompletionOutcome> {
   const startedAtMillis = Date.now();
   const randomSource = options.randomSource ?? defaultRandomSource;
-  const result = await verifyCompletionUnpadded(input, options);
-  await padAuthResponse(startedAtMillis, options, randomSource);
-  return result;
+
+  try {
+    return await verifyCompletionUnpadded(input, options);
+  } finally {
+    await padAuthResponse(startedAtMillis, options, randomSource);
+  }
 }
 
 async function verifyCompletionUnpadded(
@@ -486,6 +537,31 @@ async function verifyCompletionUnpadded(
   if (!proof.ok) {
     await logFailure(auditLogger, proof.code, { url: input.url });
     return proof;
+  }
+
+  // Second check, now that the request has proved who it is.
+  //
+  // The pre-proof check above has only `clientIp`, and an adapter behind an
+  // untrusted proxy is told to report none — which left the one endpoint that
+  // runs a Schnorr verify per call with no bound at all. Counting the proved
+  // pubkey costs an attacker one signature per request they get through.
+  const provenRateLimit = await checkRateLimit(options, {
+    scope: 'complete',
+    pubkey: proof.value.event.pubkey,
+    clientIp: input.clientIp,
+  });
+
+  if (!provenRateLimit.allowed) {
+    await auditLogger.log({
+      code: 'NAP_COMPLETE_RATE_LIMITED',
+      pubkey: proof.value.event.pubkey,
+      outcome: 'rate_limited',
+      details: { challenge_id: body.challenge_id },
+    });
+    return {
+      ...failure('NAP_COMPLETE_RATE_LIMITED'),
+      retryAfterSeconds: provenRateLimit.retryAfterSeconds,
+    };
   }
 
   const challenge = await options.challengeStore.get(proof.value.challengeId);
@@ -708,12 +784,41 @@ export async function resolveEffectiveAcl(
   );
 
   if (!decision.allowed) {
-    const clock = options.clock ?? defaultClock;
-    await options.sessionStore?.revokeByPrincipal(session.principal_pubkey, clock.nowUnix());
+    // Only an affirmative denial ends every session the principal holds. A
+    // resolver that answers "denied" because it could not read the ACL — a
+    // lagging replica, a row mid-rewrite — denies this request and no more;
+    // mass-revoking on an unreadable ACL costs everyone a fresh NIP-98 login.
+    if (decision.revoke_sessions) {
+      const clock = options.clock ?? defaultClock;
+      await options.sessionStore?.revokeByPrincipal(session.principal_pubkey, clock.nowUnix());
+    }
+
     return null;
   }
 
   return { roles: decision.roles, permissions: decision.permissions };
+}
+
+/**
+ * Compare a secret without leaking its content through comparison time.
+ *
+ * `===` on strings short-circuits at the first differing byte. Guards run
+ * outside the auth endpoints' response floor, so nothing else is smoothing that
+ * out. Hand-rolled rather than `node:crypto.timingSafeEqual` to keep the
+ * package runtime-portable, and because that one throws on unequal lengths —
+ * which is itself the leak.
+ */
+export function constantTimeEquals(a: string, b: string): boolean {
+  const encoder = new TextEncoder();
+  const left = encoder.encode(a);
+  const right = encoder.encode(b);
+  let difference = left.length ^ right.length;
+
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= (left[index] ?? 0) ^ (right[index] ?? 0);
+  }
+
+  return difference === 0;
 }
 
 export function toPublicAuthFailure(): { status: 401; body: AuthFailureResponse } {

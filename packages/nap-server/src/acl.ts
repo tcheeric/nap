@@ -86,12 +86,13 @@ function applyOverrides(
   return Array.from(granted).filter((permission) => !denied.has(permission)).sort();
 }
 
-function denied(reason: string): AclDecision {
+function denied(reason: string, revokeSessions = false): AclDecision {
   return {
     allowed: false,
     roles: [],
     permissions: [],
     reason,
+    ...(revokeSessions ? { revoke_sessions: true } : {}),
   };
 }
 
@@ -160,12 +161,15 @@ export function createRegistryAclResolver(
         resolvedOptions
       );
 
+      // Not `revoke_sessions`: with auto-provisioning on, a missing record more
+      // often means the provisioning write failed than that access was pulled.
       if (!record) {
         return denied('no_acl_record');
       }
 
+      // The one deny we are certain about, so the one that ends sessions.
       if (record.suspended) {
-        return denied('suspended');
+        return denied('suspended', true);
       }
 
       const role = registry.roles.find(
@@ -176,6 +180,8 @@ export function createRegistryAclResolver(
         resolvedOptions.logger.warn(
           `PermissionRegistry role '${record.role}' is missing for pubkey '${pubkey}'`
         );
+        // A registry typo, not a revocation. Logging every holder of the role
+        // out over a config mistake is worse than denying their next request.
         return denied('unknown_role');
       }
 

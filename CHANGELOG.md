@@ -12,13 +12,21 @@ All packages in this workspace share a single version.
 ### Added
 
 - **Pluggable rate limiting** (RFC §17.1). `RateLimiter` is `{ check(key): RateLimitDecision }`,
-  where the key carries the scope (`init` / `complete`), npub, and caller address.
-  `createInMemoryRateLimiter()` ships a single-process fixed-window implementation; behind
-  N instances the effective rate is N× the configured one, so multi-instance deployments
-  want a shared backend behind the same interface. Off unless `rateLimiter` is set. Both
-  adapters map `NAP_INIT_RATE_LIMITED` / `NAP_COMPLETE_RATE_LIMITED` to **429 with
-  `Retry-After`** rather than the usual 401 — rate limiting is not an authentication
-  failure, and hiding it behind one only makes clients retry harder.
+  where the key carries the scope (`init` / `complete`), npub, proved pubkey, and caller
+  address. `createInMemoryRateLimiter()` ships a single-process fixed-window implementation;
+  behind N instances the effective rate is N× the configured one, so multi-instance
+  deployments want a shared backend behind the same interface. **On by default** — the
+  100 ms response floor below holds every unauthenticated request open, which without a
+  limiter is a concurrency amplifier rather than a timing defence. Pass `rateLimiter: null`
+  to opt out deliberately. Both adapters map `NAP_INIT_RATE_LIMITED` /
+  `NAP_COMPLETE_RATE_LIMITED` to **429 with `Retry-After`** and a `"rate limited"` body
+  rather than the usual 401 — rate limiting is not an authentication failure, and hiding
+  it behind one only makes clients retry harder.
+
+  `/auth/complete` is checked twice: once on caller address before the proof, and again on
+  the proved pubkey after it. The first check has nothing to key on when an adapter opts
+  out of address reporting, which would otherwise leave the one endpoint that runs a
+  Schnorr verify per call unbounded.
 - **Outstanding-challenge caps** (RFC §17.4). `maxOutstandingChallengesPerNpub` (default 10)
   and `maxOutstandingChallengesPerIp` (default 30) bound how many unredeemed, unexpired
   challenges one principal or address may hold, so a caller under the rate limit still
@@ -30,18 +38,28 @@ All packages in this workspace share a single version.
   parsing an anonymous caller could buy per request.
 - **Per-request permission evaluation** (RFC §15). `resolveEffectiveAcl()`, and an
   `aclResolver` option on both adapters' guards: `requirePermission()` / `requireRole()`
-  re-read the ACL per request instead of trusting the login-time snapshot, and revoke the
-  principal's sessions when the ACL denies them. Costs one ACL read per guarded request,
-  so it is opt-in per guard; without it the previous snapshot behaviour is unchanged.
+  re-read the ACL per request instead of trusting the login-time snapshot. Costs one ACL
+  read per guarded request, so it is opt-in per guard; without it the previous snapshot
+  behaviour is unchanged.
+- **`AclDecision.revoke_sessions`**, gating the mass revocation above. A denial revokes
+  every session the principal holds only when the resolver sets it — `createRegistryAclResolver()`
+  does so for `suspended` and nothing else. A resolver that answers "denied" because it
+  could not *read* the ACL (a lagging replica, a row mid-rewrite) denies the one request
+  and no more; the alternative turns a transient store problem into a forced re-login for
+  everyone, recoverable only by a fresh NIP-98 exchange.
+- **`constantTimeEquals(a, b)`** in `@imani/nap-server`, used by both adapters to compare
+  the step-up token. Guards run outside the auth endpoints' response floor, so `===`
+  short-circuiting on the first differing byte had nothing smoothing it out.
 - **`createRevokingAclStore(aclStore, sessionStore, clock?)`** (RFC §15), revoking active
   sessions at the point of the ACL write rather than waiting for a request. Fires on
   `suspend()` and on a role change, deliberately **not** on a permission-override edit —
   logging everyone out because a permission was *granted* is worse than the delay.
 - **Response timing floor** (RFC §15). `minAuthResponseMillis` (default 100) and
   `responseJitterMillis` (default 25) hold every auth response to a fixed floor plus
-  jitter. The generic 401 hides which check failed; latency did not. Jitter alone would
-  not close it — it hides samples, not the mean — so the floor does the work. Set
-  `minAuthResponseMillis: 0` in tests.
+  jitter, including the path where the store throws — an unpadded 500 next to padded 401s
+  is itself a distinguishable response. The generic 401 hides which check failed; latency
+  did not. Jitter alone would not close it — it hides samples, not the mean — so the floor
+  does the work. Set `minAuthResponseMillis: 0` in tests.
 - **Challenge failure budget** (RFC §13.4). `maxFailuresPerChallenge` (default 5) moves a
   challenge to `failed_terminal`, after which further attempts get
   `NAP_COMPLETE_FAILED_TERMINAL`. Counted only for proof failures after the challenge is
@@ -88,6 +106,18 @@ All packages in this workspace share a single version.
 - **Custom `ChallengeStore` implementations keep compiling** — `countOutstanding()` and
   `recordFailure()` are optional members — but a store that omits them silently skips the
   corresponding cap. A store that cannot count cannot cap.
+- **Rate limiting is now on by default.** Deployments that want the previous unlimited
+  behaviour must say so with `rateLimiter: null`. The default is a single-process
+  in-memory limiter at 30 requests per identifier per 60 s — behind a load balancer that
+  is 30 × N, so a shared-backend limiter is still the right answer for more than one
+  instance.
+- **Custom `AclResolver` implementations must set `revoke_sessions: true`** on denials
+  that should end the principal's sessions. Without it a denial blocks the request but
+  leaves sessions alive until they expire.
+- **Custom `RateLimiter` implementations** see a new `pubkey` dimension on `RateLimitKey`.
+  Ignoring it is safe — the caller counts the same key on `clientIp` too — but a limiter
+  that keys only on `clientIp` will not bound `/auth/complete` for an adapter that reports
+  no address.
 - **`nap-java` is not yet wire-compatible with the body-carried `step_up` flag, the 429
   responses, or `failed_terminal`.** Until it is, do not mix a TS client asking for a
   step-up with a Java server.

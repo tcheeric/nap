@@ -238,7 +238,7 @@ On success the server MUST include in the response:
 | `step_up_token` | string | Opaque token, generated with the same CSPRNG requirements as `access_token` (§14) |
 | `step_up_expires_at` | integer | Unix seconds; SHOULD be significantly shorter than the session lifetime |
 
-A step-up token MUST NOT be accepted as an `access_token`, and MUST NOT extend the session's own expiry. Servers SHOULD present it in an `X-Step-Up-Token` request header for the operations that require it.
+A step-up token MUST NOT be accepted as an `access_token`, and MUST NOT extend the session's own expiry. Clients SHOULD present it in an `X-Step-Up-Token` request header for the operations that require it.
 
 Which operations require step-up is an application decision, carried in the permission registry (§15) as `stepUp: true` on a permission definition. A conforming server that receives a request for a step-up-marked permission without a valid, unexpired step-up token MUST refuse it, and SHOULD do so with the same status it uses for any other authorization failure on that route.
 

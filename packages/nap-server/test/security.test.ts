@@ -8,7 +8,9 @@ import {
   type SessionRecord,
 } from '@imani/nap-core';
 import {
+  constantTimeEquals,
   createInMemoryRateLimiter,
+  isVerifyFailure,
   createNapServer,
   createRevokingAclStore,
   InMemoryAclStore,
@@ -365,14 +367,14 @@ describe('per-request permission evaluation (RFC §15)', () => {
     expect(acl).toEqual({ roles: ['viewer'], permissions: ['voucher:read'] });
   });
 
-  it('denies and revokes the principal once access is removed', async () => {
+  it('denies and revokes the principal once access is affirmatively removed', async () => {
     const sessionStore = new InMemorySessionStore();
     await sessionStore.createForChallenge(session);
 
     const acl = await resolveEffectiveAcl(session, {
       aclResolver: {
         async resolve() {
-          return { allowed: false, roles: [], permissions: [] };
+          return { allowed: false, roles: [], permissions: [], revoke_sessions: true };
         },
       },
       sessionStore,
@@ -382,6 +384,26 @@ describe('per-request permission evaluation (RFC §15)', () => {
     expect(acl).toBeNull();
     expect(await sessionStore.getByAccessToken('token-1')).not.toBeNull();
     expect((await sessionStore.getBySessionId('session-1'))?.revoked_at).toBe(NOW);
+  });
+
+  it('denies without revoking when the resolver is not certain', async () => {
+    const sessionStore = new InMemorySessionStore();
+    await sessionStore.createForChallenge(session);
+
+    // A resolver that cannot read the ACL answers "denied". Revoking on that
+    // would turn a lagging replica into a forced re-login for everyone.
+    const acl = await resolveEffectiveAcl(session, {
+      aclResolver: {
+        async resolve() {
+          return { allowed: false, roles: [], permissions: [], reason: 'no_acl_record' };
+        },
+      },
+      sessionStore,
+      clock: { nowUnix: () => NOW },
+    });
+
+    expect(acl).toBeNull();
+    expect((await sessionStore.getBySessionId('session-1'))?.revoked_at).toBeUndefined();
   });
 });
 
@@ -458,5 +480,91 @@ describe('response timing floor (RFC §15)', () => {
     // setTimeout may fire a millisecond early; the point is that a rejection
     // that would otherwise return in microseconds does not.
     expect(elapsed).toBeGreaterThanOrEqual(55);
+  });
+});
+
+describe('rate limiting defaults', () => {
+  it('limits /auth/init with no rateLimiter configured', async () => {
+    // On by default: the 100 ms response floor holds an unauthenticated request
+    // open, so an unlimited endpoint is a concurrency amplifier.
+    const options = buildOptions();
+
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      await issueChallenge({ npub: NPUB, authUrl: AUTH_URL }, options);
+    }
+
+    const result = await issueChallenge({ npub: NPUB, authUrl: AUTH_URL }, options);
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.code).toBe('NAP_INIT_RATE_LIMITED');
+  });
+
+  it('treats rateLimiter: null as a deliberate opt-out', async () => {
+    const options = buildOptions({ rateLimiter: null, maxOutstandingChallengesPerNpub: 0 });
+
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const result = await issueChallenge({ npub: NPUB, authUrl: AUTH_URL }, options);
+      expect(result.ok).toBe(true);
+    }
+  });
+
+  it('keeps separate budgets for two servers in one process', async () => {
+    const first = buildOptions();
+    const second = buildOptions();
+
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      await issueChallenge({ npub: NPUB, authUrl: AUTH_URL }, first);
+    }
+
+    expect((await issueChallenge({ npub: NPUB, authUrl: AUTH_URL }, second)).ok).toBe(true);
+  });
+
+  it('counts the proved pubkey on /auth/complete when no address is reported', async () => {
+    // The pre-proof check has nothing to key on here, which used to leave the
+    // one endpoint that runs a Schnorr verify per call entirely unbounded.
+    const options = buildOptions({ maxOutstandingChallengesPerNpub: 0 });
+    const challenge = await issue(options);
+    const completion = completionFor(challenge.challenge_id, challenge.challenge);
+
+    const attempt = () =>
+      verifyCompletion(
+        { authorization: completion.authorization, method: 'POST', url: AUTH_URL, rawBody: completion.rawBody },
+        options
+      );
+
+    for (let index = 0; index < 30; index += 1) {
+      await attempt();
+    }
+
+    const outcome = await attempt();
+
+    expect(isVerifyFailure(outcome) && outcome.code).toBe('NAP_COMPLETE_RATE_LIMITED');
+  });
+});
+
+describe('constantTimeEquals', () => {
+  it('matches equal strings and rejects everything else', () => {
+    expect(constantTimeEquals('token', 'token')).toBe(true);
+    expect(constantTimeEquals('token', 'tokeN')).toBe(false);
+    expect(constantTimeEquals('token', 'token-longer')).toBe(false);
+    expect(constantTimeEquals('', '')).toBe(true);
+  });
+});
+
+describe('response timing on the throw path', () => {
+  it('pads a store failure to the same floor as a refusal', async () => {
+    const challengeStore = new InMemoryChallengeStore();
+    challengeStore.countOutstanding = async () => {
+      throw new Error('store unreachable');
+    };
+
+    const options = buildOptions({ challengeStore, minAuthResponseMillis: 60 });
+    const startedAt = Date.now();
+
+    await expect(issueChallenge({ npub: NPUB, authUrl: AUTH_URL }, options)).rejects.toThrow(
+      'store unreachable'
+    );
+
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(55);
   });
 });

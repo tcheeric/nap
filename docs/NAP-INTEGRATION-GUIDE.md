@@ -102,8 +102,9 @@ Each phase is independently verifiable, so a failure tells you which layer broke
 - [ ] NAP router mounted **before** any global body parser (§5.2)
 - [ ] `AuditLogger` wired, `code` reaching your logs (§9.6)
 - [ ] Durable store configured, with a plan for sweeping expired rows — `markExpired()` marks but never deletes (§5.4)
-- [ ] `rateLimiter` set — `createInMemoryRateLimiter()` for one process, a shared
-      backend behind the same interface for more than one (§9.5)
+- [ ] `rateLimiter` sized for the deployment — the default is a per-process
+      `createInMemoryRateLimiter()`, so more than one instance needs a shared
+      backend behind the same interface (§9.5)
 - [ ] Body size capped — the adapters default to 1 kB; override with `bodyLimit`
       (Express) / `bodyLimitBytes` (Fastify) (§9.5)
 - [ ] `validatePermissions(registry)` called at startup (§5.2)
@@ -2326,17 +2327,30 @@ createNapServer({
 ```
 
 1. **`rateLimiter`** — a `RateLimiter` is `{ check(key): RateLimitDecision }`,
-   where `key` carries the scope (`init` / `complete`), the npub, and the caller
-   address. Off unless you set it. Both entry points return
+   where `key` carries the scope (`init` / `complete`), the npub, the proved
+   pubkey, and the caller address. Both entry points return
    `NAP_INIT_RATE_LIMITED` / `NAP_COMPLETE_RATE_LIMITED` when it rejects, and the
    adapters turn those into a **429 with `Retry-After`** rather than the usual
    401 — rate limiting is not an authentication failure and hiding it behind one
    would only mean clients retry harder.
 
+   **On by default**, at 30 per identifier per 60 s. It has to be: §9.5.1's
+   response floor holds every unauthenticated request open for 100 ms, so an
+   unlimited endpoint is a concurrency amplifier rather than a timing defence.
+   Pass `rateLimiter: null` to opt out, which is a decision to make on purpose.
+
    `createInMemoryRateLimiter()` is a fixed-window counter that keeps its state
    in the process. Behind N instances the effective rate is N× what you
    configured; a multi-instance deployment wants Redis or similar behind the same
    interface.
+
+   `/auth/complete` is checked **twice** — once on caller address before the
+   NIP-98 proof is verified, and again on the proved pubkey after. The first
+   check has nothing to key on when `getClientIp` returns `undefined`, which §9.4
+   recommends behind an untrusted proxy; without the second, the one endpoint
+   that runs a Schnorr verify per call would be unbounded for exactly the
+   deployments following that advice. A custom limiter that ignores `key.pubkey`
+   is safe but gives up that bound.
 
 2. **Outstanding-challenge caps** — bound how many *unredeemed, unexpired*
    challenges one npub or one address may hold at once, so a caller under the
@@ -2616,9 +2630,8 @@ normal authenticated requests as an explicit non-goal).
 - **`getExternalBaseUrl` correctness** (§9.4) — wrong from day one means nothing
   works, and the error is a generic 401.
 - **The raw-body ordering** (§5.2) — wrong means a 500 on every completion.
-- **Setting `rateLimiter`** (§9.5) — you are exposing a new unauthenticated
-  write endpoint to the internet, and this is the one bound of the three that is
-  off until you configure it.
+- **Sizing `rateLimiter`** (§9.5) — the default counts in one process, so behind
+  a load balancer the real rate is N× what the number says.
 - **Cookie attributes on logout** (§6.1) — `clearCookieOptions` must match the
   attributes you set the cookie with, or `/auth/logout` revokes server-side while
   the browser keeps a now-dead cookie.
@@ -2662,7 +2675,7 @@ Closed in 0.4.0, kept here so the diff against an older deployment is visible:
 
 | RFC requirement | Where | How it landed |
 |---|---|---|
-| Rate limiter as a pluggable interface (`§17.1`) | `docs/NAP-v2-RFC.md:539` | `RateLimiter` interface + `createInMemoryRateLimiter()`; adapters return 429 with `Retry-After` (§9.5). Off unless configured. |
+| Rate limiter as a pluggable interface (`§17.1`) | `docs/NAP-v2-RFC.md:539` | `RateLimiter` interface + `createInMemoryRateLimiter()`; adapters return 429 with `Retry-After` (§9.5). On by default, per-process. |
 | Bounded outstanding challenges per IP / per npub (`§17.4`) | `docs/NAP-v2-RFC.md:573` | `maxOutstandingChallengesPerNpub` / `PerIp`, via `ChallengeStore.countOutstanding()` (§9.5). On by default. |
 | Bounded `/auth/complete` body size (`§17.4`) | `docs/NAP-v2-RFC.md:575` | `bodyLimit` (Express) / `bodyLimitBytes` (Fastify), default 1 kB (§9.5). |
 | Permissions re-evaluated per request (`§15`) | `docs/NAP-v2-RFC.md:466` | `resolveEffectiveAcl()` behind the guards' `aclResolver` option (§3.4). Opt-in per guard. |

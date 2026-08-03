@@ -17,6 +17,7 @@ export {
   createSystemClock,
   issueChallenge,
   MAX_CHALLENGE_TTL_SECONDS,
+  constantTimeEquals,
   resolveEffectiveAcl,
   toPublicAuthFailure,
   toPublicAuthSuccess,

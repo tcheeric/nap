@@ -10,6 +10,7 @@ import type {
 } from 'fastify';
 import {
   resolveEffectiveAcl,
+  constantTimeEquals,
   toPublicAuthFailure,
   toPublicAuthSuccess,
   toPublicSessionView,
@@ -183,8 +184,14 @@ function rateLimited(reply: FastifyReply, retryAfterSeconds?: number): void {
     reply.header('retry-after', String(retryAfterSeconds));
   }
 
-  const failure = toPublicAuthFailure();
-  reply.status(429).send(failure.body);
+  // Not the generic auth-failure body: the whole reason this is a 429 and not a
+  // 401 is to stop the client retrying harder, and telling it the credentials
+  // were rejected undoes that. The status code has already leaked everything
+  // this message could.
+  reply.status(429).send({
+    status: 'error',
+    message: 'rate limited',
+  });
 }
 
 function hasValidStepUpToken(req: FastifyRequest, session: SessionRecord): boolean {
@@ -194,7 +201,7 @@ function hasValidStepUpToken(req: FastifyRequest, session: SessionRecord): boole
   return Boolean(
     stepUpToken &&
       session.step_up_token &&
-      session.step_up_token === stepUpToken &&
+      constantTimeEquals(session.step_up_token, stepUpToken) &&
       session.step_up_expires_at &&
       session.step_up_expires_at > currentEpochSeconds()
   );

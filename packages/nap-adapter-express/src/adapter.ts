@@ -1,6 +1,7 @@
 import express, { type CookieOptions, type Request, type RequestHandler, type Response, type Router } from 'express';
 import {
   resolveEffectiveAcl,
+  constantTimeEquals,
   toPublicAuthFailure,
   toPublicAuthSuccess,
   toPublicSessionView,
@@ -131,8 +132,14 @@ function rateLimited(res: Response, retryAfterSeconds?: number): void {
     res.setHeader('Retry-After', String(retryAfterSeconds));
   }
 
-  const failure = toPublicAuthFailure();
-  res.status(429).json(failure.body);
+  // Not the generic auth-failure body: the whole reason this is a 429 and not a
+  // 401 is to stop the client retrying harder, and telling it the credentials
+  // were rejected undoes that. The status code has already leaked everything
+  // this message could.
+  res.status(429).json({
+    status: 'error',
+    message: 'rate limited',
+  });
 }
 
 function hasValidStepUpToken(req: Request, session: SessionRecord): boolean {
@@ -141,7 +148,7 @@ function hasValidStepUpToken(req: Request, session: SessionRecord): boolean {
   return Boolean(
     providedToken &&
       session.step_up_token &&
-      session.step_up_token === providedToken &&
+      constantTimeEquals(session.step_up_token, providedToken) &&
       session.step_up_expires_at &&
       session.step_up_expires_at > currentEpochSeconds()
   );

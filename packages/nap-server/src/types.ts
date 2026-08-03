@@ -116,6 +116,16 @@ export interface RateLimitKey {
   scope: 'init' | 'complete';
   /** Principal the request claims, when the request names one. */
   npub?: string;
+  /**
+   * Principal the request has *proved*, hex-encoded.
+   *
+   * `/auth/complete` names nobody until its NIP-98 proof verifies, so the
+   * pre-proof check has only `clientIp` to work with — nothing at all when the
+   * adapter opts out of address reporting. This dimension is counted again once
+   * the signature is good, which bounds an attacker to one Schnorr verify per
+   * request instead of unbounded.
+   */
+  pubkey?: string;
   /** Caller address, as resolved by the adapter's trust policy. */
   clientIp?: string;
 }
@@ -169,7 +179,17 @@ export interface NapServerOptions {
   clock?: Clock;
   randomSource?: RandomSource;
   auditLogger?: AuditLogger;
-  rateLimiter?: RateLimiter;
+  /**
+   * Defaults to a per-options `createInMemoryRateLimiter()`.
+   *
+   * On by default because `minAuthResponseMillis` holds every unauthenticated
+   * request open for 100 ms: without a limiter that floor is a concurrency
+   * amplifier rather than a timing defence. Pass a shared-backend limiter for
+   * multi-instance deployments, where the in-memory one allows N× the
+   * configured rate. Pass `null` to disable — a deliberate choice, not a
+   * default.
+   */
+  rateLimiter?: RateLimiter | null;
   /** Defaults to 60, which is also the RFC §10.1 ceiling. Anything higher throws. */
   challengeTtlSeconds?: number;
   sessionTtlSeconds?: number;

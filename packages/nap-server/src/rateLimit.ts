@@ -25,9 +25,9 @@ const DEFAULT_MAX_PER_WINDOW = 30;
  * by the instance count. Multi-instance deployments want a shared backend
  * behind the same `RateLimiter` interface.
  *
- * The `npub` and `clientIp` dimensions are counted separately and both must
- * pass — one principal cycling addresses is still capped, and one address
- * cycling principals is too.
+ * The `npub`, `pubkey`, and `clientIp` dimensions are counted separately and
+ * all must pass — one principal cycling addresses is still capped, and one
+ * address cycling principals is too.
  */
 export function createInMemoryRateLimiter(
   options: InMemoryRateLimiterOptions = {}
@@ -57,7 +57,24 @@ export function createInMemoryRateLimiter(
     return { allowed: true };
   }
 
+  let lastPrunedAt: number | null = null;
+
+  /**
+   * Sweep expired windows so an attacker cycling identifiers grows the map by
+   * at most a couple of windows' worth of entries rather than without bound.
+   *
+   * At most once per clock tick: a scan on every call is O(entries) per
+   * request, which turns the component that is supposed to absorb a flood into
+   * the thing that amplifies it. Stale entries surviving until the next tick
+   * cost nothing — `hit()` treats an expired window as absent anyway.
+   */
   function prune(now: number): void {
+    if (lastPrunedAt !== null && now <= lastPrunedAt) {
+      return;
+    }
+
+    lastPrunedAt = now;
+
     for (const [identifier, window] of windows) {
       if (now - window.startedAt >= windowSeconds) {
         windows.delete(identifier);
@@ -69,12 +86,11 @@ export function createInMemoryRateLimiter(
     check(key: RateLimitKey): RateLimitDecision {
       const now = clock.nowUnix();
 
-      // Sweep before counting so an attacker cycling identifiers grows the map
-      // by at most one window's worth of entries rather than without bound.
       prune(now);
 
       const identifiers = [
         key.npub ? `${key.scope}:npub:${key.npub}` : null,
+        key.pubkey ? `${key.scope}:pubkey:${key.pubkey}` : null,
         key.clientIp ? `${key.scope}:ip:${key.clientIp}` : null,
       ].filter((value): value is string => value !== null);
 

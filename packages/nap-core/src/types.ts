@@ -93,6 +93,17 @@ export interface AclDecision {
   roles: string[];
   permissions: string[];
   reason?: string;
+  /**
+   * Set on a denial the resolver is *certain* about — the principal was
+   * suspended, not merely unreadable. Only then does `resolveEffectiveAcl()`
+   * revoke every session they hold.
+   *
+   * Omitting it denies the one request and leaves sessions intact, which is the
+   * safe default: a resolver that answers `allowed: false` because a replica
+   * lagged or a row was mid-rewrite would otherwise log the principal out
+   * everywhere, and only a fresh NIP-98 login gets them back.
+   */
+  revoke_sessions?: boolean;
 }
 
 export type NapErrorCode =
