@@ -1185,10 +1185,12 @@ const session = createNapSession({
 });
 ```
 
-`options.cookie?: { name?: string }` is declared in the type but is **never
-read** by `createNapSession()` — I traced every use of `options` in
-`packages/nap-client-web/src/session.ts` and `cookie` does not appear. Setting it
-does nothing in 0.2.0.
+There is **no cookie option**. Through 0.3.0 the type declared
+`cookie?: { name?: string }` and `createNapSession()` never read it; rather than
+invent a meaning for it, 0.4.0 removed it. The cookie's name, attributes, and
+lifetime belong to the server, the browser attaches it without being asked, and
+an `HttpOnly` cookie is not readable from this side even if it were named. If
+you were setting it, delete the line — it never did anything.
 
 The `NapSession` surface (`packages/nap-client-web/src/types.ts:38`):
 
@@ -2760,7 +2762,9 @@ Closed in 0.4.0, kept here so the diff against an older deployment is visible:
   four routes. `/auth/session` returns `toPublicSessionView()` — no access token
   in the body — and `/auth/logout` revokes the session and clears the cookie
   idempotently (§6.1).
-- **`NapClientOptions.cookie`.** Declared, never read (§6.1).
+- ~~**`NapClientOptions.cookie`.**~~ **Fixed.** Removed in 0.4.0. It was declared
+  and never read, and a browser client has no use for the name of a cookie the
+  server sets and the browser attaches on its own (§6.1).
 - ~~**`useNapCallbacks().onLogin`.**~~ **Fixed.** `NapClientOptions` accepts
   `onLogin`, and `session.login()` and a session-restoring `session.resume()`
   both fire it, so the hook's `isAuthenticated` flips (§6.4).

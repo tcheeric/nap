@@ -9,6 +9,16 @@ All packages in this workspace share a single version.
 
 ## [Unreleased]
 
+### Removed
+
+- **`NapClientOptions.cookie`** in `@imani/nap-client-web`. It was declared and never
+  read, so setting it did nothing — and there is nothing for it to do: the cookie's
+  name, attributes, and lifetime are the server's, the browser attaches it without being
+  asked, and an `HttpOnly` cookie is not readable from the page even if it were named.
+  Breaking at compile time only; delete the property and behaviour is unchanged. The
+  interface now carries a doc comment saying the package is cookie-mode by design and
+  pointing bearer-mode callers at `@imani/nap-client-http`.
+
 ## [0.5.0] - 2026-08-04
 
 ### Added
