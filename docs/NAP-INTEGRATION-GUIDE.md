@@ -1936,70 +1936,75 @@ SHA-256(rawBody) → `challenge_id` tag present **and** equal to the body's `cha
 
 ### Java implementation gaps
 
-Verified by inspection of the Java source; the same caveats that apply to the
-TypeScript implementation in section 11 apply here independently.
+The same caveats that apply to the TypeScript implementation in section 11 apply
+here independently. Unlike the first version of this section, the statements
+below are checked against a green build (`mvn test`, 135 tests) rather than by
+reading source alone.
 
-**Not implemented in the Java code (verified by inspection)**
+**Closed since this section was first written**
 
-- Rate limiting. `NAP_INIT_RATE_LIMITED` / `NAP_COMPLETE_RATE_LIMITED` exist in the enum
-  and are never returned by any code path.
-- Step-up re-authentication. `@RequiresStepUp` has no enforcement anywhere — nothing
-  reads the annotation; `NapPermissionInterceptor` only handles `@RequiresPermission`.
-  `nap.step-up-ttl-seconds` is parsed and never consumed. `SessionRecord.stepUpToken` /
-  `stepUpExpiresAt` and the `step_up_token` / `step_up_expires_at` columns are read by
-  `JdbcSessionStore.mapRow` but are **never written** by any code — `SessionRecord.create`
-  hard-codes them to `null` (`SessionRecord.java:60-64`) and the INSERT does not list
-  them. The `step_up` query parameter on `POST /complete` is bound and ignored.
-- Refresh tokens (`refresh_token` / `refresh_expires_at` from the RFC's `SessionRecord`).
-  No field, no column, no code.
-- `SessionStore.getByAccessToken` is implemented in all three store implementations but
-  is never called by `nap-server` or `nap-spring` — the Java flow authenticates by the
-  session-id cookie, and `access_token` is only ever echoed to the client in
-  `AuthSuccessResponse`. There is no bearer-token authentication path in this repo.
+Listed because a deployment pinned to an older `nap-java` still has them:
+
+- Rate limiting — `RateLimiter` + `InMemoryRateLimiter`, on by default, 429 with
+  `Retry-After`.
+- Step-up re-authentication — `NapPermissionInterceptor` enforces `@RequiresStepUp` and
+  registry-declared step-up permissions, tokens are minted and persisted, and `step_up`
+  moved into the signed body (it was a silently-ignored query parameter).
+- Refresh tokens (RFC `§14.1`) — see §11.2.
+- Recommended metrics (RFC `§19.3`) — `MetricsRecorder`, no-op by default, same ten
+  counter names as TypeScript.
+- `AclDecision` now carries `reason` and `revokeSessions`.
+- The missing migrations — `V2__nap_security_hardening.sql` and
+  `V3__sliding_window_and_refresh_tokens.sql`.
+
+**Still not implemented**
+
+- `SessionStore.getByAccessToken` is implemented in every store and called by nothing.
+  The Java flow authenticates by the session-id cookie, and `access_token` is only
+  echoed to the client. There is no bearer-token authentication path.
 - `ChallengeStore.markExpired` is implemented everywhere and invoked nowhere; no
-  scheduler, no cleanup job.
-- `AclDecision.denied(String reason)` discards the reason — the returned record has no
-  reason field (`nap-core/.../AclDecision.java:15-17`). Deny reasons only reach the log.
-- A `V2` migration for the sliding-window columns. Its DDL exists solely as a Javadoc
-  comment on `JdbcSessionStore.java:22-31`; applying only `V1__create_nap_tables.sql`
-  produces a schema that `JdbcSessionStore` cannot read or write.
-- Auto-registration of `NapServletFilter` and `NapSessionFilter` as Spring beans. With
-  the auto-configuration alone, the `/complete` endpoint cannot work.
+  scheduler, no cleanup job. Same gap as the TypeScript side (§11.3).
+- Auto-registration of `NapServletFilter` and `NapSessionFilter` as Spring beans. This
+  is now deliberate and commented as such: both are registered by the application,
+  usually through a `FilterRegistrationBean` that `@ConditionalOnMissingBean` cannot
+  see, and a second registration would consume the request body twice. It still means
+  the auto-configuration alone does not give you a working `/complete`.
 - Any distributed `EventReplayGuard`. Only `noop()` and a single-JVM `inMemory()` ship,
   so the replay guard is not cluster-safe despite the RFC's §17.2 cluster requirement.
-- Any observability hooks — no metrics, no `AuditLogger`, no MeterRegistry integration.
+- `AuditLogger`. TypeScript has one and the JVM side does not, which is why its metrics
+  are incremented at the outcome points rather than by decorating an audit logger.
+- The startup validation of permission-registry annotation keys that TypeScript does in
+  `validatePermissions()`.
 
-**Could not verify from source**
+**Settled since — one was a vulnerability**
 
-- Whether the TypeScript implementation recomputes the NIP-98 event id from the
-  canonical serialization before checking the signature. **The Java validator does
-  not**: `Nip98Validator.verifySignature` parses `event.id()` straight from the header
-  JSON and Schnorr-verifies over those bytes (`nap-core/.../Nip98Validator.java:204-219`),
-  and nothing else in the validator recomputes `SHA-256([0, pubkey, created_at, kind,
-  tags, content])`. Every other field the validator checks (`u`, `method`, `payload`,
-  `challenge`, `challenge_id`, `kind`, `content`, `created_at`) is read from the same
-  parsed JSON, so those checks still constrain the header — but the signature itself is
-  not bound to them. A writer should have this confirmed against the TS validator before
-  publishing any claim of behavioural equivalence in either direction.
-- Whether the "spec 006" sliding-window contract has a TypeScript counterpart. The Java
-  source references specs 006 by number in several Javadoc blocks
-  (`SessionRecord.java:11`, `NapServerOptions.java:28-29`, `NapProperties.java:23`,
-  `NapAuthController.java:25`), but no spec document with that number exists in
-  `nap-java` — `docs/` is empty. The referenced specs presumably live in the TypeScript
-  repo's `specs/` tree, which was out of scope here.
-- Whether `AuthSuccessResponse.absoluteExpiryAt` is present in the TS wire schema. The
-  RFC's `§24.5 AuthSuccessResponse` was not read in full; the Java record adds it with a
-  back-compat constructor that mirrors it from `expiresAt`
-  (`AuthSuccessResponse.java:20-27`), which suggests it postdates the RFC text.
-- The exact `imani-bom:0.1.4` contents — the versions of `nostr-java-core`,
-  `nostr-java-event`, Jackson, Spring Boot and Spring Security in effect. The BOM is not
-  in this repo and no build was run, so no resolved dependency tree was obtained.
-- Whether the Spring Boot version the adapter targets is 3.x. It is strongly implied by
-  the `jakarta.servlet` imports, `@AutoConfiguration`, and the
-  `META-INF/spring/…AutoConfiguration.imports` registration file, but no version is
-  pinned in any POM in this repo.
-- Runtime behaviour of anything. No build, test, or `mvn dependency:tree` was executed —
-  every statement above comes from reading source.
+- **Whether the NIP-98 event id is recomputed before the signature is checked.** Both
+  now do. TypeScript always did, via `verifyEvent()` from `nostr-tools`, which compares
+  `getEventHash(event)` to `event.id` before verifying. **The Java validator did not**,
+  and that was an authentication bypass rather than a mere divergence: the signature was
+  verified over the id exactly as presented, while every field the validator inspects —
+  the `u`, `payload`, `challenge` and `challenge_id` tags, the pubkey, kind and
+  `created_at` — is read from the same caller-supplied JSON. Since `/auth/init` is
+  unauthenticated and issues a challenge for any npub, an attacker could take any event
+  the victim had ever published to a relay, keep its `id`, `pubkey` and `sig`, rewrite
+  the rest into a completion for a challenge they had just opened, and be issued a
+  session as the victim. This was demonstrated against the server before the fix. Now
+  fixed and covered by `SignatureBindingTest`, which forges exactly that header and
+  requires `NAP_COMPLETE_INVALID_SIGNATURE`.
+- The `imani-bom` contents and the Spring Boot major version — resolvable now that the
+  build runs; Spring Boot 3.x is confirmed by the build, not merely implied by the
+  `jakarta.servlet` imports.
+
+**Still unverified**
+
+- Whether the "spec 006" sliding-window contract has a written counterpart. The Java
+  source references it by number in several Javadoc blocks, but no such document exists
+  in `nap-java` (`docs/` is empty) and `specs/` in this repo is untracked, so the
+  reference cannot be followed from either checkout.
+- Whether `AuthSuccessResponse.absoluteExpiryAt` is in the RFC's `§24.5` wire schema.
+  The Java record adds it with a back-compat constructor mirroring it from `expiresAt`,
+  which suggests it postdates the RFC text. Harmless either way — an extra response
+  field — but the RFC should say so.
 
 ---
 
@@ -2694,13 +2699,34 @@ warnings rather than boilerplate:
   build step, no `dist/`, no `files` field, no `publishConfig`. These are not
   npm-publishable as-is (§11.4).
 
-### 11.2 RFC-specified, not implemented in 0.4.0
+### 11.2 RFC-specified, not implemented
 
-Collected from the preceding sections:
+Collected from the preceding sections. As of the unreleased work on `develop`,
+**nothing the RFC requires is unimplemented** in the TypeScript packages. The one
+row left is a non-gap, kept so nobody re-raises it:
 
 | RFC requirement | Where | Status |
 |---|---|---|
 | WebSocket / relay profiles | `docs/NAP-v2-RFC.md:118` | Correctly out of scope, per `§20.4`. |
+
+That is a statement about coverage, not about maturity — several of the closed
+items are opt-in, per-process, or incomplete in ways §11.3 records. Read both.
+
+**Closed since 0.4.0, not yet released.** On `develop`, not in any published
+version — if you are on 0.4.0 these are still open for you:
+
+| RFC requirement | Where | How it landed |
+|---|---|---|
+| Refresh tokens, rotating (`§14.1`) | `docs/NAP-v2-RFC.md:416` | `refreshTtlSeconds` + `POST /auth/refresh`. Rotates both tokens; a replayed token revokes the session (§9.2). Off unless configured. |
+| `AudienceResolver` and `RawBodyExtractor` as named interfaces (`§20.2`) | `docs/NAP-v2-RFC.md:671` | Both exported from `@imani/nap-server`; the adapters accept `audienceResolver` (mutually exclusive with `getExternalBaseUrl`) and `rawBodyExtractor`. |
+| Recommended metrics (`§19.3`) | `docs/NAP-v2-RFC.md:614` | `MetricsRecorder` interface, no-op by default; the ten named counters are incremented at the existing audit points (§9.6). |
+| Official test vectors (`§20.3`) | `docs/NAP-v2-RFC.md:676` | `packages/nap-core/test-vectors/`, regenerated by a committed script and run by both implementations. See that directory's README. |
+
+All four are implemented in `nap-java` too, on its `feat/rfc-gaps` branch. One
+behavioural difference, deliberate and wire-invisible: a refresh on the JVM side
+is clamped to the session's absolute expiry (its "spec 006" cap), so the refresh
+chain there cannot outlive the session. TypeScript has no absolute cap and RFC
+`§14.1` specifies none.
 
 Closed in 0.4.0, kept here so the diff against an older deployment is visible:
 
@@ -2713,10 +2739,6 @@ Closed in 0.4.0, kept here so the diff against an older deployment is visible:
 | ACL removal revokes active sessions (`§15`) | `docs/NAP-v2-RFC.md:467` | Guard-side on denial, or `createRevokingAclStore()` at the ACL write (§3.4). |
 | Bounded timing differences / jitter (`§15`) | `docs/NAP-v2-RFC.md:473` | `minAuthResponseMillis` floor + `responseJitterMillis` (§9.5.1). On by default. |
 | Challenge TTL ≤ 60s enforced (`§10.1`) | `docs/NAP-v2-RFC.md:198` | `createNapServer()` throws outside `1..60` (§9.1). |
-| Refresh tokens, rotating (`§14.1`) | `docs/NAP-v2-RFC.md:416` | `refreshTtlSeconds` + `POST /auth/refresh`. Rotates both tokens; a replayed token revokes the session (§9.2). Off unless configured. |
-| `AudienceResolver` and `RawBodyExtractor` as named interfaces (`§20.2`) | `docs/NAP-v2-RFC.md:671` | Both exported from `@imani/nap-server`; the adapters accept `audienceResolver` (mutually exclusive with `getExternalBaseUrl`) and `rawBodyExtractor`. |
-| Recommended metrics (`§19.3`) | `docs/NAP-v2-RFC.md:614` | `MetricsRecorder` interface, no-op by default; the ten named counters are incremented at the existing audit points (§9.6). |
-| Official test vectors (`§20.3`) | `docs/NAP-v2-RFC.md:676` | `packages/nap-core/test-vectors/`, regenerated by a committed script and run by both implementations. See that directory's README. |
 | `failed_terminal` challenge state (`§13`) | `docs/NAP-v2-RFC.md:335` | `maxFailuresPerChallenge` (default 5) via `ChallengeStore.recordFailure()`; further attempts get `NAP_COMPLETE_FAILED_TERMINAL`. |
 
 > **Custom `SessionStore` implementations:** `getByRefreshToken()` and
@@ -2744,6 +2766,15 @@ Closed in 0.4.0, kept here so the diff against an older deployment is visible:
   both fire it, so the hook's `isAuthenticated` flips (§6.4).
 - **Expired-row sweeping.** `markExpired()` marks but never deletes; sessions
   are not swept at all (§5.4).
+- **Refresh tokens have no absolute lifetime cap.** Each rotation slides the
+  refresh TTL forward, so an unbroken chain of refreshes extends indefinitely.
+  RFC `§14.1` specifies no cap, and the ACL re-read on every refresh bounds what
+  a stale session can *do* — but not how long it lives. Cap it in your own
+  `rotateRefreshToken` if you need one. `nap-java` does cap it (§11.2).
+- **No client refreshes for you.** `refresh_token` is returned to the browser and
+  `POST /auth/refresh` accepts it, but `nap-client-web` and `nap-react` neither
+  store it nor call the endpoint. Until they do, refresh is a server-side
+  capability an integrator wires up by hand (§6.1).
 
 ### 11.4 Packaging and build
 
