@@ -1,0 +1,25 @@
+{
+  "description": "sha256 of the raw request body, hex-encoded — the value of the NIP-98 `payload` tag. Hash the bytes as received; never a reserialized copy.",
+  "cases": [
+    {
+      "name": "empty-body",
+      "body": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "completion-body",
+      "body": "{\"challenge_id\":\"chal-0000000000000000\"}",
+      "sha256": "5b325e0fa42e9909a467e3c217a3f741e9f6982a51f5c352e6d23ac52e2aaf42"
+    },
+    {
+      "name": "whitespace-is-significant",
+      "body": "{ \"challenge_id\": \"chal-0000000000000000\" }",
+      "sha256": "9587a02a5b41c17f08cd65b20c513169ed9f84af46759cbf3153ebe27e151cdd"
+    },
+    {
+      "name": "non-ascii-utf8",
+      "body": "{\"note\":\"ünïcödé — ☕\"}",
+      "sha256": "95740d4cd15e91704bd1bbf10eada974644b804697c03a37cceec24025dea069"
+    }
+  ]
+}

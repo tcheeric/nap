@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "rfc": "docs/NAP-v2-RFC.md §20.3",
+  "generator": "packages/nap-core/scripts/generate-test-vectors.ts",
+  "principals": {
+    "a": {
+      "private_key": "1111111111111111111111111111111111111111111111111111111111111111",
+      "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "npub": "npub1fu64hh9hes90w2808n8tjc2ajp5yhddjef0ctx4s7zmsgp6cwx4qgy4eg9"
+    },
+    "b": {
+      "private_key": "2222222222222222222222222222222222222222222222222222222222222222",
+      "pubkey": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+      "npub": "npub1gekhljh9v0jukzdq6xrshdvqx3yqgctc0xs5jjw0yg597xaw8uns47vduw"
+    }
+  },
+  "files": [
+    {
+      "file": "payload-hash.json",
+      "covers": "payload hash generation"
+    },
+    {
+      "file": "nip98.json",
+      "covers": "exact URL matching, payload hash generation, duplicate tag rejection"
+    },
+    {
+      "file": "flow.json",
+      "covers": "expired challenge rejection, retrying the same valid completion, pubkey/npub mismatch"
+    }
+  ]
+}

@@ -43,10 +43,21 @@ export function isEvictableSigner(signer: SessionSigner): signer is EvictableSig
   );
 }
 
+/**
+ * This package is cookie-mode only, and deliberately so. Every request goes out
+ * with `credentials: 'include'` and no `Authorization` header, and the
+ * `access_token` from a completion is never retained — holding it in JS is what
+ * an `HttpOnly` cookie exists to avoid. Point it at a backend running
+ * `writeNapCookieSuccess`; for bearer mode use `@imani/nap-client-http` and own
+ * the token yourself.
+ *
+ * There is therefore no cookie option here. The name, attributes, and lifetime
+ * are the server's, the browser attaches the cookie without being asked, and an
+ * `HttpOnly` cookie is not readable from this side even if it were named.
+ */
 export interface NapClientOptions {
   baseUrl: string;
   signer: SessionSigner;
-  cookie?: { name?: string };
   autoLock?: {
     enabled: boolean;
     timeoutMs: number;

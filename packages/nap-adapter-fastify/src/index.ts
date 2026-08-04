@@ -3,6 +3,7 @@ export {
   createNapFastifyCompleteHandler,
   createNapFastifyInitHandler,
   createNapFastifyLogoutHandler,
+  createNapFastifyRefreshHandler,
   createNapFastifySessionHandler,
   createRequestDerivedBaseUrlResolver,
   napFastifyPlugin,

@@ -6,6 +6,7 @@ import type {
   OutstandingChallengeFilter,
   PermissionOverride,
   RecordChallengeFailureResult,
+  RotateRefreshTokenParams,
   SessionStore,
 } from '@imani/nap-server';
 import type { QueryResultRow } from 'pg';
@@ -103,6 +104,9 @@ function mapSessionRecord(row: QueryResultRow): SessionRecord {
     revoked_at: asNullableNumber(row.revoked_at),
     step_up_token: row.step_up_token as string | undefined,
     step_up_expires_at: asNullableNumber(row.step_up_expires_at),
+    refresh_token: row.refresh_token as string | undefined,
+    refresh_expires_at: asNullableNumber(row.refresh_expires_at),
+    previous_refresh_token: row.previous_refresh_token as string | undefined,
   };
 }
 
@@ -251,8 +255,9 @@ export class PostgresSessionStore implements SessionStore {
     const result = await this.pool.query(
       `INSERT INTO nap_sessions (
         session_id, challenge_id, access_token, principal_npub, principal_pubkey,
-        roles, permissions, issued_at, expires_at, step_up_token, step_up_expires_at
-      ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11)
+        roles, permissions, issued_at, expires_at, step_up_token, step_up_expires_at,
+        refresh_token, refresh_expires_at
+      ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12, $13)
       ON CONFLICT (challenge_id) DO NOTHING`,
       [
         record.session_id,
@@ -266,6 +271,8 @@ export class PostgresSessionStore implements SessionStore {
         record.expires_at,
         record.step_up_token ?? null,
         record.step_up_expires_at ?? null,
+        record.refresh_token ?? null,
+        record.refresh_expires_at ?? null,
       ]
     );
 
@@ -310,6 +317,56 @@ export class PostgresSessionStore implements SessionStore {
     );
 
     return result.rowCount ?? 0;
+  }
+
+  /**
+   * Matches the current *or* the previous token, and deliberately does not
+   * filter on `revoked_at`: a replay of a token whose session was already
+   * revoked is still worth recognising as a replay in the audit log.
+   */
+  async getByRefreshToken(token: string): Promise<SessionRecord | null> {
+    const result = await this.pool.query(
+      `SELECT *
+       FROM nap_sessions
+       WHERE refresh_token = $1 OR previous_refresh_token = $1`,
+      [token]
+    );
+
+    return result.rowCount === 0 ? null : mapSessionRecord(result.rows[0]);
+  }
+
+  async rotateRefreshToken(
+    sessionId: string,
+    params: RotateRefreshTokenParams
+  ): Promise<SessionRecord | null> {
+    // `refresh_token = $3` in the WHERE clause is what makes this atomic: two
+    // concurrent refreshes presenting the same token both read the same row, but
+    // only the first UPDATE matches it. The loser sees zero rows and fails,
+    // rather than both walking away with a valid token off one credential.
+    const result = await this.pool.query(
+      `UPDATE nap_sessions
+       SET access_token = $1,
+           previous_refresh_token = refresh_token,
+           refresh_token = $2,
+           expires_at = $4,
+           refresh_expires_at = $5,
+           roles = $6::jsonb,
+           permissions = $7::jsonb
+       WHERE session_id = $8 AND refresh_token = $3 AND revoked_at IS NULL
+       RETURNING *`,
+      [
+        params.accessToken,
+        params.refreshToken,
+        params.expectedRefreshToken,
+        params.expiresAt,
+        params.refreshExpiresAt,
+        JSON.stringify(params.roles),
+        JSON.stringify(params.permissions),
+        sessionId,
+      ]
+    );
+
+    return result.rowCount === 0 ? null : mapSessionRecord(result.rows[0]);
   }
 
   private async findBy(

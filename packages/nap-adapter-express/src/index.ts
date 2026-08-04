@@ -4,6 +4,7 @@ export {
   createNapExpressInitHandler,
   createNapExpressJsonParser,
   createNapExpressLogoutHandler,
+  createNapExpressRefreshHandler,
   createNapExpressRouter,
   createNapExpressSessionHandler,
   createRequestDerivedBaseUrlResolver,

@@ -9,10 +9,12 @@ import {
   type ChallengeRecord,
   type NapErrorCode,
   type SessionRecord,
+  type VerifyCompleteFailure,
   validateChallengeBoundCreatedAt,
   verifyNip98Completion,
 } from '@imani/nap-core';
 import { nip19 } from 'nostr-tools';
+import { countTotal, withMetrics } from './metrics.js';
 import { createInMemoryRateLimiter } from './rateLimit.js';
 import type {
   AclResolver,
@@ -128,7 +130,8 @@ function createSessionRecord(
   randomSource: RandomSource,
   roles: string[],
   permissions: string[],
-  stepUp?: { ttlSeconds: number }
+  stepUp?: { ttlSeconds: number },
+  refreshTtlSeconds?: number
 ): SessionRecord {
   return {
     session_id: base64Url(randomSource.randomBytes(24)),
@@ -144,6 +147,12 @@ function createSessionRecord(
       ? {
           step_up_token: base64Url(randomSource.randomBytes(32)),
           step_up_expires_at: now + stepUp.ttlSeconds,
+        }
+      : {}),
+    ...(refreshTtlSeconds
+      ? {
+          refresh_token: base64Url(randomSource.randomBytes(32)),
+          refresh_expires_at: now + refreshTtlSeconds,
         }
       : {}),
   };
@@ -409,7 +418,7 @@ export async function issueChallenge(
  * floor's duration — the amplification the limiter is there to prevent.
  */
 function isRateLimited(
-  result: IssueChallengeResult | VerifyCompletionOutcome | undefined,
+  result: IssueChallengeResult | VerifyCompletionOutcome | RefreshSessionOutcome | undefined,
   code: NapErrorCode
 ): boolean {
   return result !== undefined && !result.ok && 'code' in result && result.code === code;
@@ -421,8 +430,11 @@ async function issueChallengeUnpadded(
 ): Promise<IssueChallengeResult> {
   const clock = options.clock ?? defaultClock;
   const randomSource = options.randomSource ?? defaultRandomSource;
-  const auditLogger = options.auditLogger ?? noopAuditLogger;
+  const auditLogger = withMetrics(options.auditLogger ?? noopAuditLogger, options.metrics);
   const ttl = resolveChallengeTtl(options);
+
+  countTotal(options.metrics, 'auth_init_total');
+
   const rateLimit = await checkRateLimit(options, {
     scope: 'init',
     npub: boundedNpub(input.npub),
@@ -537,13 +549,18 @@ async function verifyCompletionUnpadded(
 ): Promise<VerifyCompletionOutcome> {
   const clock = options.clock ?? defaultClock;
   const randomSource = options.randomSource ?? defaultRandomSource;
-  const auditLogger = options.auditLogger ?? noopAuditLogger;
+  const auditLogger = withMetrics(options.auditLogger ?? noopAuditLogger, options.metrics);
   const maxClockSkewSeconds = options.maxClockSkewSeconds ?? DEFAULT_MAX_CLOCK_SKEW_SECONDS;
   const lowerBoundGraceSeconds = options.lowerBoundGraceSeconds ?? DEFAULT_LOWER_BOUND_GRACE_SECONDS;
   const upperBoundGraceSeconds = options.upperBoundGraceSeconds ?? DEFAULT_UPPER_BOUND_GRACE_SECONDS;
   const sessionTtlSeconds = options.sessionTtlSeconds ?? DEFAULT_SESSION_TTL_SECONDS;
   const resultCacheTtlSeconds = options.resultCacheTtlSeconds ?? DEFAULT_RESULT_CACHE_TTL_SECONDS;
   const stepUpTtlSeconds = options.stepUpTtlSeconds ?? DEFAULT_STEP_UP_TTL_SECONDS;
+
+  // Counted before the body is parsed, so a malformed request — which returns
+  // below without reaching any audit point — still shows up as attempted load.
+  countTotal(options.metrics, 'auth_complete_total');
+
   const body = parseAuthCompleteRequest(input.rawBody);
 
   // RFC §13.4(1): reject malformed requests before touching challenge state.
@@ -683,7 +700,8 @@ async function verifyCompletionUnpadded(
       randomSource,
       aclDecision.roles,
       aclDecision.permissions,
-      body.step_up ? { ttlSeconds: stepUpTtlSeconds } : undefined
+      body.step_up ? { ttlSeconds: stepUpTtlSeconds } : undefined,
+      options.refreshTtlSeconds
     )
   );
 
@@ -746,6 +764,187 @@ async function verifyCompletionUnpadded(
   return failure('NAP_COMPLETE_REDEEMED_CHALLENGE');
 }
 
+export interface RefreshSessionInput {
+  /** The bearer credential from `Authorization`, or undefined when absent. */
+  refreshToken?: string;
+  clientIp?: string;
+}
+
+export type RefreshSessionOutcome =
+  | { ok: true; session: SessionRecord }
+  | (VerifyCompleteFailure & { retryAfterSeconds?: number });
+
+/**
+ * Exchange a refresh token for a fresh access token (RFC §14.1).
+ *
+ * Rotating: every call retires the presented token and issues a new one, so a
+ * stolen token is usable at most once before the theft becomes visible. What
+ * makes it visible is that the retired token stays recognisable — presenting it
+ * again means two parties hold the lineage, and since the server cannot tell
+ * which one is the thief, the session is revoked and both must sign in again.
+ *
+ * The ACL is re-read on every refresh. A refresh mints a new access token good
+ * for the full session TTL, so trusting the login-time snapshot would let a
+ * principal suspended an hour ago keep extending their access indefinitely —
+ * which is the one thing short access-token lifetimes exist to prevent.
+ */
+export async function refreshSession(
+  input: RefreshSessionInput,
+  options: NapServerOptions
+): Promise<RefreshSessionOutcome> {
+  const startedAtMillis = Date.now();
+  const randomSource = options.randomSource ?? defaultRandomSource;
+  let outcome: RefreshSessionOutcome | undefined;
+
+  try {
+    outcome = await refreshSessionUnpadded(input, options);
+    return outcome;
+  } finally {
+    if (!isRateLimited(outcome, 'NAP_REFRESH_RATE_LIMITED')) {
+      await padAuthResponse(startedAtMillis, options, randomSource);
+    }
+  }
+}
+
+async function refreshSessionUnpadded(
+  input: RefreshSessionInput,
+  options: NapServerOptions
+): Promise<RefreshSessionOutcome> {
+  const clock = options.clock ?? defaultClock;
+  const randomSource = options.randomSource ?? defaultRandomSource;
+  const auditLogger = withMetrics(options.auditLogger ?? noopAuditLogger, options.metrics);
+  const sessionTtlSeconds = options.sessionTtlSeconds ?? DEFAULT_SESSION_TTL_SECONDS;
+  const refreshTtlSeconds = options.refreshTtlSeconds;
+  const store = options.sessionStore;
+
+  // Answered exactly like an unknown token. Whether a deployment offers refresh
+  // at all is not something an anonymous caller needs confirmed, and the
+  // adapters already refuse to start on the misconfiguration that would make
+  // this the interesting branch.
+  if (!refreshTtlSeconds || !store.getByRefreshToken || !store.rotateRefreshToken) {
+    await logFailure(auditLogger, 'NAP_REFRESH_UNKNOWN_TOKEN', { reason: 'not_configured' });
+    return failure('NAP_REFRESH_UNKNOWN_TOKEN');
+  }
+
+  const rateLimit = await checkRateLimit(options, {
+    scope: 'refresh',
+    clientIp: input.clientIp,
+  });
+
+  if (!rateLimit.allowed) {
+    await auditLogger.log({
+      code: 'NAP_REFRESH_RATE_LIMITED',
+      outcome: 'rate_limited',
+    });
+    return {
+      ...failure('NAP_REFRESH_RATE_LIMITED'),
+      retryAfterSeconds: rateLimit.retryAfterSeconds,
+    };
+  }
+
+  if (!input.refreshToken) {
+    await logFailure(auditLogger, 'NAP_REFRESH_UNKNOWN_TOKEN');
+    return failure('NAP_REFRESH_UNKNOWN_TOKEN');
+  }
+
+  const presented = input.refreshToken;
+  const session = await store.getByRefreshToken(presented);
+
+  if (!session) {
+    await logFailure(auditLogger, 'NAP_REFRESH_UNKNOWN_TOKEN');
+    return failure('NAP_REFRESH_UNKNOWN_TOKEN');
+  }
+
+  const now = clock.nowUnix();
+
+  // Checked before expiry and revocation: a replay is worth acting on whatever
+  // else is wrong with the session, and reporting it as merely expired would
+  // hide the only signal that a token leaked.
+  if (
+    session.previous_refresh_token &&
+    constantTimeEquals(session.previous_refresh_token, input.refreshToken)
+  ) {
+    await store.revokeBySessionId(session.session_id, now);
+    // Logged directly rather than through `logFailure`, which has nowhere to put a
+    // pubkey: this is the one event that says a credential leaked, and a sink that
+    // alerts on `event.pubkey` must be able to name the principal whose session
+    // just ended. Buried in `details` it would only be greppable after the fact.
+    await auditLogger.log({
+      code: 'NAP_REFRESH_REUSED',
+      pubkey: session.principal_pubkey,
+      outcome: 'failure',
+      details: { session_id: session.session_id },
+    });
+    return failure('NAP_REFRESH_REUSED');
+  }
+
+  // A store that answered with a session holding neither the presented token nor
+  // its predecessor has a broken index; treat it as no match rather than rotate
+  // a session the caller has not proved anything about.
+  if (!session.refresh_token || !constantTimeEquals(session.refresh_token, input.refreshToken)) {
+    await logFailure(auditLogger, 'NAP_REFRESH_UNKNOWN_TOKEN', {
+      session_id: session.session_id,
+    });
+    return failure('NAP_REFRESH_UNKNOWN_TOKEN');
+  }
+
+  if (session.revoked_at) {
+    await logFailure(auditLogger, 'NAP_REFRESH_REVOKED', { session_id: session.session_id });
+    return failure('NAP_REFRESH_REVOKED');
+  }
+
+  if (!session.refresh_expires_at || session.refresh_expires_at < now) {
+    await logFailure(auditLogger, 'NAP_REFRESH_EXPIRED', { session_id: session.session_id });
+    return failure('NAP_REFRESH_EXPIRED');
+  }
+
+  const aclDecision = await options.aclResolver.resolve(
+    session.principal_npub,
+    session.principal_pubkey
+  );
+
+  if (!aclDecision.allowed) {
+    // Same rule as a guarded request: only a denial the resolver is certain
+    // about ends every session. A resolver that could not *read* the ACL denies
+    // this refresh and nothing more — the access token still expires on its own
+    // schedule, so nothing is granted by waiting.
+    if (aclDecision.revoke_sessions) {
+      await store.revokeByPrincipal(session.principal_pubkey, now);
+    }
+
+    await logFailure(auditLogger, 'NAP_REFRESH_ACL_DENIED', {
+      session_id: session.session_id,
+      reason: aclDecision.reason,
+    });
+    return failure('NAP_REFRESH_ACL_DENIED');
+  }
+
+  const rotated = await store.rotateRefreshToken(session.session_id, {
+    expectedRefreshToken: presented,
+    accessToken: base64Url(randomSource.randomBytes(32)),
+    refreshToken: base64Url(randomSource.randomBytes(32)),
+    now,
+    expiresAt: now + sessionTtlSeconds,
+    refreshExpiresAt: now + refreshTtlSeconds,
+    roles: aclDecision.roles,
+    permissions: aclDecision.permissions,
+  });
+
+  if (!rotated) {
+    await logFailure(auditLogger, 'NAP_REFRESH_INTERNAL', { session_id: session.session_id });
+    return failure('NAP_REFRESH_INTERNAL');
+  }
+
+  await auditLogger.log({
+    code: 'NAP_REFRESH_SUCCESS',
+    pubkey: rotated.principal_pubkey,
+    outcome: 'success',
+    details: { session_id: rotated.session_id },
+  });
+
+  return { ok: true, session: rotated };
+}
+
 export function toPublicAuthSuccess(session: SessionRecord): AuthSuccessResponse {
   return {
     status: 'ok',
@@ -754,6 +953,8 @@ export function toPublicAuthSuccess(session: SessionRecord): AuthSuccessResponse
     expires_at: session.expires_at,
     step_up_token: session.step_up_token,
     step_up_expires_at: session.step_up_expires_at,
+    refresh_token: session.refresh_token,
+    refresh_expires_at: session.refresh_expires_at,
     principal: {
       npub: session.principal_npub,
       pubkey: session.principal_pubkey,

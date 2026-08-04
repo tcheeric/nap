@@ -9,13 +9,16 @@ import {
   issueChallenge,
   isMalformedRequestFailure,
   isVerifyFailure,
+  refreshSession,
   verifyCompletion,
   type AclResolver,
+  type AudienceResolver,
   type Clock,
   type EffectiveAcl,
   type IssueChallengeResult,
   type NapServerOptions,
   type PermissionRegistry,
+  type RawBodyExtractor,
   type SessionStore,
 } from '@imani/nap-server';
 import type { SessionRecord, VerifyCompleteFailure } from '@imani/nap-core';
@@ -30,10 +33,36 @@ function currentEpochSeconds(): number {
 
 export interface NapExpressOptions {
   server: NapServerOptions;
-  getExternalBaseUrl(req: Request): string;
+  /**
+   * Shorthand for the common case: return the external origin and the adapter
+   * appends `/auth/complete`. Mutually exclusive with `audienceResolver` —
+   * supply exactly one.
+   */
+  getExternalBaseUrl?: (req: Request) => string;
+  /**
+   * The RFC §20.2 form, for when the completion endpoint is not `<base>/auth/complete`
+   * — a rewriting gateway, a mounted prefix the app knows and the request does not.
+   * Whatever it returns *is* the audience the NIP-98 `u` tag must equal, so it
+   * takes the full URL rather than an origin.
+   */
+  audienceResolver?: AudienceResolver<Request>;
   /** Cookie carrying the access token, read by `/auth/session` and cleared by `/auth/logout`. Defaults to `session`. */
   cookieName?: string;
-  /** Attributes used when clearing the cookie on logout. Must match those used to set it, or the browser keeps it. Defaults to `{ path: '/' }`. */
+  /**
+   * Attributes used when clearing the cookie on logout. They must match the ones it was
+   * set with — a browser matches a deletion against name + domain + path — or the browser
+   * keeps it and the logout is cosmetic.
+   *
+   * Leave it unset and the handler reuses the attributes `writeNapCookieSuccess` was given,
+   * which is the only pairing that cannot drift. Set it only to override that, e.g. when
+   * `writeSuccess` is your own function and the adapter has nothing to copy. Falls back to
+   * `{ path: '/' }` when there is neither.
+   *
+   * The copy is read off `options.writeSuccess`, so it only happens when the logout handler
+   * is given the same options object as the cookie writer. Mounting handlers individually
+   * with a trimmed options object means there is nothing to copy from, and this field is
+   * the only thing standing between you and a `{ path: '/' }` guess.
+   */
   clearCookieOptions?: CookieOptions;
   /**
    * Maximum accepted body size on the NAP routes. Defaults to `'1kb'`.
@@ -54,6 +83,15 @@ export interface NapExpressOptions {
    * than enforced against a value anyone can forge.
    */
   getClientIp?: (req: Request) => string | undefined;
+  /**
+   * Where `/auth/complete` reads the exact bytes the NIP-98 `payload` tag hashed.
+   *
+   * Defaults to the buffer `createNapExpressJsonParser()` stashes on the request.
+   * Supply your own only if the raw body is captured somewhere else — never one
+   * that re-stringifies `req.body`, which changes key order and whitespace and
+   * fails every completion with `NAP_COMPLETE_PAYLOAD_MISMATCH`.
+   */
+  rawBodyExtractor?: RawBodyExtractor<Request>;
   writeSuccess?: (ctx: {
     req: Request;
     res: Response;
@@ -231,7 +269,143 @@ async function loadSession(
 }
 
 function authCompleteUrl(req: Request, options: NapExpressOptions): string {
-  return `${normalizeBaseUrl(options.getExternalBaseUrl(req))}/auth/complete`;
+  return options.audienceResolver
+    ? options.audienceResolver.resolve(req)
+    : `${normalizeBaseUrl(options.getExternalBaseUrl!(req))}/auth/complete`;
+}
+
+/**
+ * Both options set means two answers to "what is the audience", and the wrong
+ * one silently becomes the value every NIP-98 proof is checked against. Neither
+ * means the adapter would have to guess from the request, which is exactly the
+ * trust decision `createRequestDerivedBaseUrlResolver()` documents as the
+ * caller's to make. Either way it is a wiring mistake, so it fails at startup
+ * rather than as a uniform 401 per request.
+ */
+function assertOneAudienceSource(options: {
+  getExternalBaseUrl?: unknown;
+  audienceResolver?: unknown;
+}): void {
+  const supplied = [options.getExternalBaseUrl, options.audienceResolver].filter(Boolean).length;
+
+  if (supplied !== 1) {
+    throw new Error(
+      'NAP adapter requires exactly one of getExternalBaseUrl or audienceResolver'
+    );
+  }
+}
+
+/**
+ * Marks a `writeSuccess` that replies without the tokens. `Symbol.for` rather than a
+ * module-local symbol so it survives an adapter loaded twice through different paths —
+ * a duplicated copy failing this check open would be exactly the silent case it exists
+ * to catch.
+ */
+const DISCARDS_TOKENS = Symbol.for('nap.writeSuccess.discardsTokens');
+
+function discardsTokens(writeSuccess: NapExpressOptions['writeSuccess']): boolean {
+  return Boolean(writeSuccess && (writeSuccess as unknown as Record<symbol, unknown>)[DISCARDS_TOKENS]);
+}
+
+/**
+ * Carries the attributes `writeNapCookieSuccess` set the cookie with, so `/auth/logout`
+ * can clear it with the same ones. A browser matches a deletion against name + domain +
+ * path and drops a `Set-Cookie` whose `SameSite` it disagrees with, so a clear guessing
+ * `{ path: '/' }` at a cookie set with a domain leaves it in the jar — a logout that
+ * returns 204 and does not log out. `Symbol.for` for the same reason as above.
+ */
+const COOKIE_ATTRS = Symbol.for('nap.writeSuccess.cookieAttrs');
+
+/**
+ * `maxAge` and `expires` are dropped deliberately: they are the one pair that must *not*
+ * carry over. `res.clearCookie` sets `expires` to the epoch, but then hands the options to
+ * `res.cookie`, which recomputes `expires` from any surviving `maxAge` — so a copied
+ * `maxAge` would reissue the cookie the clear exists to remove.
+ */
+function setCookieAttrsOf(writeSuccess: NapExpressOptions['writeSuccess']): CookieOptions | undefined {
+  const attrs = writeSuccess && (writeSuccess as unknown as Record<symbol, unknown>)[COOKIE_ATTRS];
+
+  if (!attrs) {
+    return undefined;
+  }
+
+  const { maxAge: _maxAge, expires: _expires, ...rest } = attrs as CookieOptions;
+
+  return rest;
+}
+
+/** The name `writeNapCookieSuccess` writes under, so wiring can check it against `cookieName`. */
+const COOKIE_NAME = Symbol.for('nap.writeSuccess.cookieName');
+
+/**
+ * `writeNapCookieSuccess` takes the cookie name as its own argument, but every read of that
+ * cookie — `/auth/session`, the guards, the logout clear — goes through `options.cookieName`.
+ * Nothing forces the two to be the same string, and when they are not, the failure is mute:
+ * login returns 200 and sets the cookie, then `/auth/session` looks for a different name,
+ * finds nothing, and 401s. Every page load logs the user back out, and logout clears a
+ * cookie that was never set.
+ *
+ * So refuse to wire it. Inert rather than insecure, but silently inert is the case worth
+ * failing loudly on — the same reason `assertRefreshIsWirable` exists.
+ */
+function assertCookieNamesAgree(options: NapExpressOptions): void {
+  const written = options.writeSuccess && (options.writeSuccess as unknown as Record<symbol, unknown>)[COOKIE_NAME];
+
+  if (typeof written !== 'string') {
+    return;
+  }
+
+  const read = options.cookieName ?? 'session';
+
+  if (written !== read) {
+    throw new Error(
+      `NAP cookie name mismatch: writeNapCookieSuccess writes '${written}' but the adapter ` +
+        `reads '${read}'. /auth/session and /auth/logout would look for a cookie that is never ` +
+        `set. Pass cookieName: '${written}' alongside writeSuccess, or write under '${read}'.`
+    );
+  }
+}
+
+function rawBodyOf(req: Request, options: NapExpressOptions): Uint8Array | null {
+  return options.rawBodyExtractor ? options.rawBodyExtractor.extract(req) : getRawBody(req);
+}
+
+function bearerTokenOf(req: Request): string | undefined {
+  const header = req.header('authorization');
+
+  return header?.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : undefined;
+}
+
+/**
+ * A `refreshTtlSeconds` the store cannot honour would mint refresh tokens that
+ * every `/auth/refresh` then rejects — indistinguishable, from the client, from
+ * a stolen token. It is a wiring error, so it surfaces at startup.
+ */
+function assertRefreshIsWirable(options: NapExpressOptions): void {
+  const store = options.server.sessionStore;
+
+  if (!options.server.refreshTtlSeconds) {
+    throw new Error('NAP /auth/refresh requires server.refreshTtlSeconds to be set');
+  }
+
+  if (!store.getByRefreshToken || !store.rotateRefreshToken) {
+    throw new Error(
+      'NAP refreshTtlSeconds requires a SessionStore implementing getByRefreshToken and rotateRefreshToken'
+    );
+  }
+
+  // The refresh token would be minted, stored, and then dropped on the floor by a
+  // `writeSuccess` that replies `{ status: 'ok' }` — leaving a client that can never
+  // present the credential this endpoint exists to accept. Inert rather than insecure,
+  // but silently inert, which is why it fails here.
+  if (discardsTokens(options.writeSuccess)) {
+    throw new Error(
+      'NAP refreshTtlSeconds cannot be combined with the default writeNapCookieSuccess body: ' +
+        'it replies {status:"ok"}, so the client never receives the refresh token that ' +
+        '/auth/refresh requires. Pass a transformBody that returns refresh_token, or leave ' +
+        'refreshTtlSeconds unset.'
+    );
+  }
 }
 
 function issueChallengeFailure(res: Response, result: Exclude<IssueChallengeResult, { ok: true }>): void {
@@ -261,6 +435,8 @@ export function createNapExpressJsonParser(bodyLimit: string | number = '1kb'): 
 }
 
 export function createNapExpressInitHandler(options: NapExpressOptions): RequestHandler {
+  assertOneAudienceSource(options);
+
   return async (req, res, next) => {
     try {
       const npub = (req.body as Record<string, unknown> | undefined)?.npub;
@@ -296,9 +472,12 @@ export function createNapExpressInitHandler(options: NapExpressOptions): Request
 }
 
 export function createNapExpressCompleteHandler(options: NapExpressOptions): RequestHandler {
+  assertOneAudienceSource(options);
+  assertCookieNamesAgree(options);
+
   return async (req, res, next) => {
     try {
-      const rawBody = getRawBody(req);
+      const rawBody = rawBodyOf(req, options);
 
       if (!rawBody) {
         throw new Error(
@@ -400,8 +579,56 @@ export function createNapExpressLogoutHandler(options: NapExpressOptions): Reque
         );
       }
 
-      res.clearCookie(options.cookieName ?? 'session', options.clearCookieOptions ?? { path: '/' });
+      res.clearCookie(
+        options.cookieName ?? 'session',
+        options.clearCookieOptions ?? setCookieAttrsOf(options.writeSuccess) ?? { path: '/' }
+      );
       res.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
+/**
+ * `POST /auth/refresh` — exchanges a rotating refresh token for a new access
+ * token (RFC §14.1). The token is read from `Authorization: Bearer`, never a
+ * cookie: a cookie would be attached by the browser to any request to the
+ * origin, which is exactly what a credential this long-lived must not be.
+ *
+ * Registered only when `refreshTtlSeconds` is configured.
+ */
+export function createNapExpressRefreshHandler(options: NapExpressOptions): RequestHandler {
+  assertRefreshIsWirable(options);
+
+  return async (req, res, next) => {
+    try {
+      const result = await refreshSession(
+        {
+          refreshToken: bearerTokenOf(req),
+          clientIp: clientIpOf(req, options),
+        },
+        options.server
+      );
+
+      if (!result.ok) {
+        if (result.code === 'NAP_REFRESH_RATE_LIMITED') {
+          rateLimited(res, result.retryAfterSeconds);
+          return;
+        }
+
+        defaultWriteFailure(res);
+        return;
+      }
+
+      const body = toPublicAuthSuccess(result.session);
+
+      if (options.writeSuccess) {
+        await options.writeSuccess({ req, res, body });
+        return;
+      }
+
+      res.status(200).json(body);
     } catch (error) {
       next(error);
     }
@@ -416,6 +643,10 @@ export function createNapExpressRouter(options: NapExpressOptions): Router {
   router.post('/complete', createNapExpressCompleteHandler(options));
   router.get('/session', createNapExpressSessionHandler(options));
   router.post('/logout', createNapExpressLogoutHandler(options));
+
+  if (options.server.refreshTtlSeconds) {
+    router.post('/refresh', createNapExpressRefreshHandler(options));
+  }
 
   return router;
 }
@@ -569,19 +800,49 @@ export function createPermissionsRouter(registry: PermissionRegistry): Router {
   return router;
 }
 
+/**
+ * Puts the access token in a cookie and replies `{ status: 'ok' }`, so no credential
+ * reaches script.
+ *
+ * That default is incompatible with refresh tokens, and deliberately so: the refresh
+ * token would be dropped along with the access token, and `/auth/refresh` reads
+ * `Authorization: Bearer`, which a cookie-only browser client cannot produce. The
+ * combination is refused at startup rather than left to mint credentials nothing can
+ * spend — pass a `transformBody` that returns `refresh_token` if the client really is
+ * holding it, or leave `refreshTtlSeconds` unset.
+ */
 export function writeNapCookieSuccess(
   cookieName: string,
   cookieOptions?: CookieOptions,
   transformBody?: (body: ReturnType<typeof toPublicAuthSuccess>) => unknown
 ): NapExpressOptions['writeSuccess'] {
-  return ({ res, body }) => {
-    if (cookieOptions) {
-      res.cookie(cookieName, body.access_token, cookieOptions);
+  // Snapshotted here, and used by both the set below and the logout clear that reads the
+  // stamp. Holding the caller's object instead would let a mutation after wiring move one
+  // of the two without the other — the drift this whole pairing exists to prevent.
+  const attrs = cookieOptions ? { ...cookieOptions } : undefined;
+
+  const write: NonNullable<NapExpressOptions['writeSuccess']> = ({ res, body }) => {
+    if (attrs) {
+      res.cookie(cookieName, body.access_token, attrs);
     } else {
       res.cookie(cookieName, body.access_token);
     }
     res.status(200).json(transformBody ? transformBody(body) : { status: 'ok' });
   };
+
+  // A `transformBody` is the caller taking the body over, so only the default is marked.
+  if (!transformBody) {
+    Object.defineProperty(write, DISCARDS_TOKENS, { value: true });
+  }
+
+  // So the logout handler can clear with what the set used, instead of guessing `path: '/'`.
+  if (attrs) {
+    Object.defineProperty(write, COOKIE_ATTRS, { value: attrs });
+  }
+
+  Object.defineProperty(write, COOKIE_NAME, { value: cookieName });
+
+  return write;
 }
 
 /**
@@ -591,7 +852,7 @@ export function writeNapCookieSuccess(
  * (`() => 'https://api.example.com'`) or a Host allowlist. See §9.4 of
  * docs/NAP-INTEGRATION-GUIDE.md.
  */
-export function createRequestDerivedBaseUrlResolver(): NapExpressOptions['getExternalBaseUrl'] {
+export function createRequestDerivedBaseUrlResolver(): (req: Request) => string {
   return (req) => {
     const host = req.get('host');
 

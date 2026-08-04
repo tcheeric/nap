@@ -7,7 +7,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 All packages in this workspace share a single version.
 
-## [Unreleased]
+## [0.6.0] - 2026-08-04
+
+### Added
+
+- **Both adapters refuse to start when the cookie name the writer uses is not the one
+  they read.** `writeNapCookieSuccess` takes the name as its own argument, while
+  `/auth/session`, the guards, and the logout clear all go through `cookieName`. Nothing
+  forced the two to agree, and the failure was mute: login returned 200 and set the
+  cookie, then every read looked for a different name and 401'd — `resume()` logging the
+  user out on each page load, logout clearing a cookie that was never written. Building
+  the router or registering the plugin now throws, naming both strings. Inert rather than
+  insecure, but silently inert, which is why it fails at wiring time — same reason as the
+  existing `refreshTtlSeconds` check.
+
+### Fixed
+
+- **`/auth/logout` now clears the cookie with the attributes it was set with** in both
+  adapters. `writeNapCookieSuccess` stamps its `cookieOptions` onto the `writeSuccess`
+  function it returns, and the logout handler clears with those unless
+  `clearCookieOptions` overrides them. Previously the two were unrelated fields and the
+  clear defaulted to `{ path: '/' }`, so a cookie set with a `domain` — which a browser
+  matches a deletion against, along with name and path — survived a logout that returned
+  204. The lifetime is deliberately not copied: on Express a surviving `maxAge` would be
+  fed back through `res.cookie` and reissue the cookie the clear exists to remove.
+  `clearCookieOptions` keeps working and still wins, so a hand-rolled `writeSuccess` is
+  unaffected. `writeNapCookieSuccess` snapshots the options object it is given and both
+  the set and the clear read that snapshot, so mutating the object after wiring cannot
+  move one without the other.
+
+### Removed
+
+- **`NapClientOptions.cookie`** in `@imani/nap-client-web`. It was declared and never
+  read, so setting it did nothing — and there is nothing for it to do: the cookie's
+  name, attributes, and lifetime are the server's, the browser attaches it without being
+  asked, and an `HttpOnly` cookie is not readable from the page even if it were named.
+  Breaking at compile time only; delete the property and behaviour is unchanged. The
+  interface now carries a doc comment saying the package is cookie-mode by design and
+  pointing bearer-mode callers at `@imani/nap-client-http`.
+
+## [0.5.0] - 2026-08-04
+
+### Added
+
+- **Rotating refresh tokens** (RFC §14.1). Set `refreshTtlSeconds` and the completion
+  response carries `refresh_token` / `refresh_expires_at`, and the adapters register
+  `POST /auth/refresh`. The token is read from `Authorization: Bearer`, never a cookie —
+  a cookie would be attached by the browser to every request to the origin, which is what
+  a long-lived credential must not be. Each call mints a new access *and* refresh token
+  and retires the presented one.
+
+  **Presenting a retired token revokes the session.** The row keeps one step of history
+  (`previous_refresh_token`), which makes a replay distinguishable from a made-up token;
+  the response is `NAP_REFRESH_REUSED`, returned after the revocation. A stolen token
+  therefore buys one rotation and costs the legitimate holder their session — the theft
+  becomes visible instead of silent. Rotation stays on the session row, so the row *is*
+  the token family and no separate lineage table can drift out of step with it.
+
+  The ACL is re-resolved on every refresh: a refresh mints a full-TTL access token, so
+  trusting the login-time snapshot would let a suspended principal extend access
+  indefinitely. As elsewhere, only a denial carrying `revoke_sessions` ends every session.
+
+  Off unless configured. `SessionStore.getByRefreshToken` and `rotateRefreshToken` are
+  optional members so existing stores keep compiling, but the adapters **throw at
+  construction** if `refreshTtlSeconds` is set against a store lacking either, rather than
+  serve a route that answers 401 to everything. The Postgres store needs three new columns
+  and two indexes (integration guide §5.5).
+
+  Two deliberate gaps: the refresh TTL slides on every rotation with **no absolute session
+  lifetime cap** (RFC §14.1 specifies none — cap it in your own `rotateRefreshToken` if you
+  need one), and the client packages do not refresh for you.
+- **`MetricsRecorder`** (RFC §19.3, §20.2). A pluggable, no-op-by-default interface
+  alongside `AuditLogger`, incrementing the ten RFC-named counters. It decorates the audit
+  logger rather than scattering `increment()` calls, so every existing and future audit
+  point is counted; only `auth_init_total` and `auth_complete_total` are explicit, because
+  they must include requests too malformed to reach an audit point. `NAP_COMPLETE_MISSING_PAYLOAD`
+  is deliberately not counted as a payload mismatch — nothing was compared.
+- **Official test vectors** (RFC §20.3) under `packages/nap-core/test-vectors/`, covering
+  exact URL matching, payload hash generation, duplicate tag rejection, expired challenge
+  rejection, retrying the same valid completion, and pubkey/npub mismatch. Regenerated by a
+  committed script from fixed inputs, so a diff in the vectors is a protocol change and the
+  diff is the review. Run here by `nap-core/test/vectors.test.ts` and
+  `nap-server/test/vectors.test.ts`, and shared with the JVM implementation — error codes
+  are part of the vector, so a divergence shows up as a failing case rather than as a
+  mapping in a consumer.
+- **`AudienceResolver` and `RawBodyExtractor`** (RFC §20.2), both accepted by the Express
+  and Fastify adapters. `getExternalBaseUrl` stays as the documented shorthand; supplying
+  both it and `audienceResolver` throws at construction, because a wiring mistake in the
+  security-relevant audience should fail at startup rather than as a uniform 401.
+
+### Fixed
+
+- **A `MetricsRecorder` that throws no longer fails the request.** The interface documented
+  that failures are swallowed and nothing caught them, so a metrics backend merely being
+  down turned the uniform 401 into a 500 on exactly one branch — the timing side channel
+  the uniform failure exists to close, in a louder form. Swallowed and deliberately not
+  logged either: a broken sink must not be able to flood the caller's audit logger.
+- **The adapters refuse to start when `refreshTtlSeconds` is combined with the default
+  `writeNapCookieSuccess` body.** It replies `{status:"ok"}`, so the refresh token was
+  minted, stored, and dropped on the floor, leaving a client that could never present the
+  credential `/auth/refresh` exists to accept — inert rather than insecure, but silently
+  inert. A `transformBody` that returns the token is accepted; the marker is a
+  `Symbol.for`, so an adapter loaded twice through different paths cannot fail the check
+  open.
+- **`NAP_REFRESH_REUSED` names the principal.** The pubkey was landing inside `details`,
+  because `logFailure` has nowhere else to put one. It is the one event that says a
+  credential leaked, so a sink alerting on `event.pubkey` must be able to name the
+  principal whose session just ended.
+- Integration guide: the JDBC schema section listed one migration and quoted manual DDL for
+  columns `V3` now creates. It lists V1–V3 and what each adds.
 
 ## [0.4.0] - 2026-08-03
 
@@ -224,7 +332,9 @@ The v2 package set: `nap-core`, `nap-server`, `nap-client-http`, `nap-client-web
 `nap-react`, `nap-adapter-express`, `nap-adapter-fastify`, and `nap-store-postgres`,
 with the ACL layer and the NAP v2 RFC.
 
-[Unreleased]: https://github.com/tcheeric/nap/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/tcheeric/nap/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/tcheeric/nap/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/tcheeric/nap/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/tcheeric/nap/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/tcheeric/nap/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/tcheeric/nap/releases/tag/v0.2.0

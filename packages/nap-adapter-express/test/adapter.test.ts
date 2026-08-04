@@ -12,6 +12,7 @@ import {
   createRegistryAclResolver,
   type NapServerOptions,
   type PermissionRegistry,
+  type SessionStore,
 } from '@imani/nap-server';
 import {
   createPermissionsRouter,
@@ -308,6 +309,81 @@ describe('nap-adapter-express', () => {
     expect(after.status).toBe(401);
   });
 
+  it('clears the cookie with the attributes writeNapCookieSuccess set it with', async () => {
+    const options = buildServerOptions();
+    await seedSession(options.sessionStore as InMemorySessionStore);
+    const app = express();
+    app.use(
+      '/auth',
+      createNapExpressRouter({
+        server: options,
+        getExternalBaseUrl: () => 'https://api.example.com',
+        // No clearCookieOptions: the handler has to copy these, or the browser —
+        // which matches a deletion on name + domain + path — keeps the cookie.
+        writeSuccess: writeNapCookieSuccess('session', {
+          httpOnly: true,
+          secure: true,
+          sameSite: 'lax',
+          domain: '.example.com',
+          maxAge: 900_000,
+        }),
+      })
+    );
+
+    const logout = await request(app).post('/auth/logout').set('cookie', 'session=token-1');
+
+    expect(logout.status).toBe(204);
+    const setCookie = logout.headers['set-cookie']?.[0] ?? '';
+    expect(setCookie).toContain('Domain=.example.com');
+    expect(setCookie).toContain('SameSite=Lax');
+    expect(setCookie).toContain('HttpOnly');
+    expect(setCookie).toContain('Secure');
+    // The set's lifetime is the one attribute that must not carry over: `res.cookie`
+    // recomputes `expires` from any surviving `maxAge`, which would reissue the cookie
+    // the clear exists to remove.
+    expect(setCookie).toContain('Expires=Thu, 01 Jan 1970');
+    expect(setCookie).not.toContain('Max-Age=900');
+  });
+
+  it('snapshots the cookie options, so a later mutation cannot split the set from the clear', async () => {
+    const options = buildServerOptions();
+    await seedSession(options.sessionStore as InMemorySessionStore);
+    const cookieOptions = { domain: '.example.com', sameSite: 'lax' as const };
+    const app = express();
+    app.use(
+      '/auth',
+      createNapExpressRouter({
+        server: options,
+        getExternalBaseUrl: () => 'https://api.example.com',
+        writeSuccess: writeNapCookieSuccess('session', cookieOptions),
+      })
+    );
+
+    cookieOptions.domain = '.elsewhere.example.com';
+
+    const logout = await request(app).post('/auth/logout').set('cookie', 'session=token-1');
+
+    expect(logout.headers['set-cookie']?.[0]).toContain('Domain=.example.com');
+  });
+
+  it('lets clearCookieOptions override the attributes copied from the set', async () => {
+    const options = buildServerOptions();
+    const app = express();
+    app.use(
+      '/auth',
+      createNapExpressRouter({
+        server: options,
+        getExternalBaseUrl: () => 'https://api.example.com',
+        writeSuccess: writeNapCookieSuccess('session', { domain: '.example.com', path: '/app' }),
+        clearCookieOptions: { path: '/' },
+      })
+    );
+
+    const logout = await request(app).post('/auth/logout');
+
+    expect(logout.headers['set-cookie']?.[0]).not.toContain('Domain=');
+  });
+
   it('returns 204 from POST /auth/logout when no session exists', async () => {
     const app = createApp(buildServerOptions());
 
@@ -516,5 +592,226 @@ describe('nap-adapter-express', () => {
     expect(() => validatePermissions(REGISTRY)).toThrow(
       'Permissions used in middleware but missing from registry: unknown:permission'
     );
+  });
+
+  it('takes the audience verbatim from an audienceResolver (RFC §20.2)', async () => {
+    const app = express();
+    app.use(
+      '/auth',
+      createNapExpressRouter({
+        server: buildServerOptions(),
+        // A path the request itself does not carry, which is the case
+        // getExternalBaseUrl cannot express.
+        audienceResolver: { resolve: () => 'https://gateway.example.com/v2/nap/finish' },
+      })
+    );
+
+    const init = await request(app).post('/auth/init').send({ npub: NPUB });
+
+    expect(init.status).toBe(200);
+    expect(init.body.auth_url).toBe('https://gateway.example.com/v2/nap/finish');
+
+    const completion = await buildAuthCompleteRequest({
+      challenge: init.body,
+      signer: createPrivateKeySigner(PRIVATE_KEY_HEX),
+      createdAt: 1_710_000_000,
+    });
+
+    // The proof is signed against that same audience, so it verifies.
+    const complete = await request(app)
+      .post('/auth/complete')
+      .set('authorization', completion.authorization)
+      .set('content-type', 'application/json')
+      .send(new TextDecoder().decode(completion.rawBody));
+
+    expect(complete.status).toBe(200);
+    expect(complete.body.status).toBe('ok');
+  });
+
+  it('rotates a refresh token over POST /auth/refresh', async () => {
+    let seed = 0;
+    const options: NapServerOptions = {
+      ...buildServerOptions(),
+      refreshTtlSeconds: 3600,
+      // The shared fixture's random source is constant, which would make a
+      // rotated token indistinguishable from the one it replaced.
+      randomSource: {
+        randomBytes(length: number) {
+          seed += 1;
+          return new Uint8Array(Array.from({ length }, (_, index) => (index + seed * 7) % 255));
+        },
+      },
+    };
+    const app = createApp(options);
+    const init = await request(app)
+      .post('/auth/init')
+      .set('host', 'api.example.com')
+      .set('x-forwarded-proto', 'https')
+      .send({ npub: NPUB });
+    const completion = await buildAuthCompleteRequest({
+      challenge: init.body,
+      signer: createPrivateKeySigner(PRIVATE_KEY_HEX),
+      createdAt: 1_710_000_000,
+    });
+    const complete = await request(app)
+      .post('/auth/complete')
+      .set('host', 'api.example.com')
+      .set('x-forwarded-proto', 'https')
+      .set('authorization', completion.authorization)
+      .set('content-type', 'application/json')
+      .send(new TextDecoder().decode(completion.rawBody));
+
+    expect(complete.body.refresh_token).toBeTypeOf('string');
+
+    const refreshed = await request(app)
+      .post('/auth/refresh')
+      .set('authorization', `Bearer ${complete.body.refresh_token}`);
+
+    expect(refreshed.status).toBe(200);
+    expect(refreshed.body.access_token).not.toBe(complete.body.access_token);
+    expect(refreshed.body.refresh_token).not.toBe(complete.body.refresh_token);
+
+    // The presented token is now retired, so presenting it again kills the family.
+    const replay = await request(app)
+      .post('/auth/refresh')
+      .set('authorization', `Bearer ${complete.body.refresh_token}`);
+
+    expect(replay.status).toBe(401);
+  });
+
+  it('does not register /auth/refresh when no refresh TTL is configured', async () => {
+    const app = createApp(buildServerOptions());
+
+    const refreshed = await request(app).post('/auth/refresh').set('authorization', 'Bearer x');
+
+    expect(refreshed.status).toBe(404);
+  });
+
+  it('refuses to start when the store cannot honour the configured refresh TTL', () => {
+    const capable = new InMemorySessionStore();
+    // A store predating refresh tokens: it satisfies the required members and
+    // nothing else.
+    const legacy: SessionStore = {
+      createForChallenge: (record) => capable.createForChallenge(record),
+      getBySessionId: (id) => capable.getBySessionId(id),
+      getByAccessToken: (token) => capable.getByAccessToken(token),
+      revokeBySessionId: (id, now) => capable.revokeBySessionId(id, now),
+      revokeByPrincipal: (pubkey, now) => capable.revokeByPrincipal(pubkey, now),
+    };
+
+    expect(() =>
+      createNapExpressRouter({
+        server: { ...buildServerOptions(), sessionStore: legacy, refreshTtlSeconds: 3600 },
+        getExternalBaseUrl: () => 'https://api.example.com',
+      })
+    ).toThrow(/getByRefreshToken and rotateRefreshToken/);
+  });
+
+  it('refuses to start when the cookie writer would throw the refresh token away', () => {
+    expect(() =>
+      createNapExpressRouter({
+        server: { ...buildServerOptions(), refreshTtlSeconds: 3600 },
+        getExternalBaseUrl: () => 'https://api.example.com',
+        writeSuccess: writeNapCookieSuccess('session'),
+      })
+    ).toThrow(/never receives the refresh token/);
+  });
+
+  it('accepts the cookie writer once a transformBody carries the refresh token', () => {
+    expect(() =>
+      createNapExpressRouter({
+        server: { ...buildServerOptions(), refreshTtlSeconds: 3600 },
+        getExternalBaseUrl: () => 'https://api.example.com',
+        writeSuccess: writeNapCookieSuccess('session', undefined, (body) => ({
+          refresh_token: body.refresh_token,
+        })),
+      })
+    ).not.toThrow();
+  });
+
+  it('refuses to start when the cookie writer writes a name nothing else reads', () => {
+    expect(() =>
+      createNapExpressRouter({
+        server: buildServerOptions(),
+        getExternalBaseUrl: () => 'https://api.example.com',
+        // cookieName omitted, so every read looks for `session`.
+        writeSuccess: writeNapCookieSuccess('merchant_session'),
+      })
+    ).toThrow(/writes 'merchant_session' but the adapter reads 'session'/);
+  });
+
+  it('starts once cookieName agrees with the name the writer uses', () => {
+    expect(() =>
+      createNapExpressRouter({
+        server: buildServerOptions(),
+        getExternalBaseUrl: () => 'https://api.example.com',
+        cookieName: 'merchant_session',
+        writeSuccess: writeNapCookieSuccess('merchant_session'),
+      })
+    ).not.toThrow();
+  });
+
+  it('refuses to build a router with neither audience source', () => {
+    expect(() =>
+      createNapExpressRouter({ server: buildServerOptions() })
+    ).toThrow(/exactly one of getExternalBaseUrl or audienceResolver/);
+  });
+
+  it('refuses to build a router with both audience sources', () => {
+    expect(() =>
+      createNapExpressRouter({
+        server: buildServerOptions(),
+        getExternalBaseUrl: () => 'https://api.example.com',
+        audienceResolver: { resolve: () => 'https://other.example.com/auth/complete' },
+      })
+    ).toThrow(/exactly one of getExternalBaseUrl or audienceResolver/);
+  });
+
+  it('reads the signed bytes through a supplied rawBodyExtractor (RFC §20.2)', async () => {
+    const seen: number[] = [];
+    const app = express();
+    app.use(
+      '/auth',
+      createNapExpressRouter({
+        server: buildServerOptions(),
+        getExternalBaseUrl: () => 'https://api.example.com',
+        rawBodyExtractor: {
+          extract(req) {
+            const captured = (req as { rawBody?: Uint8Array }).rawBody ?? null;
+
+            if (captured) {
+              seen.push(captured.length);
+            }
+
+            return captured;
+          },
+        },
+      })
+    );
+    app.use(
+      (error: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+        res.status(500).json({ error: error.message });
+      }
+    );
+
+    const init = await request(app).post('/auth/init').send({ npub: NPUB });
+    const completion = await buildAuthCompleteRequest({
+      challenge: init.body,
+      signer: createPrivateKeySigner(PRIVATE_KEY_HEX),
+      createdAt: 1_710_000_000,
+    });
+
+    const complete = await request(app)
+      .post('/auth/complete')
+      .set('authorization', completion.authorization)
+      .set('content-type', 'application/json')
+      .send(new TextDecoder().decode(completion.rawBody));
+
+    // Nothing populates `req.rawBody`, so the extractor is genuinely the only
+    // source consulted — had the default symbol reader still run, this would
+    // have completed.
+    expect(seen).toEqual([]);
+    expect(complete.status).toBe(500);
+    expect(complete.body.error).toMatch(/requires createNapExpressJsonParser/);
   });
 });
