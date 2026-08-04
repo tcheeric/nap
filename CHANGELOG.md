@@ -32,7 +32,9 @@ All packages in this workspace share a single version.
   204. The lifetime is deliberately not copied: on Express a surviving `maxAge` would be
   fed back through `res.cookie` and reissue the cookie the clear exists to remove.
   `clearCookieOptions` keeps working and still wins, so a hand-rolled `writeSuccess` is
-  unaffected.
+  unaffected. `writeNapCookieSuccess` snapshots the options object it is given and both
+  the set and the clear read that snapshot, so mutating the object after wiring cannot
+  move one without the other.
 
 ### Removed
 

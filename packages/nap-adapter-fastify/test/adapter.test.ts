@@ -486,6 +486,31 @@ describe('nap-adapter-fastify', () => {
     await app.close();
   });
 
+  it('snapshots the cookie options, so a later mutation cannot split the set from the clear', async () => {
+    const options = buildServerOptions();
+    await seedSession(options.sessionStore as InMemorySessionStore);
+    const cookieOptions = { domain: '.example.com', sameSite: 'lax' as const };
+    const app = Fastify();
+    await app.register(napFastifyPlugin, {
+      routePrefix: '/auth',
+      server: options,
+      getExternalBaseUrl: () => 'https://api.example.com',
+      writeSuccess: writeNapCookieSuccess('session', cookieOptions),
+    });
+
+    cookieOptions.domain = '.elsewhere.example.com';
+
+    const logout = await app.inject({
+      method: 'POST',
+      url: '/auth/logout',
+      headers: { cookie: 'session=token-1' },
+    });
+
+    expect(logout.headers['set-cookie'] as string).toContain('Domain=.example.com');
+
+    await app.close();
+  });
+
   it('lets clearCookieOptions override the attributes copied from the set', async () => {
     const options = buildServerOptions();
     const app = Fastify();

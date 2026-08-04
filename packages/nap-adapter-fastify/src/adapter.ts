@@ -71,6 +71,11 @@ export interface NapFastifyOptions {
    * which is the only pairing that cannot drift. Set it only to override that, e.g. when
    * `writeSuccess` is your own function and the adapter has nothing to copy. Falls back to
    * `{ path: '/' }` when there is neither.
+   *
+   * The copy is read off `options.writeSuccess`, so it only happens when the logout handler
+   * is given the same options object as the cookie writer. Mounting handlers individually
+   * with a trimmed options object means there is nothing to copy from, and this field is
+   * the only thing standing between you and a `{ path: '/' }` guess.
    */
   clearCookieOptions?: SerializeOptions;
   /**
@@ -449,8 +454,13 @@ export function writeNapCookieSuccess(
   cookieOptions?: SerializeOptions,
   transformBody?: (body: ReturnType<typeof toPublicAuthSuccess>) => unknown
 ): NapFastifyOptions['writeSuccess'] {
+  // Snapshotted here, and used by both the set below and the logout clear that reads the
+  // stamp. Holding the caller's object instead would let a mutation after wiring move one
+  // of the two without the other — the drift this whole pairing exists to prevent.
+  const attrs = cookieOptions ? { ...cookieOptions } : undefined;
+
   const write: NonNullable<NapFastifyOptions['writeSuccess']> = ({ reply, body }) => {
-    reply.header('set-cookie', serialize(cookieName, body.access_token, cookieOptions));
+    reply.header('set-cookie', serialize(cookieName, body.access_token, attrs));
     reply.status(200).send(transformBody ? transformBody(body) : { status: 'ok' });
   };
 
@@ -460,8 +470,8 @@ export function writeNapCookieSuccess(
   }
 
   // So the logout handler can clear with what the set used, instead of guessing `path: '/'`.
-  if (cookieOptions) {
-    Object.defineProperty(write, COOKIE_ATTRS, { value: cookieOptions });
+  if (attrs) {
+    Object.defineProperty(write, COOKIE_ATTRS, { value: attrs });
   }
 
   Object.defineProperty(write, COOKIE_NAME, { value: cookieName });

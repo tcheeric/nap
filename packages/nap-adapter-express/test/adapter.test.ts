@@ -345,6 +345,27 @@ describe('nap-adapter-express', () => {
     expect(setCookie).not.toContain('Max-Age=900');
   });
 
+  it('snapshots the cookie options, so a later mutation cannot split the set from the clear', async () => {
+    const options = buildServerOptions();
+    await seedSession(options.sessionStore as InMemorySessionStore);
+    const cookieOptions = { domain: '.example.com', sameSite: 'lax' as const };
+    const app = express();
+    app.use(
+      '/auth',
+      createNapExpressRouter({
+        server: options,
+        getExternalBaseUrl: () => 'https://api.example.com',
+        writeSuccess: writeNapCookieSuccess('session', cookieOptions),
+      })
+    );
+
+    cookieOptions.domain = '.elsewhere.example.com';
+
+    const logout = await request(app).post('/auth/logout').set('cookie', 'session=token-1');
+
+    expect(logout.headers['set-cookie']?.[0]).toContain('Domain=.example.com');
+  });
+
   it('lets clearCookieOptions override the attributes copied from the set', async () => {
     const options = buildServerOptions();
     const app = express();
