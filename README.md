@@ -71,7 +71,10 @@ app.use('/auth', createNapExpressRouter({
 }));
 ```
 
-Guard routes with `requirePermission()` (preferred), `requireRole()`, or `requireStepUp()`.
+Guard routes with `requirePermission()` (preferred), `requireRole()`, `requireStepUp()`, or
+`requireSession()` when the route is for signed-in users generally and no permission
+distinguishes them. Passing `aclResolver` to any guard re-reads the ACL per request, so a
+principal suspended mid-session is denied rather than lasting until their session expires.
 
 **Misconfiguration fails at startup, not at request time.** Building the router throws if the
 cookie name the success writer uses is not the one `/session`, the guards, and logout read; and

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 All packages in this workspace share a single version.
 
+## [0.7.0] - 2026-08-04
+
+### Added
+
+- **`requireSession()`** in both adapters, an authentication-only guard.
+  `requirePermission`, `requireRole` and `requireStepUp` all answer "which principal", so the
+  only way to say "any logged-in user" was a placeholder permission granted to everyone — a key
+  in the registry that gates nothing and reads, to the next person, as though it does.
+
+  It resolves through `loadGuardContext` rather than only the session, so a caller who passes
+  `aclResolver` also has a principal the ACL has since suspended denied here. Without a resolver
+  `resolveEffectiveAcl` returns the login-time snapshot, so the guard behaves identically for
+  callers who have not opted in and strictly better for those who have. Resolving only the
+  session would have let "logged in" survive a suspension for the full session TTL, which is the
+  one thing a session guard should not do.
+
+### Changed
+
+- `README.md` and `CLAUDE.md` rewritten against the current code: package table, the
+  `/init` `/complete` `/session` `/logout` `/refresh` surface the adapters mount, a working
+  Express setup, and the wiring that fails at startup rather than at request time. Two errors in
+  the old setup guidance are corrected — `getExternalBaseUrl` is an adapter option, not a
+  `createNapServer` one, and `writeNapCookieSuccess` is a factory taking the cookie name.
+
 ## [0.6.0] - 2026-08-04
 
 ### Added

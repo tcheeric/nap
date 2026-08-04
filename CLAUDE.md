@@ -71,6 +71,10 @@ These have each cost real debugging time. Check them before changing the relevan
   NAP's surfaces as confusing `verifyEvent` failures.
 - **Every auth failure is an identical 401.** That is deliberate. Debugging is impossible
   without wiring an `AuditLogger` and reading the `code`.
+- **Guards default to the login-time ACL snapshot.** `requirePermission` / `requireRole` /
+  `requireSession` only re-read the ACL when `aclResolver` is passed in the guard options;
+  without it a suspension lands when the session expires, not when it happens. Pass the same
+  resolver you gave `NapServerOptions`.
 - **The default rate limiter is per-process.** It is on by default, but
   `createInMemoryRateLimiter()` counts in one process, so behind N instances the effective rate
   is N× what you configured. Anything production-facing wants a shared backend behind the same
