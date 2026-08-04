@@ -1,6 +1,6 @@
 {
   "name": "@imani/nap-react",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "type": "module",
   "exports": {
     ".": {
@@ -10,7 +10,7 @@
   },
   "types": "./src/index.ts",
   "dependencies": {
-    "@imani/nap-client-web": "0.5.0"
+    "@imani/nap-client-web": "0.6.0"
   },
   "peerDependencies": {
     "react": ">=18"
