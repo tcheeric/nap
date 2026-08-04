@@ -1,3 +1,4 @@
+import { nip19 } from 'nostr-tools';
 import { buildAuthCompleteRequest } from '@imani/nap-client-http';
 import type { AuthSuccessResponse } from '@imani/nap-core';
 import { createActivityLock } from './activityLock.js';
@@ -5,7 +6,7 @@ import { createBroadcastBus } from './broadcast.js';
 import { SessionLockedError, fetchJson } from './httpClient.js';
 import { reunlock as reunlockCore } from './reunlock.js';
 import type { KeyHolder } from './keyStore.js';
-import { isEvictableSigner } from './types.js';
+import { IdentityMismatchError, isEvictableSigner } from './types.js';
 import type { NapClientOptions, NapSession, SessionState } from './types.js';
 
 function normalizeBaseUrl(value: string): string {
@@ -14,6 +15,21 @@ function normalizeBaseUrl(value: string): string {
 
 function sessionPath(baseUrl: string, path: string): string {
   return `${normalizeBaseUrl(baseUrl)}/auth/${path}`;
+}
+
+/**
+ * The identity guard compares pubkeys, but the pre-flight check only has the
+ * signer's npub. Decode where possible and fall back to the npub verbatim so an
+ * unparseable value still produces a useful error rather than an exception
+ * inside the guard.
+ */
+function pubkeyOfNpub(npub: string): string {
+  try {
+    const decoded = nip19.decode(npub);
+    return decoded.type === 'npub' ? decoded.data : npub;
+  } catch {
+    return npub;
+  }
 }
 
 function toSessionState(response: AuthSuccessResponse): SessionState {
@@ -59,6 +75,30 @@ export function createNapSession(options: NapClientOptions): NapSession {
     },
   };
 
+  /**
+   * Tear the session down because the signer is no longer the same person.
+   *
+   * Returns the error rather than throwing so callers read as
+   * `throw terminateForIdentity(...)` — the termination and the rejection are
+   * one decision.
+   *
+   * No `/auth/logout` is sent. The server's session belongs to the old identity
+   * and the cookie is `HttpOnly`; a network round trip that can fail must not
+   * stand between "wrong identity detected" and "local session gone".
+   */
+  const terminateForIdentity = (
+    expectedPubkey: string,
+    actualPubkey: string
+  ): IdentityMismatchError => {
+    sessionState = null;
+    evictKey();
+    locked = false;
+    shutdownState = false;
+    options.onIdentityChanged?.({ expectedPubkey, actualPubkey });
+    broadcast.publish('identity-changed', { expectedPubkey, actualPubkey });
+    return new IdentityMismatchError(expectedPubkey, actualPubkey);
+  };
+
   const publishLock = (): void => {
     keyHolder.clearKey();
     options.onLock?.();
@@ -75,7 +115,20 @@ export function createNapSession(options: NapClientOptions): NapSession {
   const broadcast = createBroadcastBus(
     options.broadcast?.enabled ?? true,
     options.broadcast?.channelName ?? 'nap-session',
-    (type) => {
+    (type, detail) => {
+      if (type === 'identity-changed') {
+        // Another tab saw the signer change identity. This tab's session is the
+        // same session, so it is gone here too.
+        sessionState = null;
+        evictKey();
+        locked = false;
+        shutdownState = false;
+        if (detail) {
+          options.onIdentityChanged?.(detail);
+        }
+        return;
+      }
+
       if (type === 'logout') {
         sessionState = null;
         evictKey();
@@ -86,6 +139,14 @@ export function createNapSession(options: NapClientOptions): NapSession {
       }
 
       if (type === 'unlock') {
+        // Only this tab's own key can un-evict itself, so an evictable session
+        // stays locked here until it reunlocks here. A key-free one has nothing
+        // to restore, and staying locked would strand it (see unlock()).
+        if (!evictable) {
+          locked = false;
+          shutdownState = false;
+        }
+
         options.onUnlock?.();
         return;
       }
@@ -118,9 +179,20 @@ export function createNapSession(options: NapClientOptions): NapSession {
 
   async function authenticate(stepUp = false): Promise<AuthSuccessResponse> {
     // Fail before mutating state: with the key evicted, signEvent() would throw
-    // partway through and leave the session claiming to be unlocked.
-    if (evictable && !evictable.hasKey()) {
+    // partway through and leave the session claiming to be unlocked. A key-free
+    // signer has nothing to evict, but a locked session must still refuse —
+    // otherwise lock() would mean nothing for NIP-07 and NIP-46 (FR-023).
+    if (!keyHolder.hasKey()) {
       throw new SessionLockedError();
+    }
+
+    // Ask who the signer is before spending a challenge on them. An extension
+    // that switched accounts is caught here, without a network round trip and
+    // without a prompt (FR-021).
+    const npub = await options.signer.getNpub();
+
+    if (sessionState && sessionState.npub !== npub) {
+      throw terminateForIdentity(sessionState.pubkey, pubkeyOfNpub(npub));
     }
 
     locked = false;
@@ -135,9 +207,7 @@ export function createNapSession(options: NapClientOptions): NapSession {
         headers: {
           'content-type': 'application/json',
         },
-        body: JSON.stringify({
-          npub: await options.signer.getNpub(),
-        }),
+        body: JSON.stringify({ npub }),
       }
     );
 
@@ -167,7 +237,16 @@ export function createNapSession(options: NapClientOptions): NapSession {
       throw new Error(`NAP completion failed with status ${completeResponse.status}`);
     }
 
-    sessionState = toSessionState(completeResponse.body);
+    const next = toSessionState(completeResponse.body);
+
+    // The signer's npub matched, but the server is the authority on which key
+    // actually signed. A mismatch here means the signature came from someone
+    // other than the identity the signer claimed.
+    if (sessionState && sessionState.pubkey !== next.pubkey) {
+      throw terminateForIdentity(sessionState.pubkey, next.pubkey);
+    }
+
+    sessionState = next;
     return completeResponse.body;
   }
 
@@ -254,6 +333,20 @@ export function createNapSession(options: NapClientOptions): NapSession {
         onTimerReset: () => activityLock.touch(),
         onBroadcast: () => broadcast.publish('unlock'),
       });
+    },
+    unlock(): void {
+      // Without this a key-free session that auto-locked is stranded: login()
+      // refuses while locked, and reunlock() needs a keyStore these signers
+      // have no reason to configure.
+      if (evictable) {
+        throw new Error('this session holds a key of its own: use reunlock(passphrase)');
+      }
+
+      locked = false;
+      shutdownState = false;
+      activityLock.touch();
+      options.onUnlock?.();
+      broadcast.publish('unlock');
     },
     destroy(): void {
       activityLock.stop();

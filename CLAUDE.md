@@ -18,7 +18,7 @@ exist, and the packages are not npm-publishable in this state.
 
 ```text
 nap/
-├── packages/*      8 npm workspaces, all on one shared version
+├── packages/*      9 npm workspaces, all on one shared version
 ├── docs/           RFC, integration guide, best practices
 └── specs/          feature specs (untracked)
 ```
@@ -79,6 +79,14 @@ These have each cost real debugging time. Check them before changing the relevan
   `createInMemoryRateLimiter()` counts in one process, so behind N instances the effective rate
   is N× what you configured. Anything production-facing wants a shared backend behind the same
   `RateLimiter` interface.
+- **A signer that changes identity terminates the session.** An extension account
+  switch or a re-paired bunker means the next `login()` would silently authenticate as
+  someone else. `session.ts` guards this in exactly one place — before `/auth/init`
+  against `signer.getNpub()`, and after completion against `principal.pubkey` — clears
+  state, broadcasts, and throws `IdentityMismatchError`. It deliberately sends **no**
+  `/auth/logout`: the cookie belongs to the old identity and is HttpOnly, so a round
+  trip that can fail must not gate local teardown. Don't add a second check elsewhere,
+  and don't cache `getNpub()` in a signer — a cached npub blinds the guard.
 - **Cookie name and cookie options must come from one source.** The success writer and the
   readers (`/session`, guards, logout) each used to take their own; a mismatch logged users out
   on every page load and left logout clearing a cookie that was never written. Both adapters now
@@ -96,3 +104,10 @@ mode being designed against; keep new wiring checks in the same place.
 
 §11 of the integration guide lists what is RFC-specified but unimplemented, and what is
 implemented but incomplete. Update that section when you close one.
+
+## Active Technologies
+- TypeScript 5.x, ES2022 modules, `"type": "module"` + `nostr-tools` (floor raised to `^2.23.0` for `BunkerSigner.fromBunker`/`fromURI`), WebCrypto (`crypto.subtle`), `BroadcastChannel` (001-nip46-signer-support)
+- Browser-provided; the new `SecretStore` persists only an AES-GCM ciphertext of the NIP-46 client secret key. No plaintext secret is written by library code. (001-nip46-signer-support)
+
+## Recent Changes
+- 001-nip46-signer-support: Added TypeScript 5.x, ES2022 modules, `"type": "module"` + `nostr-tools` (floor raised to `^2.23.0` for `BunkerSigner.fromBunker`/`fromURI`), WebCrypto (`crypto.subtle`), `BroadcastChannel`

@@ -168,6 +168,90 @@ describe('nap-client-web', () => {
     expect(session.isLocked()).toBe(true);
   });
 
+  it('unlocks a key-free session, which has nothing to restore', async () => {
+    // A NIP-07 or NIP-46 session holds no key of ours, so reunlock() — which
+    // requires a keyStore these signers have no reason to configure — is not the
+    // way back. Without unlock() an idle lock would be permanent (FR-023).
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        challenge_id: 'challenge-1',
+        challenge: 'challenge',
+        auth_url: 'https://merchant.example.com/auth/complete',
+        auth_method: 'POST',
+        issued_at: 1_710_000_000,
+        expires_at: 1_710_000_060,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'ok',
+        access_token: 'token',
+        token_type: 'Bearer',
+        expires_at: 1_710_000_900,
+        principal: { npub: 'npub1example', pubkey: 'pubkey-1' },
+        roles: [],
+        permissions: [],
+      }), { status: 200 }));
+
+    const session = createNapSession({
+      baseUrl: 'https://merchant.example.com',
+      signer: createSigner(),
+      fetch: fetchMock,
+    });
+
+    session.lock();
+    await expect(session.login()).rejects.toThrow(SessionLockedError);
+
+    session.unlock();
+
+    expect(session.isLocked()).toBe(false);
+    await expect(session.login()).resolves.toMatchObject({ status: 'ok' });
+  });
+
+  it('clears a key-free lock in the other tab too', async () => {
+    const tabOptions = {
+      baseUrl: 'https://merchant.example.com',
+      signer: createSigner(),
+      fetch: vi.fn<typeof fetch>(),
+      broadcast: { enabled: true, channelName: 'nap-unlock-test' },
+    };
+
+    const tabA = createNapSession(tabOptions);
+    const tabB = createNapSession(tabOptions);
+
+    try {
+      // Waiting on the state rather than on a tick: BroadcastChannel delivery
+      // is not bounded by one macrotask, and a fixed `setTimeout(0)` held on its
+      // own but flaked under the full suite.
+      tabA.lock();
+      await vi.waitFor(() => expect(tabB.isLocked()).toBe(true));
+
+      tabA.unlock();
+
+      // An evictable session would stay locked here — its own key copy is gone
+      // until it reunlocks in this tab. A key-free one has nothing to restore.
+      await vi.waitFor(() => expect(tabB.isLocked()).toBe(false));
+    } finally {
+      tabA.destroy();
+      tabB.destroy();
+    }
+  });
+
+  it('refuses unlock() for a session holding a key of its own', () => {
+    const session = createNapSession({
+      baseUrl: 'https://merchant.example.com',
+      signer: createPrivateKeySessionSigner(
+        '1111111111111111111111111111111111111111111111111111111111111111'
+      ),
+      fetch: vi.fn<typeof fetch>(),
+    });
+
+    session.lock();
+
+    // The key is evicted; only reunlock() can put it back. Clearing the flag
+    // would report an unlocked session that cannot sign.
+    expect(() => session.unlock()).toThrow(/reunlock/);
+    expect(session.isLocked()).toBe(true);
+  });
+
   it('rejects a reunlock that restores a different identity', async () => {
     const signer = createPrivateKeySessionSigner(
       '1111111111111111111111111111111111111111111111111111111111111111'

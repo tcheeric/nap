@@ -42,13 +42,27 @@ to change later.
 | Signer | Key in your page? | Cost |
 |---|---|---|
 | NIP-07 extension (`createNip07Signer`) | No | Users need an extension installed |
-| NIP-46 remote signer | No | **Not implemented** — spec only, `specs/001-nip46-signer-support/` |
+| NIP-46 remote signer (`createNip46Signer`) | No | Extra install: `@imani/nap-client-nip46`; a relay round trip per signature |
 | Local nsec (`createPrivateKeySessionSigner`) | Yes | You own encryption, eviction, and all of RFC §28 |
+
+All three satisfy the same two-method `SessionSigner`, and the server cannot tell
+them apart — the completion proof is byte-identical in shape. Swapping one for
+another is a one-line change (§6.2).
 
 If you can live with NIP-07, take it. A local key means implementing a `KeyStore`
 yourself — NAP ships the *interface*, not an implementation — plus WebCrypto
 encryption and passphrase UX, and even then you cannot defend a key that is
 unlocked while hostile script runs (§9.7, RFC §28.5).
+
+An extension can fail in four distinguishable ways, and the codes exist so your UI
+does not have to collapse them into "login failed":
+
+| `Nip07Error.code` | What happened | What to show |
+|---|---|---|
+| `NOT_AVAILABLE` | No `window.nostr` appeared within the detect window | "Install a Nostr extension" — never a login error |
+| `DECLINED` | The user rejected the prompt | Nothing alarming; offer to retry |
+| `TIMEOUT` | The prompt was never answered | "Check your extension window" |
+| `PROVIDER_ERROR` | Anything else, including a locked extension | Surface the message; it is the extension's, not yours |
 
 ### 0.2 The thing that most often surprises people
 
@@ -188,8 +202,8 @@ These are orthogonal layers, and it helps to name them separately:
 
 | Layer | What it answers | Role in NAP |
 |---|---|---|
-| **NIP-07** | *How does the browser get a signature?* Window-injected extension (`window.nostr`). | One possible signer for the completion event. See `packages/nap-client-web/src/signers.ts`. |
-| **NIP-46** | *How does a remote/bunker signer get a signature?* Relay-mediated remote signing. | An alternative signer. Status in 0.2.0 covered in §6. |
+| **NIP-07** | *How does the browser get a signature?* Window-injected extension (`window.nostr`). | One possible signer for the completion event. See `packages/nap-client-web/src/nip07.ts`. |
+| **NIP-46** | *How does a remote/bunker signer get a signature?* Relay-mediated remote signing. | An alternative signer. See `packages/nap-client-nip46/`, covered in §6.2. |
 | **NIP-98** | *What does an HTTP authorization proof look like?* `kind:27235` event in an `Authorization: Nostr <base64>` header. | The wire format of NAP's completion proof, unchanged. |
 | **NAP** | *How do I turn a key into a session?* | The challenge + completion + session flow around all of the above. |
 
@@ -1261,23 +1275,111 @@ interface SessionSigner {
 }
 ```
 
-**NIP-07 browser extension** — supported, one line
-(`packages/nap-client-web/src/signers.ts:21`):
+Three implementations ship, and `createNapSession` cannot tell them apart. That
+substitutability is enforced by a shared conformance suite
+(`packages/nap-client-web/test/signerConformance.ts`) that every signer is run
+through, not by convention.
+
+**NIP-07 browser extension** (`packages/nap-client-web/src/nip07.ts`).
+
+Extensions inject `window.nostr` on their own schedule, so a bare
+`if (!window.nostr)` on page load reports "no extension" for users who have one.
+Detect instead — it polls, resolves the moment the provider appears, and gives up
+at the deadline:
 
 ```ts
-import { createNip07Signer } from '@imani/nap-client-web';
+import { createNip07SignerFromWindow, Nip07Error } from '@imani/nap-client-web';
 
-if (!window.nostr) throw new Error('No NIP-07 extension found');
-const signer = createNip07Signer(window.nostr);
+try {
+  const signer = await createNip07SignerFromWindow({ timeoutMs: 1_000 });
+  await createNapSession({ baseUrl, signer }).login();
+} catch (error) {
+  if (error instanceof Nip07Error && error.code === 'NOT_AVAILABLE') {
+    // Show the install prompt. This is not a login failure.
+  }
+}
 ```
 
-`createNip07Signer` wraps `getPublicKey()` in `nip19.npubEncode()` and forwards
-`signEvent` untouched. It does **not** call `window.nostr.getRelays()` or
-`nip04`, so any minimally-conformant extension (Alby, nos2x, Flamingo) works.
+`detectNip07Provider(options)` is the same detection without the wrapping, for
+apps that want to decide what to offer before showing a login button. It resolves
+`null` rather than throwing.
 
-Note that `window.nostr.signEvent` triggers a user prompt in most extensions, and
-NAP calls it once per `login()`. That is the whole point of the session: one
-prompt per 15 minutes rather than one per API call.
+If you already hold a provider, `createNip07Signer(window.nostr)` still takes it
+directly — the one-argument signature is unchanged. It wraps `getPublicKey()` in
+`nip19.npubEncode()` and forwards `signEvent` untouched, calling nothing else on
+the provider, so any minimally-conformant extension (Alby, nos2x, Flamingo)
+works.
+
+Every failure carries one of the four codes in §0.1. `DECLINED` is a message
+heuristic over the extension's error text — extensions do not agree on wording,
+so pass `classifyError` to override it if yours is unusual:
+
+```ts
+createNip07Signer(window.nostr, {
+  requestTimeoutMs: 60_000,
+  classifyError: (e) => (String(e).includes('nope') ? 'DECLINED' : undefined),
+});
+```
+
+Note that `signEvent` triggers a user prompt in most extensions, and NAP calls it
+once per `login()`. That is the whole point of the session: one prompt per 15
+minutes rather than one per API call. `getNpub()` does not prompt, and is
+deliberately **not** cached — a cached npub would hide an account switch from the
+identity guard below.
+
+**NIP-46 remote signer** — separate package, `@imani/nap-client-nip46`, so apps
+that do not want a relay dependency do not pay for one:
+
+```ts
+import { createNip46Signer, createWebCryptoSecretStore } from '@imani/nap-client-nip46';
+
+const signer = createNip46Signer({
+  connectionToken: pastedBunkerUrl,          // bunker://<pubkey>?relay=…&secret=…
+  secretStore: createWebCryptoSecretStore(), // optional; enables reconnect
+  passphrase,                                // required alongside secretStore
+  onAuthUrl: (url) => window.open(url),      // the signer wants approval first
+});
+
+await signer.connect();
+await createNapSession({ baseUrl, signer }).login();
+```
+
+For the other direction — you generate the URI and the user scans it — pass
+`relays` instead of `connectionToken` and read the URI as it is produced:
+
+```ts
+const signer = createNip46Signer({
+  relays: ['wss://relay.nsec.app'],
+  onConnectionUri: (uri) => renderQrCode(uri),   // nostrconnect://…
+});
+await signer.connect();
+```
+
+Beyond the two `SessionSigner` methods it exposes pairing lifecycle:
+`connect()`, `disconnect()`, `getStatus()`, `ping()`, `getConnectionUri()`,
+`getClientPubkey()`. Failures carry a `Nip46Error.code` of `INVALID_TOKEN`,
+`UNREACHABLE`, `TIMEOUT`, `DECLINED`, `SECRET_MISMATCH`, or `PROVIDER_ERROR`.
+Only `sign_event:27235` is requested at connect time — NAP never needs more.
+
+With a `secretStore`, a successful pairing is persisted encrypted (PBKDF2 +
+AES-GCM) and `connect()` restores it on the next visit with no token in hand. An
+absent, undecryptable, or stale record is **not** an error: it leaves the signer
+disconnected so you can pair again. `disconnect()` zeroes the in-memory client
+key, deletes the record, and closes the relay sockets.
+
+Those sockets are worth a note. Unless you pass your own `pool`, the signer
+creates a `SimplePool` per pairing and owns it — `BunkerSigner.close()` closes
+only its subscription, so the pool has to be destroyed separately. It is, on
+`disconnect()` and on every failed pairing attempt. A pool you pass in is never
+destroyed for you; it is yours to close.
+
+Two things to budget for. First, a relay round trip per signature — NAP's
+`created_at` skew window is 60s and the challenge TTL is 60s (§9), so a slow
+bunker approval can blow the window and produce a generic 401. Consider raising
+`challengeTtlSeconds` and `maxClockSkewSeconds` for NIP-46 users. Second,
+`buildAuthCompleteRequest()` sets `created_at` at *build* time
+(`packages/nap-client-http/src/client.ts:56`), before the remote round trip, so
+the clock starts before the user has even seen the approval prompt.
 
 **Local private key** — for tests and demos only
 (`packages/nap-client-web/src/signers.ts:6`):
@@ -1287,40 +1389,37 @@ import { createPrivateKeySessionSigner } from '@imani/nap-client-web';
 const signer = createPrivateKeySessionSigner(privateKeyHex);
 ```
 
-**NIP-46 remote signer — not implemented in 0.2.0.** There is a written spec at
-`specs/001-nip46-signer-support/spec.md` (status: **Draft**, dated 2026-03-31)
-covering bunker URLs, `nostrconnect://` pairing, and remote signing, but no code.
-There is no occurrence of `nip46`, `bunker`, or `nostrconnect` anywhere under
-`packages/`. `@imani/nap-client-web` exports exactly two signer factories,
-neither of them remote.
-
-The good news is that the interface is small enough that you can bridge it
-yourself against `nostr-tools`' NIP-46 support, which is already a dependency:
+**The identity guard.** An extension user can switch accounts, and a remote signer
+can be re-paired to a different key, between one `login()` and the next. When the
+signer reports an npub that contradicts the established session — or the server's
+`principal.pubkey` does — the session terminates locally and `login()` throws
+`IdentityMismatchError` carrying `expectedPubkey` and `actualPubkey`:
 
 ```ts
-// Sketch — NOT from the repo. Verify against your nostr-tools version;
-// the BunkerSigner API is not exercised anywhere in this codebase.
-import type { SessionSigner } from '@imani/nap-client-web';
-import { nip19 } from 'nostr-tools';
-
-function createRemoteSigner(bunker: {
-  getPublicKey(): Promise<string>;
-  signEvent(t: unknown): Promise<any>;
-}): SessionSigner {
-  return {
-    async getNpub() { return nip19.npubEncode(await bunker.getPublicKey()); },
-    signEvent(template) { return bunker.signEvent(template); },
-  };
-}
+createNapSession({
+  baseUrl, signer,
+  onIdentityChanged: ({ actualPubkey }) => showLoginFor(actualPubkey),
+});
 ```
 
-Two things to budget for if you go this route. First, a relay round trip per
-signature — NAP's `created_at` skew window is 60s and the challenge TTL is 60s
-(§9), so a slow bunker approval can blow the window and produce a generic 401.
-Consider raising `challengeTtlSeconds` and `maxClockSkewSeconds` for NIP-46
-users. Second, `buildAuthCompleteRequest()` sets `created_at` at *build* time
-(`packages/nap-client-http/src/client.ts:56`), before the remote round trip, so
-the clock starts before the user has even seen the approval prompt.
+The check runs *before* `/auth/init`, so no challenge is spent on an identity
+about to be refused, and it broadcasts to other tabs. No `/auth/logout` is sent:
+the cookie belongs to the old identity and is HttpOnly, and a round trip that can
+fail must not gate local teardown.
+
+That pre-flight check is the one that matters. The session body is checked again
+after `/auth/complete`, but by then the server has already minted a session for
+the new identity: the local state is discarded and `login()` throws, while the
+server-side session and its cookie survive — and a later `resume()` would adopt
+them. That second check is a backstop for a signer whose `getNpub()` and actual
+signing key disagree, not a way to prevent the new session from existing.
+
+**Locking a key-free signer.** `isEvictableSigner()` is false for NIP-07 and
+NIP-46 — there is nothing in the page to evict — but `lock()` still locks the
+session, and a locked session refuses to authenticate. Call `unlock()` to clear
+it: there is no key to restore and therefore no passphrase, and the signer's own
+prompt on the next signature is the re-authorization. It throws for a session
+that holds its own key — that one needs `reunlock()`.
 
 ### 6.3 Idle lock, shutdown, and cross-tab sync
 
@@ -1353,8 +1452,9 @@ interface KeyStore {
 `NO_STORED_KEY`, or `STORAGE_UNAVAILABLE`
 (`packages/nap-client-web/src/reunlock.ts:3`). A `DOMException` from your
 `loadKey` (what WebCrypto throws on a bad key) is mapped to
-`INVALID_PASSPHRASE`. If you use a NIP-07 or NIP-46 signer you do not need any
-of this — there is no key in the browser to unlock.
+`INVALID_PASSPHRASE`. If you use a NIP-07 or NIP-46 signer you need none of this
+— there is no key in the browser to restore — but you do need `unlock()`, which
+takes no passphrase and is the only way out of a lock for those signers.
 
 > **The lock evicts key material.** Per `docs/NAP-v2-RFC.md` §28.6, `lock()`
 > zeroes the private key and `reunlock()` puts it back. This works through
@@ -2079,9 +2179,10 @@ implementation gaps above for the JVM side.
   unparseable bodies to `MalformedRequest` instead. All other 22 codes are present with
   the RFC's retryable flags, except `NAP_COMPLETE_UNKNOWN_CHALLENGE`, which the RFC
   marks "maybe" and Java marks `retryable = true`.
-- NIP-46 remote-signer support is a TypeScript-side spec
-  (`nap/specs/001-nip46-signer-support/`); there is nothing equivalent in `nap-java` —
-  `NapProofBuilder` signs with a raw private key hex only, with no signer abstraction.
+- NIP-46 remote-signer support is TypeScript-only (`@imani/nap-client-nip46`); there is
+  nothing equivalent in `nap-java` — `NapProofBuilder` signs with a raw private key hex
+  only, with no signer abstraction. This is a client-side difference, so it does not
+  affect interop: both produce the same NIP-98 completion proof on the wire.
 
 **Additions Java has that the RFC does not define**
 
@@ -2792,6 +2893,20 @@ Closed in 0.4.0, kept here so the diff against an older deployment is visible:
   `POST /auth/refresh` accepts it, but `nap-client-web` and `nap-react` neither
   store it nor call the endpoint. Until they do, refresh is a server-side
   capability an integrator wires up by hand (§6.1).
+- **Renewal still costs a prompt.** When a session expires, the only way back is
+  `login()`, which signs a fresh NIP-98 event — so an extension or remote-signer
+  user sees an approval prompt every session lifetime. Prompt-free renewal needs
+  a credential the client can spend without the signer, which means the refresh
+  path above **and** the same change in `nap-java`, or the two implementations
+  diverge on the wire. Out of scope for the signer work; one prompt per session
+  lifetime is the expected behaviour today (§6.2).
+- **`DECLINED` is a message heuristic.** NIP-07 extensions and NIP-46 signers
+  do not agree on refusal wording, so the classifier matches on text. An
+  unrecognised phrasing degrades to `PROVIDER_ERROR`, never to a silent success.
+  `classifyError` overrides it per-app (§6.2).
+- **The NIP-46 secret store is only as strong as the passphrase.** PBKDF2 at
+  310 000 iterations plus AES-GCM protects the persisted client key at rest, but
+  a weak passphrase is offline-guessable and no iteration count fixes that.
 
 ### 11.4 Packaging and build
 
@@ -2809,14 +2924,12 @@ Closed in 0.4.0, kept here so the diff against an older deployment is visible:
 
 ### 11.5 Known roadmap
 
-From `specs/001-nip46-signer-support/spec.md` (**Status: Draft**, created
-2026-03-31): NIP-46 remote signer support, covering bunker-URL connection (P1),
-`nostrconnect://` client-initiated pairing (P2), and remote signing for the
-NIP-98 completion event. No implementation exists (§6.2). The spec's stated
-motivation — *"the nap expects the nsec to be present in the browser
-localStorage"* — is worth noting: that is a fair description of the
-`createPrivateKeySessionSigner` path, though `createNip07Signer` already avoids
-it today.
+`specs/001-nip46-signer-support/` is **implemented** as of 0.6.0 —
+`@imani/nap-client-nip46` covers bunker-URL connection, `nostrconnect://`
+client-initiated pairing, encrypted reconnection, and remote signing of the
+NIP-98 completion event, alongside the reworked NIP-07 path in
+`@imani/nap-client-web` (§6.2). What remains open from that work is listed in
+§11.3: prompt-free renewal, and the refusal-classification heuristic.
 
 Beyond that, the README's "Next Work" list (proxy/trust-policy helpers,
 publishing polish) is the honest roadmap, and both items are real.

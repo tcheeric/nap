@@ -4,15 +4,27 @@ export {
   createNip07Signer,
   createPrivateKeySessionSigner,
 } from './signers.js';
+export {
+  Nip07Error,
+  createNip07SignerFromWindow,
+  detectNip07Provider,
+} from './nip07.js';
+export type {
+  Nip07DetectOptions,
+  Nip07ErrorCode,
+  Nip07Provider,
+  Nip07SignerOptions,
+} from './nip07.js';
 export { ReunlockError, reunlock } from './reunlock.js';
 export type {
   ReunlockErrorCode,
   ReunlockOptions,
   ReunlockResult,
 } from './reunlock.js';
-export { isEvictableSigner } from './types.js';
+export { IdentityMismatchError, isEvictableSigner } from './types.js';
 export type { EvictableSigner } from './types.js';
 export type { KeyStore, KeyHolder } from './keyStore.js';
+export type { SecretStore } from './secretStore.js';
 export type { BroadcastMessageType } from './broadcast.js';
 export type {
   NapClientOptions,

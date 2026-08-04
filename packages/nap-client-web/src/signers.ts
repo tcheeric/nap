@@ -2,7 +2,14 @@ import { getPublicKey, nip19, finalizeEvent, type EventTemplate } from 'nostr-to
 import { hexToBytes } from '@imani/nap-core';
 import type { Nip98Event } from '@imani/nap-core';
 import { SessionLockedError } from './httpClient.js';
-import type { EvictableSigner, SessionSigner } from './types.js';
+import type { EvictableSigner } from './types.js';
+
+/**
+ * Re-exported so the existing import path keeps working. The implementation —
+ * provider detection, request timeouts, and the failure taxonomy — lives in
+ * `nip07.ts`; the call signature is unchanged.
+ */
+export { createNip07Signer } from './nip07.js';
 
 /**
  * Signer backed by a private key held in the page.
@@ -55,20 +62,6 @@ export function createPrivateKeySessionSigner(privateKeyHex: string): EvictableS
     },
     hasKey() {
       return privateKey !== null;
-    },
-  };
-}
-
-export function createNip07Signer(nostr: {
-  getPublicKey(): Promise<string>;
-  signEvent(event: EventTemplate): Promise<Nip98Event>;
-}): SessionSigner {
-  return {
-    async getNpub() {
-      return nip19.npubEncode(await nostr.getPublicKey());
-    },
-    signEvent(event: EventTemplate) {
-      return nostr.signEvent(event);
     },
   };
 }

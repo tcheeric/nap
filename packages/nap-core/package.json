@@ -6,6 +6,6 @@
   "types": "./src/index.ts",
   "dependencies": {
     "@noble/hashes": "^1.6.1",
-    "nostr-tools": "^2.10.4"
+    "nostr-tools": "^2.23.0"
   }
 }
