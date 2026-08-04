@@ -9,6 +9,7 @@ export {
   napFastifyPlugin,
   requirePermission,
   requireRole,
+  requireSession,
   requireStepUp,
   resetPermissionValidationState,
   validatePermissions,

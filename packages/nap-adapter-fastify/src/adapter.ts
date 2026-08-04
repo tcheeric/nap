@@ -796,6 +796,32 @@ export function requireStepUp(options: NapFastifyGuardOptions): preHandlerHookHa
   };
 }
 
+/**
+ * Guard a route on nothing more than a valid session — the caller is logged in.
+ *
+ * The authentication-only guard, for routes that are for signed-in users
+ * generally and have no permission that distinguishes them. Without it the way
+ * to express that is a placeholder permission granted to everyone, which puts a
+ * key in the registry that gates nothing and reads, to everyone after you, as
+ * though it does.
+ *
+ * Loads the same context as `requirePermission()` rather than only the session,
+ * so passing `aclResolver` denies a principal the ACL has since suspended.
+ * Without it the check is the login-time snapshot — session exists, is
+ * unrevoked, has not expired — and a suspension lands only when the session
+ * does.
+ */
+export function requireSession(options: NapFastifyGuardOptions): preHandlerHookHandler {
+  return async (req, reply) => {
+    const context = await loadGuardContext(req, options);
+
+    if (!context) {
+      unauthorized(reply);
+      return;
+    }
+  };
+}
+
 export function validatePermissions(registry: PermissionRegistry): void {
   validatePermissionRegistry(registry);
 

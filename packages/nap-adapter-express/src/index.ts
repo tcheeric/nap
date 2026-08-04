@@ -10,6 +10,7 @@ export {
   createRequestDerivedBaseUrlResolver,
   requirePermission,
   requireRole,
+  requireSession,
   requireStepUp,
   resetPermissionValidationState,
   validatePermissions,

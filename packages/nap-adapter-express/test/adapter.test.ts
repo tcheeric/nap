@@ -20,6 +20,7 @@ import {
   createRequestDerivedBaseUrlResolver,
   requirePermission,
   requireRole,
+  requireSession,
   requireStepUp,
   resetPermissionValidationState,
   validatePermissions,
@@ -472,6 +473,112 @@ describe('nap-adapter-express', () => {
     );
 
     const response = await request(app).get('/staff');
+
+    expect(response.status).toBe(401);
+  });
+
+  it('allows a request holding any valid session', async () => {
+    const options = buildServerOptions();
+    // No roles, no permissions — the point of the guard is that neither matters.
+    await seedSession(options.sessionStore as InMemorySessionStore, {
+      roles: [],
+      permissions: [],
+    });
+    const app = createApp(options);
+
+    app.get(
+      '/me',
+      requireSession({ sessionStore: options.sessionStore, cookieName: 'session' }),
+      (_req, res) => {
+        res.status(200).json({ status: 'ok' });
+      }
+    );
+
+    const response = await request(app).get('/me').set('cookie', 'session=token-1');
+
+    expect(response.status).toBe(200);
+  });
+
+  it('returns 401 from a session guard without a session', async () => {
+    const options = buildServerOptions();
+    const app = createApp(options);
+
+    app.get(
+      '/me',
+      requireSession({ sessionStore: options.sessionStore, cookieName: 'session' }),
+      (_req, res) => {
+        res.status(200).json({ status: 'ok' });
+      }
+    );
+
+    const response = await request(app).get('/me');
+
+    expect(response.status).toBe(401);
+  });
+
+  it('returns 401 from a session guard for an expired session', async () => {
+    const options = buildServerOptions();
+    const now = Math.floor(Date.now() / 1000);
+    await seedSession(options.sessionStore as InMemorySessionStore, { expires_at: now - 1 });
+    const app = createApp(options);
+
+    app.get(
+      '/me',
+      requireSession({ sessionStore: options.sessionStore, cookieName: 'session' }),
+      (_req, res) => {
+        res.status(200).json({ status: 'ok' });
+      }
+    );
+
+    const response = await request(app).get('/me').set('cookie', 'session=token-1');
+
+    expect(response.status).toBe(401);
+  });
+
+  it('returns 401 from a session guard for a revoked session', async () => {
+    const options = buildServerOptions();
+    const sessionStore = options.sessionStore as InMemorySessionStore;
+    await seedSession(sessionStore);
+    await sessionStore.revokeBySessionId('session-1', Math.floor(Date.now() / 1000));
+    const app = createApp(options);
+
+    app.get(
+      '/me',
+      requireSession({ sessionStore: options.sessionStore, cookieName: 'session' }),
+      (_req, res) => {
+        res.status(200).json({ status: 'ok' });
+      }
+    );
+
+    const response = await request(app).get('/me').set('cookie', 'session=token-1');
+
+    expect(response.status).toBe(401);
+  });
+
+  it('denies a session guard when the ACL has since suspended the principal', async () => {
+    const options = buildServerOptions();
+    await seedSession(options.sessionStore as InMemorySessionStore);
+    const app = createApp(options);
+
+    app.get(
+      '/me',
+      requireSession({
+        sessionStore: options.sessionStore,
+        cookieName: 'session',
+        // Without this the guard trusts the login-time snapshot and a suspension
+        // lands only when the session expires.
+        aclResolver: {
+          async resolve() {
+            return { allowed: false, roles: [], permissions: [], revoke_sessions: true };
+          },
+        },
+      }),
+      (_req, res) => {
+        res.status(200).json({ status: 'ok' });
+      }
+    );
+
+    const response = await request(app).get('/me').set('cookie', 'session=token-1');
 
     expect(response.status).toBe(401);
   });

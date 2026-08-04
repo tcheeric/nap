@@ -19,6 +19,7 @@ import {
   permissionsFastifyPlugin,
   requirePermission,
   requireRole,
+  requireSession,
   requireStepUp,
   resetPermissionValidationState,
   validatePermissions,
@@ -386,6 +387,116 @@ describe('nap-adapter-fastify', () => {
 
     expect(response.statusCode).toBe(403);
     expect(response.json().message).toBe('step-up required');
+
+    await app.close();
+  });
+
+  it('allows a request holding any valid session', async () => {
+    const sessionStore = new InMemorySessionStore();
+    // No roles, no permissions — the point of the guard is that neither matters.
+    await seedSession(sessionStore, { roles: [], permissions: [] });
+    const app = Fastify();
+
+    app.get(
+      '/me',
+      { preHandler: [requireSession({ sessionStore, cookieName: 'session' })] },
+      async () => ({ status: 'ok' })
+    );
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/me',
+      headers: { cookie: 'session=token-1' },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    await app.close();
+  });
+
+  it('returns 401 from a session guard without a session', async () => {
+    const sessionStore = new InMemorySessionStore();
+    const app = Fastify();
+
+    app.get(
+      '/me',
+      { preHandler: [requireSession({ sessionStore, cookieName: 'session' })] },
+      async () => ({ status: 'ok' })
+    );
+
+    const response = await app.inject({ method: 'GET', url: '/me' });
+
+    expect(response.statusCode).toBe(401);
+
+    await app.close();
+  });
+
+  it('returns 401 from a session guard for an expired or revoked session', async () => {
+    const sessionStore = new InMemorySessionStore();
+    const now = Math.floor(Date.now() / 1000);
+    await seedSession(sessionStore, { expires_at: now - 1 });
+    await seedSession(sessionStore, {
+      session_id: 'session-2',
+      access_token: 'token-2',
+    });
+    await sessionStore.revokeBySessionId('session-2', now);
+    const app = Fastify();
+
+    app.get(
+      '/me',
+      { preHandler: [requireSession({ sessionStore, cookieName: 'session' })] },
+      async () => ({ status: 'ok' })
+    );
+
+    const expired = await app.inject({
+      method: 'GET',
+      url: '/me',
+      headers: { cookie: 'session=token-1' },
+    });
+    const revoked = await app.inject({
+      method: 'GET',
+      url: '/me',
+      headers: { cookie: 'session=token-2' },
+    });
+
+    expect(expired.statusCode).toBe(401);
+    expect(revoked.statusCode).toBe(401);
+
+    await app.close();
+  });
+
+  it('denies a session guard when the ACL has since suspended the principal', async () => {
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore);
+    const app = Fastify();
+
+    app.get(
+      '/me',
+      {
+        preHandler: [
+          requireSession({
+            sessionStore,
+            cookieName: 'session',
+            // Without this the guard trusts the login-time snapshot and a
+            // suspension lands only when the session expires.
+            aclResolver: {
+              async resolve() {
+                return { allowed: false, roles: [], permissions: [], revoke_sessions: true };
+              },
+            },
+          }),
+        ],
+      },
+      async () => ({ status: 'ok' })
+    );
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/me',
+      headers: { cookie: 'session=token-1' },
+    });
+
+    expect(response.statusCode).toBe(401);
 
     await app.close();
   });
