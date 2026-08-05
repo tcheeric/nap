@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 All packages in this workspace share a single version.
 
+## [0.8.0] - 2026-08-05
+
+### Added
+
+- **External signers: NIP-07 browser extensions and NIP-46 remote signers.** A browser
+  session can now authenticate against a key the page never holds. `SessionSigner` is the
+  seam, and all three implementations — in-page key, extension, remote signer — go through
+  one shared conformance suite, which is what makes them substitutable. The server is
+  untouched: a NIP-98 proof carries no trace of which signer produced it, so no adapter,
+  store, or wire format changed, and the JVM implementation interoperates unmodified.
+
+- **NIP-07 support in `@imani/nap-client-web`.** `detectNip07Provider()` polls up to a
+  second for a late-injecting extension and resolves the moment one appears — a page that
+  checks `window.nostr` once on load reports "no extension" to users who have one. It
+  returns `null` rather than throwing, because absence is an answer. `createNip07Signer()`
+  wraps a provider and maps refusals onto `Nip07Error` codes — `NOT_AVAILABLE`,
+  `DECLINED`, `TIMEOUT`, `PROVIDER_ERROR` — since "install an extension", "you clicked
+  reject", and "your extension is locked" want three different messages. Extensions phrase
+  refusals differently, so the classifier is a heuristic with `classifyError` as the
+  documented escape hatch.
+
+- **`@imani/nap-client-nip46`, a new opt-in package** — the only one in the workspace that
+  talks to relays, which is why it does not ship inside the browser client. It pairs in
+  both directions (`bunker://` pasted by the user, or a `nostrconnect://` URI you render as
+  a QR code), requests exactly `sign_event:27235`, and surfaces the signer's `auth_url` web
+  approval through `onAuthUrl` during pairing as well as on later requests. The pairing is
+  persisted encrypted whole — PBKDF2 (310 000, SHA-256) then AES-GCM — so a reload restores
+  it instead of re-prompting; `createWebCryptoSecretStore()` is the browser implementation.
+  Timeouts are per operation, sized to the fact that a remote signer is a human holding a
+  phone. The relay pool is owned only when the package created it: a caller-supplied pool is
+  never destroyed, and one this package opened is closed on `disconnect()` and on a pairing
+  that never establishes.
+
+- **`session.unlock()` for sessions that hold no key of their own.** `reunlock(passphrase)`
+  restores an evicted key, which NIP-07 and NIP-46 sessions do not have — so without this an
+  idle lock stranded them: `login()` refuses while locked, and `reunlock()` needs a
+  `keyStore` those signers have no reason to configure. It throws for a session with an
+  in-page key, where clearing the flag would report an unlocked session that cannot sign. It
+  broadcasts, and a receiving tab honours it only when key-free, for the same reason.
+
+### Changed
+
+- **`nostr-tools` floor raised to `^2.23.0`** across the packages that depend on it, for
+  `BunkerSigner.fromBunker`. Keep the app's copy deduped with this one — version skew
+  surfaces as confusing `verifyEvent` failures.
+
 ## [0.7.0] - 2026-08-04
 
 ### Added
@@ -356,7 +402,9 @@ The v2 package set: `nap-core`, `nap-server`, `nap-client-http`, `nap-client-web
 `nap-react`, `nap-adapter-express`, `nap-adapter-fastify`, and `nap-store-postgres`,
 with the ACL layer and the NAP v2 RFC.
 
-[Unreleased]: https://github.com/tcheeric/nap/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/tcheeric/nap/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/tcheeric/nap/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/tcheeric/nap/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/tcheeric/nap/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/tcheeric/nap/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/tcheeric/nap/compare/v0.3.0...v0.4.0
