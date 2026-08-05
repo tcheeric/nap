@@ -7,12 +7,17 @@ import { createNapSession } from '../src/session.js';
 import { runSignerConformance } from './signerConformance.js';
 
 const PRIVATE_KEY = generateSecretKey();
-const EXTENSION_KEY = generateSecretKey();
+
+// Mutable: the extension is free to switch accounts under a signer that already
+// exists, which is the whole point of the freshness case below.
+let extensionKey = generateSecretKey();
 
 runSignerConformance({
   name: 'private key in the page',
   keyFree: false,
   create: () => createPrivateKeySessionSigner(bytesToHex(PRIVATE_KEY)),
+  // No rotateIdentity: setKey() rejects a key that is not this signer's, so the
+  // identity behind it cannot change without constructing a new signer.
 });
 
 runSignerConformance({
@@ -20,15 +25,18 @@ runSignerConformance({
   keyFree: true,
   create: () =>
     createNip07Signer({
-      getPublicKey: async () => getPublicKey(EXTENSION_KEY),
-      signEvent: async (event) => finalizeEvent(event, EXTENSION_KEY),
+      getPublicKey: async () => getPublicKey(extensionKey),
+      signEvent: async (event) => finalizeEvent(event, extensionKey),
     }),
+  rotateIdentity: () => {
+    extensionKey = generateSecretKey();
+  },
 });
 
 describe('resume never reaches the signer', () => {
   it('restores a session without a signature (FR-024)', async () => {
-    const pubkey = getPublicKey(EXTENSION_KEY);
-    const signEvent = vi.fn(async (event) => finalizeEvent(event, EXTENSION_KEY));
+    const pubkey = getPublicKey(extensionKey);
+    const signEvent = vi.fn(async (event) => finalizeEvent(event, extensionKey));
     const getNpub = vi.fn(async () => nip19.npubEncode(pubkey));
 
     const session = createNapSession({

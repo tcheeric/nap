@@ -138,6 +138,58 @@ describe('nip-46 signer', () => {
     });
   });
 
+  it('bounds getNpub too, so a dead signer cannot hang login', async () => {
+    // `session.ts` awaits getNpub() as its pre-flight identity check, before any
+    // network call. Unbounded, a signer that stops answering does not fail the
+    // login — it hangs it, with nothing for the UI to catch.
+    // A silent bunker never acks `connect` either, so pair against a live one
+    // and take it away afterwards.
+    const bunker = new FakeBunker();
+    const signer = createNip46Signer({
+      connectionToken: bunkerUrl(bunker),
+      pool: bunker.pool,
+      connectTimeoutMs: 20,
+    });
+
+    await signer.connect();
+    bunker.goSilent();
+
+    await expect(signer.getNpub()).rejects.toMatchObject({ code: 'TIMEOUT' });
+  });
+
+  it('re-reads the remote identity rather than caching the first answer', async () => {
+    // BunkerSigner.getPublicKey() memoises. Going through it would leave the
+    // session's identity guard reporting a re-paired bunker's old user forever.
+    const bunker = new FakeBunker();
+    const signer = createNip46Signer({
+      connectionToken: bunkerUrl(bunker),
+      pool: bunker.pool,
+      connectTimeoutMs: 500,
+    });
+
+    await signer.connect();
+    await expect(signer.getNpub()).resolves.toBe(nip19.npubEncode(bunker.userPubkey));
+
+    bunker.rotateUser();
+
+    await expect(signer.getNpub()).resolves.toBe(nip19.npubEncode(bunker.userPubkey));
+  });
+
+  it('reports its own pairing key, not the bunker or the user', async () => {
+    const bunker = new FakeBunker();
+    const signer = createNip46Signer({
+      connectionToken: bunkerUrl(bunker),
+      pool: bunker.pool,
+      connectTimeoutMs: 500,
+    });
+
+    await signer.connect();
+
+    const client = nip19.decode(signer.getClientPubkey() as string).data;
+    expect(client).not.toBe(bunker.pubkey);
+    expect(client).not.toBe(bunker.userPubkey);
+  });
+
   it('answers ping with a boolean rather than a throw', async () => {
     const bunker = new FakeBunker();
     const signer = createNip46Signer({

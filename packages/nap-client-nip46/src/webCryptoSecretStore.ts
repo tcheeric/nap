@@ -104,6 +104,15 @@ export function createWebCryptoSecretStore(
 ): SecretStore {
   const iterations = options.iterations ?? PBKDF2_ITERATIONS;
 
+  // Bounded on the way in, not only on the way out. An out-of-band count would
+  // otherwise save happily and then fail `usableIterations` on every load — a
+  // store that writes and never reads, discovered on the user's next visit.
+  if (!usableIterations(iterations)) {
+    throw new RangeError(
+      `iterations must be an integer between ${MIN_ITERATIONS} and ${MAX_ITERATIONS}`
+    );
+  }
+
   const read = (): Envelope | null => {
     const raw = requireStorage(options).getItem(storageKey);
 

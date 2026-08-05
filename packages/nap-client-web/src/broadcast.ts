@@ -42,8 +42,10 @@ export function createBroadcastBus(
 
   const channel = new BroadcastChannel(channelName);
   channel.addEventListener('message', (event: MessageEvent<unknown>) => {
-    // Bare strings are what older tabs on the same channel post; keep reading
-    // them so a mid-upgrade page reload does not silently stop syncing.
+    // Bare strings are what pre-`identity-changed` tabs post. Reading them keeps
+    // old→new working; new→old does not, and cannot without posting both shapes
+    // — which would make every new tab handle its own messages twice. So a tab
+    // still running the old build misses a logout broadcast until it reloads.
     if (isMessageType(event.data)) {
       onMessage(event.data);
       return;

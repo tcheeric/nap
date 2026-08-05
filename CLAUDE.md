@@ -105,9 +105,22 @@ mode being designed against; keep new wiring checks in the same place.
 §11 of the integration guide lists what is RFC-specified but unimplemented, and what is
 implemented but incomplete. Update that section when you close one.
 
-## Active Technologies
-- TypeScript 5.x, ES2022 modules, `"type": "module"` + `nostr-tools` (floor raised to `^2.23.0` for `BunkerSigner.fromBunker`/`fromURI`), WebCrypto (`crypto.subtle`), `BroadcastChannel` (001-nip46-signer-support)
-- Browser-provided; the new `SecretStore` persists only an AES-GCM ciphertext of the NIP-46 client secret key. No plaintext secret is written by library code. (001-nip46-signer-support)
+## External signers
 
-## Recent Changes
-- 001-nip46-signer-support: Added TypeScript 5.x, ES2022 modules, `"type": "module"` + `nostr-tools` (floor raised to `^2.23.0` for `BunkerSigner.fromBunker`/`fromURI`), WebCrypto (`crypto.subtle`), `BroadcastChannel`
+`@imani/nap-client-nip46` is the ninth package and the only one that talks to relays. It is
+**opt-in** — nothing else depends on it — and it implements `SessionSigner` over NIP-46, so from
+`createNapSession()`'s side it is interchangeable with a NIP-07 extension or an in-page key.
+`packages/nap-client-web/test/signerConformance.ts` is the shared harness that keeps that claim
+checked; a new signer adds a case there rather than its own bespoke tests.
+
+Two things it constrains:
+
+- **`nostr-tools` floor is `^2.23.0`** for `BunkerSigner.fromBunker`/`fromURI`. Combined with the
+  dedupe trap above, that floor applies to the whole workspace.
+- **`SecretStore` persists only an AES-GCM ciphertext** of the NIP-46 client secret key, PBKDF2
+  over a caller-supplied passphrase the store never holds. Library code writes no plaintext
+  secret, and nothing here should start.
+
+`BunkerSigner.getPublicKey()` memoises — `signer.ts` deliberately goes around it via
+`sendRequest('get_public_key', [])`, for the same reason the identity-guard trap says never to
+cache an npub.

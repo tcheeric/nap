@@ -110,6 +110,17 @@ describe('stored envelope hardening', () => {
 
     await expect(store.load('passphrase')).resolves.toBeNull();
   });
+
+  it('rejects an out-of-band iteration count at construction', () => {
+    // Validated on write as well as on read. Otherwise save() succeeds, load()
+    // clamps it away, and the store writes records it can never read back —
+    // discovered on the user's next visit, not here.
+    expect(() => createWebCryptoSecretStore('nap-nip46', { storage: memoryStorage(), iterations: 10 }))
+      .toThrow(RangeError);
+    expect(() =>
+      createWebCryptoSecretStore('nap-nip46', { storage: memoryStorage(), iterations: 2_000_000_000 })
+    ).toThrow(RangeError);
+  });
 });
 
 describe('error classification', () => {

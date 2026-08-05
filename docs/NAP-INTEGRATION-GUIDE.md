@@ -1357,7 +1357,8 @@ await signer.connect();
 
 Beyond the two `SessionSigner` methods it exposes pairing lifecycle:
 `connect()`, `disconnect()`, `getStatus()`, `ping()`, `getConnectionUri()`,
-`getClientPubkey()`. Failures carry a `Nip46Error.code` of `INVALID_TOKEN`,
+`getClientPubkey()` — that last one being this pairing's own npub, which is
+neither the bunker's nor the user's. Failures carry a `Nip46Error.code` of `INVALID_TOKEN`,
 `UNREACHABLE`, `TIMEOUT`, `DECLINED`, `SECRET_MISMATCH`, or `PROVIDER_ERROR`.
 Only `sign_event:27235` is requested at connect time — NAP never needs more.
 

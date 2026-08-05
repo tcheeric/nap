@@ -291,8 +291,11 @@ function waitForNostrConnect(input: {
     });
 
     if (settled) {
-      // Settled from inside subscribe() itself, before the handle existed.
+      // Settled from inside subscribe() itself, before the handle existed. No
+      // timer either: `settle` would ignore it, but an armed one holds the
+      // process (and a browser tab) awake for the whole timeout first.
       subscription.close();
+      return;
     }
 
     timer = setTimeout(() => {

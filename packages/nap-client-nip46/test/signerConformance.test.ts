@@ -5,6 +5,9 @@ import { FakeBunker } from './fakeBunker.js';
 
 const RELAY = 'wss://relay.example';
 
+/** Which bunker is behind a given signer, so a test can reach past it. */
+const bunkers = new WeakMap<object, FakeBunker>();
+
 async function connectedSigner(): Promise<Nip46Signer> {
   const bunker = new FakeBunker();
   const signer = createNip46Signer({
@@ -15,6 +18,7 @@ async function connectedSigner(): Promise<Nip46Signer> {
   });
 
   await signer.connect();
+  bunkers.set(signer, bunker);
   return signer;
 }
 
@@ -22,6 +26,9 @@ runSignerConformance({
   name: 'NIP-46 remote signer',
   keyFree: true,
   create: connectedSigner,
+  rotateIdentity: (signer) => {
+    bunkers.get(signer)!.rotateUser();
+  },
 });
 
 describe('signers are interchangeable', () => {

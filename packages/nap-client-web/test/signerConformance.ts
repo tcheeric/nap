@@ -14,6 +14,15 @@ export interface SignerConformanceCase {
    * `lock()` must still lock the session (FR-023).
    */
   keyFree: boolean;
+  /**
+   * Change the identity behind a signer, the way an extension account switch or
+   * a re-paired bunker does, and resolve once it has taken effect.
+   *
+   * Omit only for signers whose identity genuinely cannot change — the in-page
+   * private key signer refuses `setKey` for a different key by design, so there
+   * is no such transition to test.
+   */
+  rotateIdentity?(signer: SessionSigner): void | Promise<void>;
 }
 
 function pubkeyOf(npub: string): string {
@@ -65,6 +74,21 @@ export function runSignerConformance(testCase: SignerConformanceCase): void {
       expect(() => nip19.decode(first)).not.toThrow();
       expect(second).toBe(first);
     });
+
+    if (testCase.rotateIdentity) {
+      it('re-reads its identity instead of serving a cached npub', async () => {
+        const signer = await testCase.create();
+        const before = await signer.getNpub();
+
+        await testCase.rotateIdentity!(signer);
+
+        // Stability above is necessary but not sufficient: a signer that cached
+        // its first answer passes it too, and then reports the old identity
+        // forever. `session.ts` calls getNpub() before every login precisely to
+        // catch this transition — a cache turns that guard into a no-op (FR-021).
+        expect(await signer.getNpub()).not.toBe(before);
+      });
+    }
 
     it('signs an event whose pubkey matches its npub', async () => {
       const signer = await testCase.create();

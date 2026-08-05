@@ -51,8 +51,8 @@ export interface FakeBunkerOptions {
 export class FakeBunker {
   readonly secretKey = generateSecretKey();
   readonly pubkey = getPublicKey(this.secretKey);
-  readonly userSecretKey = generateSecretKey();
-  readonly userPubkey = getPublicKey(this.userSecretKey);
+  userSecretKey = generateSecretKey();
+  userPubkey = getPublicKey(this.userSecretKey);
 
   readonly requests: Array<{ method: string; params: string[] }> = [];
 
@@ -115,6 +115,21 @@ export class FakeBunker {
     } as unknown as AbstractSimplePool;
 
     return this.cachedPool;
+  }
+
+  /** Stop answering, mid-session: the phone went flat after pairing succeeded. */
+  goSilent(): void {
+    this.options.mode = 'silent';
+  }
+
+  /**
+   * The same bunker, now speaking for a different user — what a re-pairing looks
+   * like from the client's side. The pairing itself survives; only the identity
+   * behind it changes, which is precisely the case the session guard exists for.
+   */
+  rotateUser(): void {
+    this.userSecretKey = generateSecretKey();
+    this.userPubkey = getPublicKey(this.userSecretKey);
   }
 
   /** Release a request that was parked behind an `auth_url` challenge. */

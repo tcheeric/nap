@@ -1,4 +1,4 @@
-import { nip19 } from 'nostr-tools';
+import { getPublicKey, nip19 } from 'nostr-tools';
 import type { AbstractSimplePool } from 'nostr-tools/abstract-pool';
 import type { SecretStore, SessionSigner } from '@imani/nap-client-web';
 import { bytesToHex, hexToBytes } from '@imani/nap-core';
@@ -52,6 +52,7 @@ export interface Nip46Signer extends SessionSigner {
   ping(): Promise<boolean>;
   /** The `nostrconnect://` URI, once one has been generated. */
   getConnectionUri(): string | null;
+  /** This pairing's own npub — neither the bunker's nor the user's. */
   getClientPubkey(): string | null;
 }
 
@@ -185,7 +186,20 @@ export function createNip46Signer(options: Nip46SignerOptions): Nip46Signer {
       const active = requireConnection();
 
       try {
-        return nip19.npubEncode(await active.bunker.getPublicKey());
+        // Deliberately not `bunker.getPublicKey()`: that memoises into
+        // `cachedPubKey`, so a bunker re-paired to a different user would keep
+        // reporting the old identity forever. The session's pre-flight identity
+        // guard reads exactly this call (nap-client-web `session.ts`), and a
+        // cached npub blinds it. Ask over the wire every time — `get_public_key`
+        // needs no human approval, which is why the connect bound applies here
+        // and the far looser sign bound does not.
+        const pubkey = await withTimeout(
+          active.bunker.sendRequest('get_public_key', []),
+          options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
+          'get_public_key'
+        );
+
+        return nip19.npubEncode(pubkey);
       } catch (error) {
         throw toNip46Error(error, 'the remote signer would not reveal its public key');
       }
@@ -244,7 +258,10 @@ export function createNip46Signer(options: Nip46SignerOptions): Nip46Signer {
     },
 
     getClientPubkey(): string | null {
-      return connection ? nip19.npubEncode(connection.pointer.pubkey) : null;
+      // This pairing's own key, not the bunker's. `pointer.pubkey` is the remote
+      // signer and `getNpub()` is the user — three distinct keys, and returning
+      // the wrong one here is invisible until someone displays it.
+      return connection ? nip19.npubEncode(getPublicKey(connection.clientSecretKey)) : null;
     },
   };
 }
