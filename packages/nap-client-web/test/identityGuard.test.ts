@@ -162,6 +162,37 @@ describe('identity guard', () => {
     });
   });
 
+  it('does not trip on a session body that omits principal.npub', async () => {
+    // `principal.pubkey`, `roles` and `permissions` are the session-body contract
+    // both implementations bind to; `npub` is not on that list. Comparing npubs
+    // made every login after such a resume() look like an account switch — and
+    // report it with expectedPubkey === actualPubkey, a mismatch between one key
+    // and itself.
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'ok',
+        expires_at: 1_710_000_900,
+        principal: { pubkey: PUBKEY_A },
+        roles: ['merchant'],
+        permissions: ['voucher:create'],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(challenge())
+      .mockResolvedValueOnce(authSuccess(NPUB_A, PUBKEY_A));
+
+    const session = createNapSession({
+      baseUrl: 'https://merchant.example.com',
+      signer: signerFor(() => NPUB_A),
+      fetch: fetchMock,
+      broadcast: { enabled: false },
+    });
+
+    await session.resume();
+    await expect(session.login()).resolves.toMatchObject({
+      principal: { pubkey: PUBKEY_A },
+    });
+    expect(session.isAuthenticated()).toBe(true);
+  });
+
   it('propagates a mismatch to other tabs', async () => {
     const channelName = `nap-identity-${Math.floor(Math.random() * 1e9)}`;
     let npub = NPUB_A;

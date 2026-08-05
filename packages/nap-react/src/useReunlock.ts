@@ -15,6 +15,12 @@ interface PendingPromise {
  * If the key is locked, the hook prompts re-unlock before calling the function.
  * Multiple concurrent calls share a single prompt.
  *
+ * The hook only decides *when* to prompt; unlocking is the modal's job, which is
+ * what makes it signer-agnostic. An in-page key calls `session.reunlock(passphrase)`
+ * from `onSuccess`. A NIP-07 or NIP-46 session has no passphrase and nothing to
+ * restore — it calls `session.unlock()` instead, with no prompt at all, and the
+ * signer's own approval on the next signature is the re-authorization.
+ *
  * @param isKeyAvailable - Function that returns true if the signing key is in memory.
  *   Typically checks a ref or the NapSession's locked state. Must be synchronous.
  *

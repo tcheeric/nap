@@ -14,9 +14,14 @@ import { withTimeout } from './timeout.js';
 const NOSTR_CONNECT_KIND = 24133;
 
 /**
- * NAP only ever needs to sign the NIP-98 challenge, so this is the whole ask.
+ * Signing the NIP-98 challenge is the only thing NAP asks permission for.
  * Requesting more would train users to grant a remote signer permissions the
  * protocol never uses.
+ *
+ * The client also sends `get_public_key` — on every `getNpub()`, since caching
+ * it would blind the identity guard — and does not list it. Signers treat
+ * reading the public key as always-permitted; one that gates it will prompt on
+ * the first call, which is a signer's choice to make and not ours to pre-empt.
  */
 export const DEFAULT_PERMISSIONS = ['sign_event:27235'];
 

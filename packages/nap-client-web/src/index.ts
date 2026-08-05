@@ -5,6 +5,8 @@ export {
   createPrivateKeySessionSigner,
 } from './signers.js';
 export {
+  DEFAULT_DETECT_TIMEOUT_MS,
+  DEFAULT_REQUEST_TIMEOUT_MS,
   Nip07Error,
   createNip07SignerFromWindow,
   detectNip07Provider,

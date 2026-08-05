@@ -145,6 +145,10 @@ export function createNapSession(options: NapClientOptions): NapSession {
         if (!evictable) {
           locked = false;
           shutdownState = false;
+          // The idle timer that locked this tab has already fired and only
+          // rearms on touch() or real user activity. Without this the tab is
+          // unlocked with nothing left to lock it again.
+          activityLock.touch();
         }
 
         options.onUnlock?.();
@@ -191,7 +195,11 @@ export function createNapSession(options: NapClientOptions): NapSession {
     // without a prompt (FR-021).
     const npub = await options.signer.getNpub();
 
-    if (sessionState && sessionState.npub !== npub) {
+    // Compared as pubkeys, not as npubs. `pubkey` is the field the session body
+    // contract actually requires — an implementation that omits `principal.npub`
+    // would otherwise make every login after a resume() look like an account
+    // switch, and report it with expectedPubkey === actualPubkey.
+    if (sessionState && sessionState.pubkey !== pubkeyOfNpub(npub)) {
       throw terminateForIdentity(sessionState.pubkey, pubkeyOfNpub(npub));
     }
 
