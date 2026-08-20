@@ -64,9 +64,14 @@ These have each cost real debugging time. Check them before changing the relevan
 - **The audience is an adapter option and it is security-relevant.** Exactly one of
   `getExternalBaseUrl` or `audienceResolver` must be passed to the router/plugin — not to
   `createNapServer` — and it sets the NIP-98 audience.
-  `createRequestDerivedBaseUrlResolver()` derives it from the request and contains **no trust
-  policy**: it reads `Host` raw and leaves `X-Forwarded-Proto` to Express's `trust proxy`.
-  Prefer a pinned constant or a Host allowlist. See §9.4 of the integration guide.
+  `createRequestDerivedBaseUrlResolver(allowedHosts)` derives it from the request and **an
+  allowlist is the only way to construct one** — no default, no empty array; it throws at
+  wiring time, because an unrestricted resolver lets a request header pick the value every
+  NIP-98 proof is checked against (WebAuthn L3 §13.5.9). Entries are exact hosts, optionally
+  scheme-pinned (`https://api.example.com`) and optionally `*.sub` wildcards, opt-in per entry
+  (§13.5.8). The scheme is still `X-Forwarded-Proto` under Express's `trust proxy` unless the
+  entry pins it. A pinned constant is still simplest for a single-host deployment. See §9.4 of
+  the integration guide.
 - **Dedupe `nostr-tools`.** Four packages depend on it. Version skew between the app's copy and
   NAP's surfaces as confusing `verifyEvent` failures.
 - **Every auth failure is an identical 401.** That is deliberate. Debugging is impossible

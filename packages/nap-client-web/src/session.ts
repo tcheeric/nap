@@ -3,7 +3,7 @@ import { buildAuthCompleteRequest } from '@imani/nap-client-http';
 import type { AuthSuccessResponse } from '@imani/nap-core';
 import { createActivityLock } from './activityLock.js';
 import { createBroadcastBus } from './broadcast.js';
-import { SessionLockedError, fetchJson } from './httpClient.js';
+import { AuthRequestError, SessionLockedError, fetchJson } from './httpClient.js';
 import { reunlock as reunlockCore } from './reunlock.js';
 import type { KeyHolder } from './keyStore.js';
 import { IdentityMismatchError, isEvictableSigner } from './types.js';
@@ -102,6 +102,30 @@ export function createNapSession(options: NapClientOptions): NapSession {
   };
 
   /**
+   * A refusal the same signer cannot argue with clears the remembered choice.
+   *
+   * Nothing else does it: the store is written by the app (only the app knows
+   * *which kind* of signer it built), so without this a login the server has
+   * stopped accepting is re-offered on every visit and 401s forever. The rule is
+   * "terminal", not "unknown npub" — anti-enumeration means the client is never
+   * told which it was — and it deliberately excludes anything a retry fixes: a
+   * dropped relay, a 5xx, a rate limit, a `getNpub()` that threw before any of
+   * this ran.
+   *
+   * Clearing costs one extra click on the next visit. Not clearing costs a login
+   * screen that only knows how to fail.
+   */
+  const failAuth = (phase: 'init' | 'complete', status: number): AuthRequestError => {
+    const error = new AuthRequestError(phase, status);
+
+    if (error.terminal) {
+      options.signerPreference?.clear();
+    }
+
+    return error;
+  };
+
+  /**
    * Tear the session down because the signer is no longer the same person.
    *
    * Returns the error rather than throwing so callers read as
@@ -120,6 +144,12 @@ export function createNapSession(options: NapClientOptions): NapSession {
     evictKey();
     locked = false;
     shutdownState = false;
+    // The kind is still right — it is the same extension or bunker — but the
+    // npub in the record is now somebody else's, and a "Continue as npub1old…"
+    // button that signs as whoever holds the signer now is the carry-over this
+    // guard exists to prevent. `logout()` deliberately does not do this: logging
+    // out is not evidence the signer changed, and re-offering it is the point.
+    options.signerPreference?.clear();
     options.onIdentityChanged?.({ expectedPubkey, actualPubkey });
     broadcast.publish('identity-changed', { expectedPubkey, actualPubkey });
     return new IdentityMismatchError(expectedPubkey, actualPubkey);
@@ -287,7 +317,7 @@ export function createNapSession(options: NapClientOptions): NapSession {
     );
 
     if (initResponse.status !== 200 || !initResponse.body) {
-      throw new Error(`NAP init failed with status ${initResponse.status}`);
+      throw failAuth('init', initResponse.status);
     }
 
     const completion = await buildAuthCompleteRequest({
@@ -309,7 +339,7 @@ export function createNapSession(options: NapClientOptions): NapSession {
     );
 
     if (completeResponse.status !== 200 || !completeResponse.body) {
-      throw new Error(`NAP completion failed with status ${completeResponse.status}`);
+      throw failAuth('complete', completeResponse.status);
     }
 
     const next = toSessionState(completeResponse.body);
@@ -352,6 +382,9 @@ export function createNapSession(options: NapClientOptions): NapSession {
       );
 
       if (response.status === 401) {
+        // The remembered signer is deliberately kept. An expired or missing
+        // cookie says nothing about whether that signer is still accepted, and
+        // rebuilding it to log in again is exactly what it is remembered for.
         sessionState = null;
         options.onSessionExpired?.();
         return null;

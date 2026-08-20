@@ -25,7 +25,7 @@ app.use(
   '/auth',
   createNapExpressRouter({
     server: napServerOptions,
-    getExternalBaseUrl: createRequestDerivedBaseUrlResolver(),
+    getExternalBaseUrl: createRequestDerivedBaseUrlResolver(['api.example.com']),
   })
 );
 ```

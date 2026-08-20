@@ -744,7 +744,7 @@ against a `tsc`-emitted app will not resolve them as-is.
 | **`@imani/nap-adapter-fastify`** | Same surface as the Express adapter, as a Fastify 5 plugin. | `napFastifyPlugin`, `permissionsFastifyPlugin`, `createNapFastifyInitHandler`, `createNapFastifyCompleteHandler`, `requirePermission`, `requireStepUp`, `validatePermissions`, `resetPermissionValidationState`, `writeNapCookieSuccess`, `createRequestDerivedBaseUrlResolver`; types `NapFastifyOptions`, `NapFastifyGuardOptions` | `@imani/nap-server`, `fastify ^5.2.1`, `cookie ^1.0.2` | Fastify backends. |
 | **`@imani/nap-store-postgres`** | Postgres-backed implementations of the three store interfaces, with `redeem()` done as a conditional `UPDATE` for cross-instance atomicity. | `PostgresChallengeStore`, `PostgresSessionStore`, `PostgresAclStore` | `@imani/nap-core`, `@imani/nap-server`, `pg ^8.13.1` | Any deployment with more than one server process. The in-memory stores are single-process only. |
 | **`@imani/nap-client-http`** | Builds the completion request. Runtime-agnostic (no DOM, no Node built-ins beyond what `nostr-tools` needs). | `buildAuthCompleteRequest`, `serializeAuthCompleteBody`, `createPrivateKeySigner`; types `EventSigner`, `BuildAuthCompleteRequestInput`, `BuiltAuthCompleteRequest` | `@imani/nap-core`, `nostr-tools` | Server-to-server clients, CLI tools, tests. In a browser you get this transitively via `nap-client-web`. |
-| **`@imani/nap-client-web`** | Browser session manager: signer abstraction, in-memory token holding, cross-tab broadcast, idle lock, re-unlock. | `createNapSession`, `createNip07Signer`, `createPrivateKeySessionSigner`, `detectNip07Provider`, `reunlock`, `createWebCryptoKeyStore`, `createWebCryptoSecretStore`, `createSignerPreferenceStore`, `ReunlockError`, `SessionLockedError`, `IdentityMismatchError`, `isEvictableSigner`; types `NapSession`, `NapClientOptions`, `SessionSigner`, `SessionState`, `KeyStore`, `SecretStore`, `EvictableSigner`, `IdentityChangedDetail`, `SignerPreference` | `@imani/nap-client-http`, `@imani/nap-core`, `nostr-tools` | Any browser app. Framework-independent — usable from Vue/Svelte/vanilla, not just React. |
+| **`@imani/nap-client-web`** | Browser session manager: signer abstraction, in-memory token holding, cross-tab broadcast, idle lock, re-unlock. | `createNapSession`, `createNip07Signer`, `createPrivateKeySessionSigner`, `detectNip07Provider`, `getSignerCapabilities`, `reunlock`, `createWebCryptoKeyStore`, `createWebCryptoSecretStore`, `createSignerPreferenceStore`, `ReunlockError`, `SessionLockedError`, `AuthRequestError`, `IdentityMismatchError`, `isEvictableSigner`; types `NapSession`, `NapClientOptions`, `SessionSigner`, `SessionState`, `KeyStore`, `SecretStore`, `EvictableSigner`, `IdentityChangedDetail`, `SignerPreference`, `SignerCapabilities` | `@imani/nap-client-http`, `@imani/nap-core`, `nostr-tools` | Any browser app. Framework-independent — usable from Vue/Svelte/vanilla, not just React. |
 | **`@imani/nap-react`** | Thin React binding over `nap-client-web`. | `NapProvider`, `useNapSession`, `useNapCallbacks`, `useReunlock`, `useNip07`, `useSignerPreference`, `useStoredConnection`, `acquireSigningAccess`, `ReunlockCancelledError`; types `NapProviderProps`, `NapSessionState`, `UseReunlockReturn`, `SigningAccessDeps`, `Nip07Detection`, `StoredConnectionSource` | `@imani/nap-client-web`; peer `react >=18` | React apps. Skip it if you already have your own state layer, but reuse `acquireSigningAccess` if you do. Deliberately has **no** dependency on `nap-client-nip46`: `useStoredConnection` takes the restore function instead of importing it. |
 
 ### Dependency shape
@@ -860,7 +860,7 @@ app.use(
   '/auth',
   createNapExpressRouter({
     server: napServerOptions,
-    getExternalBaseUrl: createRequestDerivedBaseUrlResolver(),
+    getExternalBaseUrl: createRequestDerivedBaseUrlResolver(['api.example.com']),
   })
 );
 
@@ -898,7 +898,7 @@ import { writeNapCookieSuccess } from '@imani/nap-adapter-express';
 
 createNapExpressRouter({
   server: napServerOptions,
-  getExternalBaseUrl: createRequestDerivedBaseUrlResolver(),
+  getExternalBaseUrl: createRequestDerivedBaseUrlResolver(['api.example.com']),
   writeSuccess: writeNapCookieSuccess('session', {
     httpOnly: true,
     secure: true,
@@ -944,7 +944,7 @@ const app = Fastify({ trustProxy: true });
 await app.register(napFastifyPlugin, {
   routePrefix: '/auth',
   server: napServerOptions,
-  getExternalBaseUrl: createRequestDerivedBaseUrlResolver(),
+  getExternalBaseUrl: createRequestDerivedBaseUrlResolver(['api.example.com']),
 });
 
 await app.register(permissionsFastifyPlugin(registry), { prefix: '/auth' });
@@ -1318,7 +1318,9 @@ try {
 
 `detectNip07Provider(options)` is the same detection without the wrapping, for
 apps that want to decide what to offer before showing a login button. It resolves
-`null` rather than throwing.
+`null` rather than throwing. `null` means "no extension", not "no signer" — to
+decide what a login screen offers, ask `getSignerCapabilities()` ("Which signers
+this page could use at all", §6.4), which answers for all three kinds.
 
 If you already hold a provider, `createNip07Signer(window.nostr)` still takes it
 directly — the one-argument signature is unchanged. It wraps `getPublicKey()` in
@@ -1677,6 +1679,26 @@ depending on `@imani/nap-client-nip46` and would break its opt-in isolation. Rea
 handles the restore flow without that dependency by taking `{ has, restore }`
 from the caller rather than importing either.
 
+#### Which signers this page could use at all
+
+A different question from which one it used last, and the one a first-time login
+screen actually asks. `detectNip07Provider()` answers only "is `window.nostr`
+here", so a screen built on it alone tells a user with no extension that there is
+no way in — on a desktop that could pair a bunker or take an nsec.
+`getSignerCapabilities()` is the whole answer:
+
+```ts
+const { nip07, nip46, localKey } = await getSignerCapabilities({
+  nip46: true,          // you ship @imani/nap-client-nip46
+  keyStore,             // you wired one, so an in-page key can be re-unlocked
+});
+```
+
+Only `nip07` is detected. The other two are declarations, because they are not
+features of the browser — they are things your bundle does or does not contain.
+`nip46: true` therefore means "pairing is offerable", never "a bunker will
+answer": no relay is contacted, and a pairing can still time out (§6.3).
+
 #### What a reload keeps, and what it does not
 
 The session survives: the id is an `HttpOnly` cookie the browser re-attaches
@@ -1697,9 +1719,38 @@ Rebuilding then costs what the signer costs. NIP-07 is free once
 in-page key both need a passphrase, because both have an encrypted record to
 decrypt — `SecretStore` and `KeyStore` respectively, and
 `createWebCryptoKeyStore()` is the reference implementation of the latter.
-Record the preference only *after* `login()` succeeds, and clear it on logout and
-on an identity change; a preference pointing at an account the user has left is a
-login that will trip the identity guard.
+Record the preference only *after* `login()` succeeds.
+
+Clearing it is the session's job, and only if you hand it the store:
+
+```ts
+const signerPreference = createSignerPreferenceStore();
+
+const session = createNapSession({ baseUrl, signer, signerPreference });
+```
+
+With that wired, the preference is cleared on a **terminal** `/auth/init` or
+`/auth/complete` failure — any 4xx except 429 — and when the identity guard
+terminates the session. Both are cases where re-offering the same login produces
+the same failure forever: the npub was removed from the ACL and every session
+revoked (§15), or the signer is now somebody else and the stored npub is the
+previous account's.
+
+What it deliberately does **not** clear on:
+
+- **`logout()`.** Logging out is not evidence about the signer. The next visit
+  should offer the same one.
+- **A `resume()` that 401s.** An expired cookie says nothing about whether the
+  signer is still accepted — rebuilding it to log in again is what the record is
+  *for*.
+- **Anything a retry fixes.** A 5xx, a 429, a dropped relay, a `getNpub()` that
+  never answered. These reject a request, not an identity.
+
+The client cannot do better than "terminal", and that is by design: §10.1 and
+§15 make every auth failure the same uniform 401, so it is never told that *this
+npub* was the problem. `AuthRequestError` carries `{ phase, status, terminal }`
+if you want to branch on it yourself — for a UI message, or for a store you
+manage outside the session.
 
 ### 6.5 Carrying the session on your own API calls
 
@@ -2498,37 +2549,43 @@ The NIP-98 `u` tag is compared for exact equality against
 `getExternalBaseUrl(req) + '/auth/complete'`. Get this wrong and **every** login
 fails with `NAP_COMPLETE_URL_MISMATCH` behind a generic 401.
 
-`createRequestDerivedBaseUrlResolver()` is named optimistically. Here it is in
-full (`packages/nap-adapter-express/src/adapter.ts:337`):
+`createRequestDerivedBaseUrlResolver()` **requires a host allowlist**, and there
+is no empty-array escape hatch:
 
 ```ts
-export function createRequestDerivedBaseUrlResolver(): NapExpressOptions['getExternalBaseUrl'] {
-  return (req) => {
-    const host = req.get('host');
-    if (!host) throw new Error('Unable to resolve external host for NAP request');
-    return `${req.protocol}://${host}`;
-  };
-}
+getExternalBaseUrl: createRequestDerivedBaseUrlResolver([
+  'api.example.com',            // exact host; include the port when it is not 443/80
+  'https://api.eu.example.com', // scheme pinned — the request's protocol is ignored
+  '*.tenant.example.com',       // subdomains, opt-in per entry
+]),
 ```
 
-It contains **no trust policy of its own.** It reads `req.protocol` and the
-`Host` header, and delegates the entire question of whether `X-Forwarded-Proto`
-may be believed to Express's `trust proxy` setting. The Fastify version is the
-same, delegating to `Fastify({ trustProxy })`
-(`packages/nap-adapter-fastify/src/adapter.ts:134`). The adapter tests set
-`app.set('trust proxy', true)` — which trusts *every* hop
-(`packages/nap-adapter-express/test/adapter.test.ts:85`).
+A `Host` outside the list throws; an allowlist that is missing, empty, or not a
+list of hosts throws **at wiring time**, not as a per-request 401. This is the
+same rule WebAuthn L3 §13.5.9 makes normative for origins — *"the Relying Party
+MUST validate the origin member of the client data. The Relying Party MUST NOT
+accept unexpected values of origin"* — and every pattern it sanctions is an
+allowlist. The wildcard is per entry because §13.5.8's default is the other way:
+an RP by default SHOULD NOT accept subdomain origins. `*.example.com` matches
+`a.example.com` and `deep.a.example.com`, never the apex.
 
-Worse, the two halves of that URL have **different trust models**:
+What the resolver still does **not** decide is the scheme. Unless the matching
+entry pins one, it reads `req.protocol` and delegates the whole question of
+whether `X-Forwarded-Proto` may be believed to Express's `trust proxy` setting;
+the Fastify version delegates to `Fastify({ trustProxy })` the same way. The
+adapter tests set `app.set('trust proxy', true)` — which trusts *every* hop
+(`packages/nap-adapter-express/test/adapter.test.ts:85`). So the two halves of
+the URL still have **different trust models**, and the fix for each is different:
 
 | Component | Source | Trust-gated? |
 |---|---|---|
-| scheme | `req.protocol` | Yes — honors `X-Forwarded-Proto` only when `trust proxy` is set |
-| host + port | `req.get('host')` | **No** — a raw header read |
+| scheme | `req.protocol`, unless the allowlist entry pins it | Yes — honors `X-Forwarded-Proto` only when `trust proxy` is set. Pin it in the entry (`https://api.example.com`) to take the header out of it entirely |
+| host + port | `req.get('host')`, checked against the allowlist | The header is still raw; the allowlist is what makes a forged one useless |
 
 `req.get('host')` is a plain lookup returning `this.headers['host']` verbatim
 (`node_modules/express/lib/request.js:65`); `X-Forwarded-Host` is never
-consulted and `trust proxy` has no effect on it. Express *does* implement the
+consulted and `trust proxy` has no effect on it — which is exactly why the
+allowlist is not optional. Express *does* implement the
 RFC's rule 1 correctly — in `req.hostname`, which gates `X-Forwarded-Host` on
 `trust(this.connection.remoteAddress, 0)`, i.e. on the socket peer rather than
 on a header. The resolver does not use it, and there is a defensible reason:
@@ -2545,7 +2602,7 @@ being a check at all.
 `docs/NAP-v2-RFC.md:561` is explicit: *"Implementations MUST NOT blindly trust
 forwarded headers from arbitrary clients."* `trust proxy: true` in production, on
 a service reachable other than through your load balancer, means any client can
-set `X-Forwarded-Proto` and `Host` and move the audience. Do one of:
+set `X-Forwarded-Proto` and can move the scheme half of the audience. Do one of:
 
 ```ts
 // Best: don't derive it at all. You know your public URL.
@@ -2555,23 +2612,18 @@ getExternalBaseUrl: () => 'https://api.example.com',
 app.set('trust proxy', '10.0.0.0/8');       // CIDR, not `true`
 app.set('trust proxy', 1);                  // exactly one hop
 
-// Or: allowlist the Hosts you will accept (multi-tenant / multi-domain).
-const ALLOWED_HOSTS = new Set(['api.example.com', 'api.eu.example.com']);
-
-getExternalBaseUrl: (req) => {
-  const host = req.get('host');
-  if (!host || !ALLOWED_HOSTS.has(host)) throw new Error('unexpected host');
-  return `https://${host}`;   // scheme pinned — you terminate TLS, don't ask the request
-},
+// Or: pin the scheme in the allowlist entry and stop asking the request.
+getExternalBaseUrl: createRequestDerivedBaseUrlResolver(['https://api.example.com']),
 ```
 
 An allowlist satisfies the RFC's three rules without needing a trust policy at
 all: a forged `Host` simply is not in the set, so the question of which hop to
 believe never arises. Pinning the scheme removes the other half of the problem.
 
-A hard-coded constant is the lazy correct answer for most deployments and it is
-what I would ship. Multi-tenant / multi-domain services need the dynamic form,
-with an allowlist.
+A hard-coded constant is still the lazy correct answer for a deployment that
+answers on one host, and it is what I would ship. Multi-tenant / multi-domain
+services need the dynamic form — which is now the only form the resolver will
+build.
 
 Three more audience gotchas:
 
@@ -3002,10 +3054,10 @@ been corrected and is accurate as of 0.2.0.
 Two of its "Next Work" items remain genuinely open and are worth reading as real
 warnings rather than boilerplate:
 
-- **Proxy / trust-policy helpers.** Still the sharpest edge (§9.4).
-  `createRequestDerivedBaseUrlResolver()` derives the audience from the request
-  and contains no trust policy; the safe answers are a pinned constant or a Host
-  allowlist, both of which you write yourself.
+- **Proxy / trust-policy helpers.** Still the sharpest edge (§9.4), but half
+  closed: `createRequestDerivedBaseUrlResolver()` now takes a required host
+  allowlist and refuses to be built without one. The scheme is still the
+  framework's `trust proxy` decision unless you pin it in the entry.
 - **Packaging.** Every `package.json` points `exports` at `./src/index.ts` — no
   build step, no `dist/`, no `files` field, no `publishConfig`. These are not
   npm-publishable as-is (§11.4).
@@ -3182,7 +3234,9 @@ auditLogger: {
 | **500, message `nap-adapter-express requires createNapExpressJsonParser() before /auth/complete handlers`** | A body parser consumed the stream before NAP. Mount NAP above your global `express.json()`, or replace it with `createNapExpressJsonParser()` (§5.2). |
 | **500, `nap-adapter-fastify requires raw body capture for /auth/complete`** | Same problem on Fastify. Another content-type parser for `application/json` won the registration, or the route is outside the plugin's encapsulation scope (§5.3). |
 | **400 `{"status":"error","message":"bad request"}` on `/auth/complete`** | The body did not parse, or `challenge_id` was absent/empty (`parseAuthCompleteRequest`, `packages/nap-server/src/server.ts:142`). Note this check runs *before* any signature verification. |
-| **500 `Unable to resolve external host for NAP request`** | No `Host` header reached the app. Thrown by `createRequestDerivedBaseUrlResolver()` (`packages/nap-adapter-express/src/adapter.ts:342`). |
+| **500 `Unable to resolve external host for NAP request`** | No `Host` header reached the app. Thrown by the resolver `createRequestDerivedBaseUrlResolver()` returns (`packages/nap-server/src/audience.ts`). |
+| **500 `NAP audience host '…' is not in the allowlist`** | A request arrived on a host you did not pass to `createRequestDerivedBaseUrlResolver()`. Add it (with its port, if non-default), or fix the proxy that is rewriting `Host` (§9.4). |
+| **Startup `NAP audience resolution requires a non-empty host allowlist`** | `createRequestDerivedBaseUrlResolver()` was called with no hosts. Deliberate: an unrestricted resolver lets a request header choose the audience every NIP-98 proof is checked against. |
 | **Throws `PermissionRegistry role 'x' references unknown permission 'y'` at boot** | Registry is internally inconsistent. `validatePermissionRegistry()` is doing its job (§3.1). |
 | **Throws `Permissions used in middleware but missing from registry: …` at boot** | A `requirePermission('…')` string is not declared in the registry. Note the check is against a module-level set, so in tests you need `resetPermissionValidationState()` between cases (`packages/nap-adapter-express/test/adapter.test.ts:101`). |
 | **`PostgresSessionStore could not reload session for challenge '…'`** | The `ON CONFLICT (challenge_id) DO NOTHING` insert was a no-op but the reload found nothing. Almost certainly a missing `UNIQUE` constraint on `nap_sessions.challenge_id` (§5.5), or a concurrent delete. |

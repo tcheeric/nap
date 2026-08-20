@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 All packages in this workspace share a single version.
 
+## [Unreleased]
+
+Breaking, but pre-1.0, so the next release is a minor.
+`createRequestDerivedBaseUrlResolver()` now requires a host allowlist; see **Changed**.
+Nothing on the wire moved, so the JVM implementation interoperates unmodified. `nap-java`
+has no request-derived resolver of its own — an application binds an `AudienceResolver`
+bean or pins `nap.external-base-url` — so there is nothing there to change, but the same
+advice applies to a bean that reads `Host`.
+
+### Added
+
+- **`getSignerCapabilities()` — which signers this page could use at all.**
+  `detectNip07Provider()` answers one question, "is `window.nostr` here", and a login screen
+  built on it alone tells a user with no extension that there is no way in — on a desktop
+  that could pair a bunker or take an nsec. This returns
+  `{ nip07, nip46, localKey }`. Only `nip07` is detected: NIP-46 and an in-page key are not
+  browser features, they are things your bundle contains, so the app declares them.
+  `nip46: true` means pairing is offerable, never that a bunker will answer.
+  `detectNip07Provider()` is unchanged and still exported — it returns the provider
+  `createNip07Signer()` needs.
+- **`AuthRequestError`.** `login()` and `stepUp()` threw a bare `Error` carrying the status
+  in its message. This carries `{ phase, status, terminal }`, where `terminal` is any 4xx
+  except 429 — the failures retrying cannot fix.
+- **`NapClientOptions.signerPreference`.** Hand `createNapSession()` the preference store and
+  it clears it on a terminal `/auth/init` or `/auth/complete` failure, and when the identity
+  guard terminates the session. Nothing cleared it before, so an npub removed from the ACL
+  (§15) left a login screen re-offering a login that 401s forever. It is never *written*
+  here: only the app knows which kind of signer it built. Deliberately not cleared on
+  `logout()` (not evidence about the signer), on a `resume()` that 401s (an expired cookie
+  says nothing about the signer), or on anything a retry fixes. The rule is "terminal", not
+  "unknown npub", because §10.1 and §15 make every auth failure the same uniform 401 — the
+  client is never told which it was.
+
+### Changed
+
+- **`createRequestDerivedBaseUrlResolver()` requires a host allowlist.** **Breaking.** It
+  read `Host` raw and contained no trust policy, which let a request header choose the
+  audience every NIP-98 proof is checked against — the thing WebAuthn L3 §13.5.9 makes it
+  normative for an RP not to do. Pass the hosts you answer on:
+  `createRequestDerivedBaseUrlResolver(['api.example.com'])`. Entries may pin the scheme
+  (`https://api.example.com`, which ignores `X-Forwarded-Proto` entirely) and may opt into
+  subdomains one at a time (`*.example.com`, matching `a.example.com` but not the apex —
+  §13.5.8's default is no). A missing or empty list throws at wiring time, in both adapters,
+  alongside the cookie-name and `refreshTtlSeconds` checks. Migration: pass your hosts, or
+  switch to the pinned constant `getExternalBaseUrl: () => 'https://api.example.com'`, which
+  remains the simplest correct answer for a single-host deployment. The shared matching lives
+  in `@imani/nap-server`'s `createAudienceHostAllowlist()`.
+
 ## [0.9.0] - 2026-08-20
 
 Breaking, but pre-1.0, so a minor. `NapSession.requiresPassphrase()` and the shape of

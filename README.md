@@ -107,5 +107,6 @@ implemented but incomplete. Beyond that:
 
 - packaging — no build step, so nothing is publishable (see the note above)
 - more store adapters (Redis, etc.)
-- better proxy/trust-policy helpers for `createRequestDerivedBaseUrlResolver()`
+- scheme trust for `createRequestDerivedBaseUrlResolver()` — the host is allowlisted, the
+  scheme is still the framework's `trust proxy` decision unless the entry pins it
 - no sliding idle window or `absolute_expiry_at`; the Java implementation has both

@@ -1,5 +1,5 @@
 export { createNapSession } from './session.js';
-export { SessionLockedError } from './httpClient.js';
+export { AuthRequestError, SessionLockedError } from './httpClient.js';
 export {
   createNip07Signer,
   createPrivateKeySessionSigner,
@@ -32,6 +32,11 @@ export {
   createWebCryptoSecretStore,
 } from './webCryptoSecretStore.js';
 export type { WebCryptoSecretStoreOptions } from './webCryptoSecretStore.js';
+export { getSignerCapabilities } from './signerCapabilities.js';
+export type {
+  SignerCapabilities,
+  SignerCapabilityOptions,
+} from './signerCapabilities.js';
 export { createSignerPreferenceStore } from './signerPreference.js';
 export type {
   SignerKind,
