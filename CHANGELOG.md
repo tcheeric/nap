@@ -7,6 +7,187 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 All packages in this workspace share a single version.
 
+## [0.9.0] - 2026-08-20
+
+Breaking, but pre-1.0, so a minor. `NapSession.requiresPassphrase()` and the shape of
+`nap-react`'s context both changed; see **Removed** and **Changed**. Nothing on the server
+or the wire moved, so the JVM implementation interoperates unmodified and `nap-java` needs
+no matching change.
+
+### Added
+
+- **`createWebCryptoKeyStore()` — the reference `KeyStore`.** The interface shipped in
+  0.8.0 with no implementation, because the application owns key enrolment. That left
+  every in-page-key app writing its own, and the predictable failure of writing your own
+  is a plaintext nsec in `localStorage`, which RFC §1181 forbids outright. It is an
+  adapter over the existing `SecretStore` rather than a second implementation — PBKDF2
+  over a caller-supplied passphrase, AES-GCM, fresh salt and IV per write, one set of
+  crypto parameters in one place to review.
+- **`createSignerPreferenceStore()` — which signer to rebuild after a reload.** A reload
+  keeps the session, because the session id is an `HttpOnly` cookie and `resume()` never
+  invokes the signer, but it does not keep the signer object, and `createNapSession()`
+  needs one before `resume()` can be called at all. The store holds a
+  `'nip07' | 'nip46' | 'key'` discriminator and the npub, both public — never key
+  material. Without it the page has to ask on every reload, which is the exact prompt
+  `resume()` exists to avoid (FR-024).
+- **`resume({ verifyIdentity: true })`.** The reload path needs it: the cookie outlived
+  the page and the signer did not, so a plain `resume()` restores the previous account's
+  principal under whoever is signing now. Opt-in, because verifying costs a `getNpub()` —
+  a relay round trip on NIP-46 — and the prompt-free property is the default.
+- **`onLogin` now receives `{ via: 'login' | 'resume' }`.** A `login()` is a fresh
+  signature; a `resume()` only proves a cookie is still valid. Since the identity guard
+  deliberately sends no `/auth/logout`, a terminated identity's cookie outlives its
+  session, so anything treating authentication as evidence about *who is signing* —
+  clearing an identity-changed banner, above all — must act on `'login'` only.
+- **`nap-react` catches up with 0.8.0's external signers**, which never touched it:
+  `useNip07` (tri-state `'detecting' | 'present' | 'absent'` with a `retry()`, because an
+  extension can inject late and a one-shot `window.nostr` check reports "no extension" to
+  users who have one), `useSignerPreference`, `useStoredConnection`, and
+  `acquireSigningAccess`. `useStoredConnection` takes `{has, restore}` injected, so
+  `nap-react` keeps zero dependency on `@imani/nap-client-nip46` and that package stays
+  opt-in.
+- **Reactive `roles`, `permissions`, `hasRole` and `hasPermission` on `useNapSession()`.**
+  Affordance only — they exist so a render can hide a button. The authorization boundary
+  is the adapters' `requirePermission` / `requireRole` / `requireSession`, and a check
+  that exists only client-side does not exist. They are the login-time snapshot, same as
+  the server-side guards without an `aclResolver`. Read them off the state rather than
+  calling `session.hasPermission()` in a component: the method reads the closure and
+  answers correctly without ever causing a render, which looks like it works until grants
+  change.
+
+### Changed
+
+- **BREAKING — `NapSession.requiresPassphrase(): boolean` is now
+  `lockRecovery(): LockRecovery`**, answering `'unlock' | 'passphrase' |
+  'reauthenticate'`. The boolean was a two-way answer to a three-way question and produced
+  a bug in each arm it could not express, in both directions: a NIP-46 user shown a
+  passphrase field that cannot succeed, and an in-page-key user shown an Unlock button for
+  a key that was zeroed with nothing to restore it from. **The signer decides and the
+  store only breaks the tie** — an app wiring one `keyStore` for its nsec login must not
+  drag its extension users into a passphrase prompt. `acquireSigningAccess` is total over
+  the union, so adding a case breaks the switch rather than falling through.
+- **BREAKING — `NapProvider` requires an `identityChange` prop.** An omitted one is
+  indistinguishable at runtime from "no identity change", which would make every account
+  switch reject as the retryable `session_expired`. The provider cannot derive it: from
+  outside the session, an account switch and a logout are the same state.
+- **BREAKING — `ReunlockCancelledReason` gained `identity_changed`, `shutdown`, `locked`
+  and `reauthenticate_required`.** An exhaustive switch over the old four values will no
+  longer compile.
+- **`acquireSigningAccess` no longer unlocks on the user's behalf.** It refuses with
+  `locked` / `shutdown` / `reauthenticate_required` and leaves the gesture to the UI.
+  `unlock()` clears the lock *and* a shutdown *and* broadcasts, so a background autosave
+  calling it would dismiss the overlay in every tab with nobody present — and "the signer
+  will re-prompt anyway" is false for a NIP-46 bunker with pre-granted permissions. Only
+  the passphrase path prompts, because typing the passphrase is itself the gesture.
+- **`autoLock` with a key-holding signer and no `keyStore` now throws at
+  `createNapSession()`** instead of bricking the session minutes later, when the first idle
+  timeout evicts the key, `reunlock()` throws for the missing store and `unlock()` throws
+  for the held key. Same principle as the adapters' wiring checks: inert-but-quiet is the
+  failure mode being designed against.
+- **`createWebCryptoSecretStore` moved from `@imani/nap-client-nip46` to
+  `@imani/nap-client-web`.** Nothing in it was NIP-46-specific and the new `KeyStore`
+  needs the same crypto. Re-exported from the old path, so existing imports keep working.
+- **The cross-tab bus posts a bare string when there is no detail**, which is the pre-0.8
+  wire format the receiver already accepted. Only `identity-changed` carries a payload,
+  and that is a type older tabs do not know regardless, so the object form bought nothing.
+- `lock()` and `shutdown()` still evict even when nothing can undo them. Zeroing the key
+  is the point of §28.6, and refusing a user's explicit lock to avoid an awkward recovery
+  leaves a live nsec in the page, which is the worse trade.
+
+### Removed
+
+- `NapSession.requiresPassphrase()`. Replaced by `lockRecovery()`, above.
+
+### Fixed
+
+- **A NIP-46 pairing could be killed by any relay operator.** An `{error}` payload was
+  treated as a decline, but decrypting authenticates nobody: the client pubkey is public —
+  it is in the `#p` filter every relay sees and in the `nostrconnect://` URI — and NIP-44
+  conversation keys are ECDH, so anyone can send something that decrypts. Only
+  `result === input.secret` proves the sender read the URI. The error is now recorded and
+  used only to classify the eventual timeout. An attacker can change which error a failing
+  pairing ends with; they can no longer abort a live one.
+- **A locked tab could keep a live key.** `lock` and `shutdown` broadcasts were acted on
+  by tabs with no session — a tab still on its login screen has no unlock affordance to
+  clear the flag with, and the flag gates the `authenticate()` that would clear it. The
+  publishers and the receivers now both no-op without a session, and rearm the idle timer
+  on the way out: the timers are one-shot, so returning early would otherwise disarm
+  `autoLock` for the life of the page.
+- **`resume()` no longer clears `locked`.** The server session says nothing about whether
+  the key is in memory.
+- **`resume()` assigns session state before verifying identity**, so a relay hiccup during
+  `verifyIdentity` no longer discards an otherwise valid session.
+- **`acquireSigningAccess` checks identity before the key-available fast path.**
+  `terminateForIdentity` clears `locked` on its way out, which made the key look available
+  on a session that no longer existed.
+- **A `KeyStore` record written by a newer build is no longer reported absent.** `has()`
+  answers on presence and `load()` on readability; conflating them routed the app into
+  re-enrolment, whose `save()` overwrites the only copy of a ciphertext the newer build
+  could still read. A present-but-unreadable record now raises its own error rather than
+  `Invalid passphrase`, which would have told a user with the right passphrase to keep
+  retyping.
+- **A pre-0.8 tab no longer misses `lock` / `logout` / `shutdown` broadcasts.** Dropping a
+  `lock` left its decrypted in-page key live after the session was locked everywhere else,
+  which is the entire point of the broadcast.
+- `createSignerPreferenceStore().write()` returns what it persisted, rather than making
+  callers read it back through JSON and the validator to recover an object already in
+  hand.
+
+### Security
+
+- The pairing-decline and cross-tab-broadcast fixes above are both security-relevant: the
+  first was a denial-of-service any relay operator could mount on every pairing, the
+  second left key material resident in a tab that should have zeroed it.
+- Nothing added here writes plaintext key material at rest. The new `KeyStore` persists an
+  AES-GCM ciphertext under PBKDF2 over a passphrase it never holds, and the signer
+  preference stores only a kind discriminator and an npub, both public by construction.
+
+## [0.8.0] - 2026-08-05
+
+### Added
+
+- **External signers: NIP-07 browser extensions and NIP-46 remote signers.** A browser
+  session can now authenticate against a key the page never holds. `SessionSigner` is the
+  seam, and all three implementations — in-page key, extension, remote signer — go through
+  one shared conformance suite, which is what makes them substitutable. The server is
+  untouched: a NIP-98 proof carries no trace of which signer produced it, so no adapter,
+  store, or wire format changed, and the JVM implementation interoperates unmodified.
+
+- **NIP-07 support in `@imani/nap-client-web`.** `detectNip07Provider()` polls up to a
+  second for a late-injecting extension and resolves the moment one appears — a page that
+  checks `window.nostr` once on load reports "no extension" to users who have one. It
+  returns `null` rather than throwing, because absence is an answer. `createNip07Signer()`
+  wraps a provider and maps refusals onto `Nip07Error` codes — `NOT_AVAILABLE`,
+  `DECLINED`, `TIMEOUT`, `PROVIDER_ERROR` — since "install an extension", "you clicked
+  reject", and "your extension is locked" want three different messages. Extensions phrase
+  refusals differently, so the classifier is a heuristic with `classifyError` as the
+  documented escape hatch.
+
+- **`@imani/nap-client-nip46`, a new opt-in package** — the only one in the workspace that
+  talks to relays, which is why it does not ship inside the browser client. It pairs in
+  both directions (`bunker://` pasted by the user, or a `nostrconnect://` URI you render as
+  a QR code), requests exactly `sign_event:27235`, and surfaces the signer's `auth_url` web
+  approval through `onAuthUrl` during pairing as well as on later requests. The pairing is
+  persisted encrypted whole — PBKDF2 (310 000, SHA-256) then AES-GCM — so a reload restores
+  it instead of re-prompting; `createWebCryptoSecretStore()` is the browser implementation.
+  Timeouts are per operation, sized to the fact that a remote signer is a human holding a
+  phone. The relay pool is owned only when the package created it: a caller-supplied pool is
+  never destroyed, and one this package opened is closed on `disconnect()` and on a pairing
+  that never establishes.
+
+- **`session.unlock()` for sessions that hold no key of their own.** `reunlock(passphrase)`
+  restores an evicted key, which NIP-07 and NIP-46 sessions do not have — so without this an
+  idle lock stranded them: `login()` refuses while locked, and `reunlock()` needs a
+  `keyStore` those signers have no reason to configure. It throws for a session with an
+  in-page key, where clearing the flag would report an unlocked session that cannot sign. It
+  broadcasts, and a receiving tab honours it only when key-free, for the same reason.
+
+### Changed
+
+- **`nostr-tools` floor raised to `^2.23.0`** across the packages that depend on it, for
+  `BunkerSigner.fromBunker`. Keep the app's copy deduped with this one — version skew
+  surfaces as confusing `verifyEvent` failures.
+
 ## [0.7.0] - 2026-08-04
 
 ### Added
@@ -356,7 +537,11 @@ The v2 package set: `nap-core`, `nap-server`, `nap-client-http`, `nap-client-web
 `nap-react`, `nap-adapter-express`, `nap-adapter-fastify`, and `nap-store-postgres`,
 with the ACL layer and the NAP v2 RFC.
 
-[Unreleased]: https://github.com/tcheeric/nap/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/tcheeric/nap/compare/v0.9.0...HEAD
+
+[0.9.0]: https://github.com/tcheeric/nap/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/tcheeric/nap/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/tcheeric/nap/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/tcheeric/nap/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/tcheeric/nap/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/tcheeric/nap/compare/v0.3.0...v0.4.0

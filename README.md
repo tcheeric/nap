@@ -7,7 +7,7 @@ and a role/permission ACL layer. Server, browser, and React packages in one npm 
 The protocol is specified in [docs/NAP-v2-RFC.md](docs/NAP-v2-RFC.md). `nap-java` is the JVM
 implementation of the same protocol; the two are wire-compatible and must stay that way.
 
-npm workspace, all packages on `0.6.0`.
+npm workspace, all packages on `0.8.0`.
 
 > **There is no build step.** Every package points `exports` and `types` at `./src/index.ts`,
 > so there is no `dist/` and nothing to compile — and these are **not npm-publishable as-is**.
@@ -20,7 +20,8 @@ npm workspace, all packages on `0.6.0`.
 | `@imani/nap-core` | Protocol types, hashing, base64/hex codecs, header parsing, NIP-98 completion validation. Runs in browser and server. |
 | `@imani/nap-server` | `createNapServer()` — challenge issuance, retry-safe completion verification, refresh rotation, ACL resolution, in-memory stores, rate limiter, metrics. |
 | `@imani/nap-client-http` | Request building for `/auth/init` and `/auth/complete`. |
-| `@imani/nap-client-web` | Browser session lifecycle: `createNapSession()`, NIP-07 signers, idle lock, re-unlock, cross-tab sync. |
+| `@imani/nap-client-web` | Browser session lifecycle: `createNapSession()`, NIP-07 detection and signers, identity guard, idle lock, re-unlock, cross-tab sync. |
+| `@imani/nap-client-nip46` | NIP-46 remote-signer (`bunker://` / `nostrconnect://`) `SessionSigner`, with encrypted reconnection. **Opt-in** — install it only if you want remote signers; it is the only package that talks to relays. |
 | `@imani/nap-react` | `NapProvider`, `useNapSession()`, `useReunlock()` over `nap-client-web`. |
 | `@imani/nap-adapter-express` | `createNapExpressRouter()`, guards, raw-body-safe JSON parser. |
 | `@imani/nap-adapter-fastify` | `napFastifyPlugin`, same surface for Fastify. |
