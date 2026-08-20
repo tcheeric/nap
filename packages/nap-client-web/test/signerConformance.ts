@@ -25,6 +25,12 @@ export interface SignerConformanceCase {
   rotateIdentity?(signer: SessionSigner): void | Promise<void>;
 }
 
+/** Enough of a KeyStore to reach the `'passphrase'` recovery path. */
+const stubKeyStore = {
+  loadKey: async () => '',
+  hasKey: async () => true,
+};
+
 function pubkeyOf(npub: string): string {
   const decoded = nip19.decode(npub);
   expect(decoded.type).toBe('npub');
@@ -136,6 +142,7 @@ export function runSignerConformance(testCase: SignerConformanceCase): void {
     if (testCase.keyFree) {
       it('holds no key in the page, yet still locks', async () => {
         const signer = await testCase.create();
+        const npub = await signer.getNpub();
 
         // Nothing in reach to evict, so it must not claim to be evictable.
         expect(isEvictableSigner(signer)).toBe(false);
@@ -143,8 +150,12 @@ export function runSignerConformance(testCase: SignerConformanceCase): void {
         const session = createNapSession({
           baseUrl: 'https://merchant.example.com',
           signer,
-          fetch: vi.fn<typeof fetch>(),
+          fetch: stubServer(npub, pubkeyOf(npub)),
         });
+
+        // Authenticated first: a lock on a session nobody logged into is a
+        // no-op, because `locked` gates the very login that would clear it.
+        await session.login();
 
         expect(() => session.lock()).not.toThrow();
         expect(session.isLocked()).toBe(true);
@@ -155,7 +166,8 @@ export function runSignerConformance(testCase: SignerConformanceCase): void {
 
       it('refuses to authenticate while locked', async () => {
         const signer = await testCase.create();
-        const fetchMock = vi.fn<typeof fetch>();
+        const npub = await signer.getNpub();
+        const fetchMock = stubServer(npub, pubkeyOf(npub));
 
         const session = createNapSession({
           baseUrl: 'https://merchant.example.com',
@@ -163,10 +175,117 @@ export function runSignerConformance(testCase: SignerConformanceCase): void {
           fetch: fetchMock,
         });
 
+        await session.login();
+        fetchMock.mockClear();
         session.lock();
 
         await expect(session.login()).rejects.toThrow(SessionLockedError);
         expect(fetchMock).not.toHaveBeenCalled();
+      });
+
+      it('unlocks without a passphrase, and says so before being asked', async () => {
+        const signer = await testCase.create();
+        const npub = await signer.getNpub();
+        const session = createNapSession({
+          baseUrl: 'https://merchant.example.com',
+          signer,
+          fetch: stubServer(npub, pubkeyOf(npub)),
+        });
+
+        // A UI has to know which unlock to render before the lock happens.
+        // Answering "passphrase" here dead-ends the user: reunlock() throws
+        // without a keyStore, and a key-free signer has no reason to have one.
+        expect(session.lockRecovery()).toBe('unlock');
+
+        await session.login();
+        session.lock();
+        expect(() => session.unlock()).not.toThrow();
+        expect(session.isLocked()).toBe(false);
+      });
+
+      it('ignores a keyStore wired for some other login mode', async () => {
+        // An app offering both "sign in with nsec" and "sign in with extension"
+        // passes one keyStore to createNapSession. Letting the store decide sent
+        // this signer to a passphrase modal for a key it never had and nothing
+        // ever enrolled — unsatisfiable. The signer decides; the store only
+        // breaks the tie for signers that actually hold a key here.
+        const session = createNapSession({
+          baseUrl: 'https://merchant.example.com',
+          signer: await testCase.create(),
+          fetch: vi.fn<typeof fetch>(),
+          keyStore: stubKeyStore,
+        });
+
+        expect(session.lockRecovery()).toBe('unlock');
+      });
+
+      it('auto-locks safely with no keyStore', async () => {
+        const signer = await testCase.create();
+
+        // The wiring guard is about evicted keys, so it must not catch a signer
+        // that has none — autoLock is the recommended setup for these.
+        expect(() =>
+          createNapSession({
+            baseUrl: 'https://merchant.example.com',
+            signer,
+            fetch: vi.fn<typeof fetch>(),
+            autoLock: { enabled: true, timeoutMs: 60_000 },
+          })
+        ).not.toThrow();
+      });
+    } else {
+      it('reports the recovery its keyStore can actually deliver', async () => {
+        const withoutStore = createNapSession({
+          baseUrl: 'https://merchant.example.com',
+          signer: await testCase.create(),
+          fetch: vi.fn<typeof fetch>(),
+        });
+
+        // No store means the lock zeroes the key with nothing able to restore
+        // it: not reunlock(), which has no store to read, and not unlock(),
+        // which would report a session that still cannot sign. Only a fresh
+        // signer and a new login will do, and the UI has to be told that.
+        expect(withoutStore.lockRecovery()).toBe('reauthenticate');
+
+        const withStore = createNapSession({
+          baseUrl: 'https://merchant.example.com',
+          signer: await testCase.create(),
+          fetch: vi.fn<typeof fetch>(),
+          keyStore: stubKeyStore,
+        });
+
+        expect(withStore.lockRecovery()).toBe('passphrase');
+
+        const signer = await testCase.create();
+        const npub = await signer.getNpub();
+        const live = createNapSession({
+          baseUrl: 'https://merchant.example.com',
+          signer,
+          fetch: stubServer(npub, pubkeyOf(npub)),
+          keyStore: stubKeyStore,
+        });
+
+        await live.login();
+        live.lock();
+        // There is a key to restore, so unlock() would clear the lock while
+        // leaving the key evicted — locked in every way that matters.
+        expect(() => live.unlock()).toThrow();
+      });
+
+      it('refuses autoLock without a keyStore at wiring time', async () => {
+        const signer = await testCase.create();
+
+        // Locking evicts the key and nothing can put it back: reunlock() throws
+        // for the missing store, unlock() throws for the held key. Failing here
+        // beats bricking on a timer minutes later.
+        expect(() =>
+          createNapSession({
+            baseUrl: 'https://merchant.example.com',
+            signer,
+            fetch: vi.fn<typeof fetch>(),
+            autoLock: { enabled: true, timeoutMs: 60_000 },
+          })
+        ).toThrow(/keyStore/);
       });
     }
   });

@@ -39,8 +39,9 @@ export type {
   SignerPreferenceOptions,
   SignerPreferenceStore,
 } from './signerPreference.js';
-export type { BroadcastMessageType } from './broadcast.js';
+export type { BroadcastMessageType, IdentityChangedDetail } from './broadcast.js';
 export type {
+  LockRecovery,
   NapClientOptions,
   NapSession,
   SessionSigner,

@@ -1,6 +1,27 @@
 import type { AuthSuccessResponse } from '@imani/nap-core';
 import type { EventSigner } from '@imani/nap-client-http';
+import type { IdentityChangedDetail } from './broadcast.js';
 import type { KeyStore } from './keyStore.js';
+
+/**
+ * How a locked session gets back to signing. The signer decides first, the
+ * `keyStore` only breaks the tie for signers that hold a key in the page.
+ *
+ * - `'unlock'` — nothing was evicted, because the key never was in the page.
+ *   NIP-07 and NIP-46. `unlock()` clears the lock; there is no passphrase
+ *   because there is nothing to decrypt. Per RFC §28.6(4) a caller-supplied
+ *   signer that holds a key *without* implementing `EvictableSigner` also lands
+ *   here — it owns its own eviction, and the session cannot tell it apart from
+ *   a NIP-07 one.
+ * - `'passphrase'` — an `EvictableSigner` whose key can be decrypted back out of
+ *   a configured `keyStore`. `reunlock(passphrase)`.
+ * - `'reauthenticate'` — an `EvictableSigner` with no `keyStore`. The lock zeroed
+ *   the key and nothing can restore it: not `unlock()`, which would report a
+ *   session that still cannot sign, and not `reunlock()`, which has no store to
+ *   read. The app must build a fresh signer and log in again. Locking still
+ *   *happens* — zeroing the key is the point — this only names the way back.
+ */
+export type LockRecovery = 'unlock' | 'passphrase' | 'reauthenticate';
 
 export interface SessionState {
   pubkey: string;
@@ -98,8 +119,17 @@ export interface NapClientOptions {
   };
   broadcast?: { enabled: boolean; channelName?: string };
   onSessionExpired?: () => void;
-  /** Called after a successful login() or a resume() that restored a session. */
-  onLogin?: () => void;
+  /**
+   * Called after a successful `login()` or a `resume()` that restored a session.
+   *
+   * `via` separates them because they prove different things. A `login()` is a
+   * fresh signature from the signer in the page; a `resume()` only proves the
+   * cookie is still valid, and the identity guard sends no `/auth/logout`, so a
+   * terminated identity's cookie outlives the session it belonged to. Anything
+   * that treats authentication as evidence about *who is signing* — clearing an
+   * identity-changed banner, most obviously — must act on `'login'` only.
+   */
+  onLogin?: (detail: { via: 'login' | 'resume' }) => void;
   onLock?: () => void;
   onUnlock?: () => void;
   /** Called when the shutdown timer fires (extended inactivity). */
@@ -109,7 +139,7 @@ export interface NapClientOptions {
    * Fires when a signer presents a different identity and the session is
    * terminated as a result. Prompt for a fresh login; do not retry silently.
    */
-  onIdentityChanged?: (detail: { expectedPubkey: string; actualPubkey: string }) => void;
+  onIdentityChanged?: (detail: IdentityChangedDetail) => void;
   keyStore?: KeyStore;
   fetch?: typeof fetch;
 }
@@ -117,7 +147,17 @@ export interface NapClientOptions {
 export interface NapSession {
   login(): Promise<AuthSuccessResponse>;
   logout(): Promise<void>;
-  resume(): Promise<AuthSuccessResponse | null>;
+  /**
+   * Restore a session from the cookie. Never invokes the signer, so it is
+   * prompt-free (FR-024) — which is also why it cannot tell that the signer
+   * changed while the page was away.
+   *
+   * Pass `verifyIdentity` when it might have: after a reload that rebuilt the
+   * signer from a remembered choice, above all. It costs one `getNpub()` and
+   * terminates the session with `IdentityMismatchError` rather than restoring
+   * the previous account's roles under a signer that is now somebody else.
+   */
+  resume(options?: { verifyIdentity?: boolean }): Promise<AuthSuccessResponse | null>;
   stepUp(): Promise<string>;
   isAuthenticated(): boolean;
   getSession(): SessionState | null;
@@ -130,6 +170,15 @@ export interface NapSession {
   /** Whether the session is in shutdown state (requires passphrase to resume). */
   isShutdown(): boolean;
   reunlock(passphrase: string): Promise<void>;
+  /**
+   * How a lock on this session clears. Constant for the session's lifetime.
+   *
+   * This replaced a `requiresPassphrase(): boolean`, which was a two-way answer
+   * to a three-way question and produced a bug in each arm it did not model: a
+   * key-free signer sent to a passphrase modal it can never satisfy, or an
+   * unrecoverable session sent to an `unlock()` that throws.
+   */
+  lockRecovery(): LockRecovery;
   /**
    * Clear a lock on a session whose signer holds the key — NIP-07, NIP-46.
    * There is nothing to restore, so there is no passphrase; the signer's own
