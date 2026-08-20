@@ -1,12 +1,20 @@
 {
   "name": "@imani/nap-adapter-fastify",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "type": "module",
   "exports": "./src/index.ts",
   "types": "./src/index.ts",
   "dependencies": {
-    "@imani/nap-server": "0.10.0",
+    "@imani/nap-server": "0.10.1",
     "cookie": "^1.0.2",
     "fastify": "^5.2.1"
+  },
+  "peerDependencies": {
+    "typescript": ">=5.7"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
   }
 }

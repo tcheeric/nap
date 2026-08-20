@@ -72,6 +72,16 @@ These have each cost real debugging time. Check them before changing the relevan
   (§13.5.8). The scheme is still `X-Forwarded-Proto` under Express's `trust proxy` unless the
   entry pins it. A pinned constant is still simplest for a single-host deployment. See §9.4 of
   the integration guide.
+- **The consumer's compiler compiles this repo, so the TypeScript floor is theirs, not ours.**
+  There is no build step, so a consumer on TypeScript 5.6 compiling
+  `webCryptoSecretStore.ts`'s `Uint8Array<ArrayBuffer>` gets `TS2315: Type 'Uint8Array' is
+  not generic` pointing into `node_modules` — a compiler floor that reads like a bug in NAP.
+  Local `npm run typecheck` can never catch it: this repo devDepends `typescript ^5.7.2`.
+  Every package declares `typescript >=5.7` as an *optional* peer dependency, so npm reports
+  it at install time; optional because the enforcement that matters is present-but-older,
+  and a non-optional peer would auto-install a compiler into consumers that pinned their own.
+  **Adopting newer TypeScript syntax raises that floor for every consumer** — it is a
+  breaking change wearing a syntax highlight, so bump the declared range with it.
 - **Dedupe `nostr-tools`.** Four packages depend on it. Version skew between the app's copy and
   NAP's surfaces as confusing `verifyEvent` failures.
 - **Every auth failure is an identical 401.** That is deliberate. Debugging is impossible

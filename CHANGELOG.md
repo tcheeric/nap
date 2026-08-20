@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 All packages in this workspace share a single version.
 
+## [0.10.1] - 2026-08-20
+
+No behaviour change. Declares a requirement that already existed and was only discoverable by
+hitting it.
+
+### Changed
+
+- **Every package declares `typescript >=5.7` as an optional peer dependency.** There is no
+  build step — `exports` and `types` point at `./src/index.ts` — so the *consumer's* compiler
+  compiles NAP's source, and since 0.9.0 that source has used the generic
+  `Uint8Array<ArrayBuffer>` (`webCryptoSecretStore.ts`, where WebCrypto refuses a
+  possibly-`SharedArrayBuffer`-backed view). TypeScript models that only from 5.7. Below it the
+  failure is `TS2315: Type 'Uint8Array' is not generic` pointing into `node_modules`, which
+  reads as a bug in NAP rather than a compiler floor, and this repo's own `npm run typecheck`
+  cannot catch it because it devDepends `typescript ^5.7.2`. npm now says so at install time.
+  Optional because the case worth failing on is present-but-older; a non-optional peer would
+  auto-install a compiler into consumers that pinned their own. README gains a Requirements
+  section.
+
 ## [0.10.0] - 2026-08-20
 
 Breaking, but pre-1.0, so a minor.
@@ -587,7 +606,8 @@ The v2 package set: `nap-core`, `nap-server`, `nap-client-http`, `nap-client-web
 `nap-react`, `nap-adapter-express`, `nap-adapter-fastify`, and `nap-store-postgres`,
 with the ACL layer and the NAP v2 RFC.
 
-[Unreleased]: https://github.com/tcheeric/nap/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/tcheeric/nap/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/tcheeric/nap/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/tcheeric/nap/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/tcheeric/nap/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/tcheeric/nap/compare/v0.7.0...v0.8.0
