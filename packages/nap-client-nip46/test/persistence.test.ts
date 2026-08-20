@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { generateSecretKey } from 'nostr-tools';
 import { bytesToHex } from '@imani/nap-core';
-import { createWebCryptoSecretStore } from '../src/webCryptoSecretStore.js';
+import { createWebCryptoSecretStore } from '@imani/nap-client-web';
 import {
   CONNECTION_RECORD_VERSION,
   loadConnection,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_PERMISSIONS, connectWithNostrConnect } from '../src/connection.js';
 import { toNip46Error } from '../src/errors.js';
-import { createWebCryptoSecretStore } from '../src/webCryptoSecretStore.js';
+import { createWebCryptoSecretStore } from '@imani/nap-client-web';
 import { FakeBunker } from './fakeBunker.js';
 
 const RELAY = 'wss://relay.example';

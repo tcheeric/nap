@@ -27,6 +27,18 @@ export { IdentityMismatchError, isEvictableSigner } from './types.js';
 export type { EvictableSigner } from './types.js';
 export type { KeyStore, KeyHolder } from './keyStore.js';
 export type { SecretStore } from './secretStore.js';
+export {
+  createWebCryptoKeyStore,
+  createWebCryptoSecretStore,
+} from './webCryptoSecretStore.js';
+export type { WebCryptoSecretStoreOptions } from './webCryptoSecretStore.js';
+export { createSignerPreferenceStore } from './signerPreference.js';
+export type {
+  SignerKind,
+  SignerPreference,
+  SignerPreferenceOptions,
+  SignerPreferenceStore,
+} from './signerPreference.js';
 export type { BroadcastMessageType } from './broadcast.js';
 export type {
   NapClientOptions,

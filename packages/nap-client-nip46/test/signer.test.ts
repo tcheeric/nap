@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { nip19 } from 'nostr-tools';
 import { createNip46Signer } from '../src/signer.js';
-import { createWebCryptoSecretStore } from '../src/webCryptoSecretStore.js';
+import { createWebCryptoSecretStore } from '@imani/nap-client-web';
 import { FakeBunker } from './fakeBunker.js';
 
 const RELAY = 'wss://relay.example';
