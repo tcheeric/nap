@@ -444,6 +444,29 @@ Challenges are single-use (status transitions from PENDING to ACTIVE atomically)
 
 Sessions are created server-side after NAP completion. The client never provides a session ID — it's always server-generated and set via `Set-Cookie`.
 
+### 5.6 Step-Up Is Blast Radius, Not Consent
+
+The transient key use in §2.8 is worth doing, but be precise about what the resulting token proves. It proves *key control at this moment*. It does not prove a human approved anything: NIP-98 carries no user-presence bit, so a remembered NIP-07 grant or a bunker with pre-granted permissions completes the entire step-up exchange with nobody watching.
+
+So `stepUp: true` on a permission stops a thief who holds only a stolen cookie, and does nothing about a hostile script in your own page, which can simply run the step-up itself. Use it to cap what a stolen session can reach. Do not build a UI that tells the user they authorised an operation because a step-up succeeded. See `docs/NAP-v2-RFC.md` §10.3.
+
+### 5.7 Code Injection — The Mitigations Worth Having
+
+`docs/NAP-v2-RFC.md` §28.5 is blunt that a hostile script on your origin defeats every key-custody measure, because your own code must be able to decrypt the key. That is a ceiling, not a reason to skip the layers underneath it. The standard Relying Party guidance from W3C WebAuthn §13.5.8 transfers directly:
+
+- **Ship a Content Security Policy** on any origin that can reach the signer. Its job is to make injected script fail to execute at all, which is the only point at which any of this is still preventable.
+- **Minimise third-party script** on those origins. Every analytics or widget tag is same-origin code with the same access to an unlocked key that your own bundle has.
+- **Never serve user-submitted content from a host inside the credential's scope.** A `usercontent.example.org` that can be reached from `example.org`'s script context is a foothold in the same trust boundary; keep it on a separate registrable domain.
+
+### 5.8 Clickjacking Applies Asymmetrically
+
+Overlay attacks land differently depending on which signer the user has:
+
+- A NIP-07 extension prompt or a NIP-46 bunker prompt is browser or OS chrome. Your page cannot draw over it, and neither can an attacker framing your page.
+- The passphrase prompt for an in-page key — the `lockRecovery() === 'passphrase'` path — is your own DOM. It can be framed, overlaid, and mimicked like any other form.
+
+If you support the in-page key path, send `X-Frame-Options: DENY` or a CSP `frame-ancestors 'none'` on the pages that host the passphrase prompt. The extension and bunker paths do not need it for this reason (they may still need it for others).
+
 ---
 
 ## 6. Testing Recommendations

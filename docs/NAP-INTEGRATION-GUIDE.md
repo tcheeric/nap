@@ -716,6 +716,16 @@ step-up: `PermissionDefinition.stepUp` is now enforced by `requirePermission()`
 when you pass the registry, rather than needing `requireStepUp()` remembered at
 every call site. See §6.1 for how a client obtains the token.
 
+**`stepUp: true` is not a consent gate.** It proves key control at this moment, not
+that a human approved the operation. NIP-98 carries no user-presence bit, so a
+signer with a remembered NIP-07 grant, or a bunker with pre-granted permissions,
+completes the whole step-up exchange silently. What it buys you is that a thief
+holding only a stolen cookie or bearer token cannot re-run it — they have no signer
+access. What it does not buy you is protection from a hostile page that already has
+signer access, which just calls `stepUp()` itself. Mark destructive permissions
+`stepUp: true` to cap blast radius, and do not tell users it means they approved
+something. RFC §7.1 and §10.3 spell this out.
+
 ---
 
 ## 4. TypeScript package map
@@ -1263,6 +1273,12 @@ The `NapSession` surface (`packages/nap-client-web/src/types.ts:38`):
 > A step-up is a full re-authentication, not a token refresh: it costs a fresh
 > signature from the user's key. That is the point — it is what makes the token
 > evidence of *present* key control rather than of a login fifteen minutes ago.
+>
+> **Present key control is all it is evidence of.** It does not prove a human was
+> there. NIP-98 has no user-presence bit, so with a remembered NIP-07 grant or a
+> pre-permissioned bunker the entire exchange runs without a prompt. Treat
+> `stepUp: true` as a limit on what a stolen token can reach, not as consent — see
+> §3.3 and RFC §10.3.
 
 ### 6.2 Signers
 
@@ -1435,6 +1451,11 @@ Ask `session.lockRecovery()` rather than inferring it. It answers `'unlock'`,
 is the only way a UI can pick the right unlock before a lock happens. Guessing
 wrong dead-ends the user: a passphrase field is unusable for NIP-07/NIP-46, and
 `unlock()` on a session holding its own key throws.
+
+One security note on the `'passphrase'` arm specifically: it is the only recovery
+path whose prompt is **your own DOM**. An extension or bunker prompt is browser or
+OS chrome and cannot be overlaid or mimicked by a framing attacker; a passphrase
+field can. Serve the pages that render it with `frame-ancestors 'none'`.
 
 ### 6.3 Idle lock, shutdown, and cross-tab sync
 
@@ -2707,9 +2728,17 @@ and `details.retry === true` gives you `challenge_retry_hit_total`.
 - **CSRF.** `SameSite=Lax` is the only defence in the box. It covers POST/PUT/
   DELETE; if you have state-changing GETs, add a CSRF token.
 - **Sender constraint.** Bearer tokens are bearer tokens. The RFC explicitly
-  rules out `User-Agent`+IP binding (`docs/NAP-v2-RFC.md:441`) and lists
-  sender-constrained tokens as an out-of-scope extension (`:601`). Short TTL is
-  the mitigation.
+  rules out `User-Agent`+IP binding (§14.3) and lists sender-constrained tokens as
+  an out-of-scope extension (§22). Short TTL is the mitigation.
+- **Phishing / origin substitution.** The signer signs whatever `u` tag the calling
+  page hands it, so a hostile origin can obtain a proof addressed correctly to *your*
+  server and redeem it from its own backend. Audience binding stops forwarding, not
+  acquisition. There is no server-side fix — see §9.8.
+- **User intent.** Nothing in a completion proof says a human was involved, so
+  `stepUp: true` caps a stolen token and does not gate consent (§3.3).
+- **Clone detection and account recovery.** A Nostr key is meant to be copied, so a
+  stolen copy is indistinguishable from the original, forever; and the npub *is* the
+  account, so key loss is terminal. Neither has a fix at this layer — RFC §7.1.
 - **A stolen nsec is total compromise.** NAP shortens the window in which the
   key is in browser memory (`docs/NAP-IMPLEMENTATION-BEST-PRACTICES.md:420`) but
   cannot revoke a key. Push users toward NIP-07 or NIP-46 so the key never
@@ -2728,6 +2757,52 @@ and `details.retry === true` gives you `challenge_retry_hit_total`.
   immutable JS string that cannot be zeroed and lingers until garbage
   collection; read it straight from your `KeyStore` rather than parking it in
   application state.
+
+---
+
+### 9.8 Phishing resistance is a signer property, not a server one
+
+This is the sharpest limit in the protocol, and unlike §9.4 it is not something you
+can wire correctly on the server.
+
+`evil.com` calls `POST /auth/init` with the victim's npub — the anti-enumeration
+behaviour in §2.2 guarantees a challenge comes back — has its page ask the victim's
+signer for a kind-27235 event with `u = https://api.yourapp.com/auth/complete`, and
+posts it to you from its own backend. Every check in §2.4 passes, because every check
+is about the event, and the event is correct. You issue a session for the victim.
+
+The sharper version is not even phishing. A NIP-07 grant is scoped by (origin, kind),
+never by audience. Any site the user has ever ticked "remember" on for kind 27235 —
+for its own perfectly legitimate NIP-98 API — can silently mint a login proof for
+every NAP server in existence, with no prompt at all.
+
+Things that do not work, so you do not spend an afternoon on them:
+
+| Idea | Why it fails |
+|---|---|
+| An `origin` tag on the event | The page composes the event, so the page writes the tag. |
+| `Origin` allowlist / strict CORS on `/auth/complete` | Pushes the attacker server-side, where the header is a string it types. |
+| Cookie planted at `/auth/init`, demanded at `/auth/complete` | The attacker runs both legs from its own cookie jar. |
+| DPoP-style binding to a non-extractable WebCrypto key | The attacker generates and holds the keypair. |
+| IP / device binding | Init, complete and use all happen on attacker infrastructure. |
+
+**What does work is a signer that refuses.** A NIP-46 bunker runs in a process the
+hostile page does not control, and `nostrconnect://` pairing already tells it which
+app it is paired with. A bunker that refuses to sign a kind-27235 event whose `u`
+host is outside its policy is exactly the refusal WebAuthn gets from the
+authenticator, in the only place it can live. That is bunker configuration — no
+protocol change on either side.
+
+So, for anything worth attacking: **push users to NIP-46 with an audience-enforcing
+bunker, and treat NIP-07 as the convenient weak option.** If you ship your own
+extension to a controlled fleet, enforce `u`-host-equals-calling-origin there and you
+get the same property.
+
+W3C WebAuthn Level 3 §13.4.1 describes this exact trust model — a caller supplying
+the origin instead of the user agent deriving it from the execution context — and
+permits it only as a per-origin, explicitly configured degradation carrying a
+user-visible indication that a proxied operation is in progress. NIP-07 and NIP-46
+give it to every origin by default, with no indication.
 
 ---
 
