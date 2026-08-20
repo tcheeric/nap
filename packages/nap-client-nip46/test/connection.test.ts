@@ -140,6 +140,42 @@ describe('nostrconnect:// pairing', () => {
     ).rejects.toMatchObject({ code: 'SECRET_MISMATCH' });
   });
 
+  it('classifies a decline as DECLINED rather than SECRET_MISMATCH', async () => {
+    const bunker = new FakeBunker();
+
+    await expect(
+      connectWithNostrConnect({
+        ...nostrConnectOptions(bunker),
+        connectTimeoutMs: 60,
+        onUri: (uri) => {
+          const { clientPubkey } = parseNostrConnect(uri);
+          bunker.declineNostrConnect(clientPubkey, 'user rejected');
+        },
+      })
+    ).rejects.toMatchObject({ code: 'DECLINED', message: 'user rejected' });
+  });
+
+  it('does not let an unauthenticated error abort a pairing that then succeeds', async () => {
+    const bunker = new FakeBunker();
+
+    // The client pubkey is public — it is in the #p filter every relay sees and
+    // in the URI the user scans — and NIP-44 conversation keys are ECDH, so any
+    // party can send us something that decrypts. Settling on {error} therefore
+    // handed every relay operator a kill switch on every pairing: reject, close
+    // the subscription, and the real signer's ack lands on nothing.
+    await expect(
+      connectWithNostrConnect({
+        ...nostrConnectOptions(bunker),
+        connectTimeoutMs: 5_000,
+        onUri: (uri) => {
+          const { clientPubkey, secret } = parseNostrConnect(uri);
+          bunker.declineNostrConnect(clientPubkey, 'denied by an impostor');
+          bunker.announceNostrConnect(clientPubkey, secret);
+        },
+      })
+    ).resolves.toBeTruthy();
+  });
+
   it('times out when no signer answers', async () => {
     const bunker = new FakeBunker();
 

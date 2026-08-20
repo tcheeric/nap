@@ -152,6 +152,11 @@ export class FakeBunker {
     this.emit(clientPubkey, { id: 'nostrconnect', result: 'auth_url', error: url });
   }
 
+  /** The user tapped Reject: an error with no result, addressed to us. */
+  declineNostrConnect(clientPubkey: string, reason = 'user rejected'): void {
+    this.emit(clientPubkey, { id: 'nostrconnect', error: reason });
+  }
+
   private handleRequest(event: Event): void {
     const conversationKey = nip44.getConversationKey(this.secretKey, event.pubkey);
     const request = JSON.parse(nip44.decrypt(event.content, conversationKey)) as {

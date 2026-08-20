@@ -734,8 +734,8 @@ against a `tsc`-emitted app will not resolve them as-is.
 | **`@imani/nap-adapter-fastify`** | Same surface as the Express adapter, as a Fastify 5 plugin. | `napFastifyPlugin`, `permissionsFastifyPlugin`, `createNapFastifyInitHandler`, `createNapFastifyCompleteHandler`, `requirePermission`, `requireStepUp`, `validatePermissions`, `resetPermissionValidationState`, `writeNapCookieSuccess`, `createRequestDerivedBaseUrlResolver`; types `NapFastifyOptions`, `NapFastifyGuardOptions` | `@imani/nap-server`, `fastify ^5.2.1`, `cookie ^1.0.2` | Fastify backends. |
 | **`@imani/nap-store-postgres`** | Postgres-backed implementations of the three store interfaces, with `redeem()` done as a conditional `UPDATE` for cross-instance atomicity. | `PostgresChallengeStore`, `PostgresSessionStore`, `PostgresAclStore` | `@imani/nap-core`, `@imani/nap-server`, `pg ^8.13.1` | Any deployment with more than one server process. The in-memory stores are single-process only. |
 | **`@imani/nap-client-http`** | Builds the completion request. Runtime-agnostic (no DOM, no Node built-ins beyond what `nostr-tools` needs). | `buildAuthCompleteRequest`, `serializeAuthCompleteBody`, `createPrivateKeySigner`; types `EventSigner`, `BuildAuthCompleteRequestInput`, `BuiltAuthCompleteRequest` | `@imani/nap-core`, `nostr-tools` | Server-to-server clients, CLI tools, tests. In a browser you get this transitively via `nap-client-web`. |
-| **`@imani/nap-client-web`** | Browser session manager: signer abstraction, in-memory token holding, cross-tab broadcast, idle lock, re-unlock. | `createNapSession`, `createNip07Signer`, `createPrivateKeySessionSigner`, `reunlock`, `ReunlockError`, `SessionLockedError`; types `NapSession`, `NapClientOptions`, `SessionSigner`, `SessionState`, `KeyStore` | `@imani/nap-client-http`, `@imani/nap-core`, `nostr-tools` | Any browser app. Framework-independent — usable from Vue/Svelte/vanilla, not just React. |
-| **`@imani/nap-react`** | Thin React binding over `nap-client-web`. | `NapProvider`, `useNapSession`, `useNapCallbacks`, `useReunlock`, `ReunlockCancelledError`; types `NapProviderProps`, `NapSessionState`, `UseReunlockReturn` | `@imani/nap-client-web`; peer `react >=18` | React apps. Everything here is ~250 lines over `createNapSession()` — skip it if you already have your own state layer. |
+| **`@imani/nap-client-web`** | Browser session manager: signer abstraction, in-memory token holding, cross-tab broadcast, idle lock, re-unlock. | `createNapSession`, `createNip07Signer`, `createPrivateKeySessionSigner`, `detectNip07Provider`, `reunlock`, `createWebCryptoKeyStore`, `createWebCryptoSecretStore`, `createSignerPreferenceStore`, `ReunlockError`, `SessionLockedError`, `IdentityMismatchError`, `isEvictableSigner`; types `NapSession`, `NapClientOptions`, `SessionSigner`, `SessionState`, `KeyStore`, `SecretStore`, `EvictableSigner`, `IdentityChangedDetail`, `SignerPreference` | `@imani/nap-client-http`, `@imani/nap-core`, `nostr-tools` | Any browser app. Framework-independent — usable from Vue/Svelte/vanilla, not just React. |
+| **`@imani/nap-react`** | Thin React binding over `nap-client-web`. | `NapProvider`, `useNapSession`, `useNapCallbacks`, `useReunlock`, `useNip07`, `useSignerPreference`, `useStoredConnection`, `acquireSigningAccess`, `ReunlockCancelledError`; types `NapProviderProps`, `NapSessionState`, `UseReunlockReturn`, `SigningAccessDeps`, `Nip07Detection`, `StoredConnectionSource` | `@imani/nap-client-web`; peer `react >=18` | React apps. Skip it if you already have your own state layer, but reuse `acquireSigningAccess` if you do. Deliberately has **no** dependency on `nap-client-nip46`: `useStoredConnection` takes the restore function instead of importing it. |
 
 ### Dependency shape
 
@@ -1220,7 +1220,7 @@ The `NapSession` surface (`packages/nap-client-web/src/types.ts:38`):
 |---|---|---|
 | `login()` | Full init → sign → complete. Returns `AuthSuccessResponse`. | `POST /auth/init`, `POST /auth/complete` |
 | `logout()` | Clears local state, fires `onLogout`, broadcasts to other tabs. | `POST /auth/logout` |
-| `resume()` | Rehydrate from an existing cookie on page load. `null` on 401. Fires `onLogin` when it restores a session. | `GET /auth/session` |
+| `resume({verifyIdentity?})` | Rehydrate from an existing cookie on page load. `null` on 401. Fires `onLogin({via:'resume'})` when it restores a session; leaves `locked` untouched. `verifyIdentity` costs one `getNpub()` and terminates on a mismatch — pass it whenever the signer was rebuilt rather than carried over. | `GET /auth/session` |
 | `stepUp()` | Re-auth and return a step-up token. | `POST /auth/complete` with `{"step_up": true}` — see below |
 | `isAuthenticated()` / `getSession()` / `hasPermission(k)` / `hasRole(k)` | Local reads of the cached `SessionState`. | — |
 | `lock()` / `isLocked()` / `shutdown()` / `isShutdown()` | Idle-lock state machine. Zeroes the key on an `EvictableSigner` (§6.3). | — |
@@ -1415,12 +1415,26 @@ server-side session and its cookie survive — and a later `resume()` would adop
 them. That second check is a backstop for a signer whose `getNpub()` and actual
 signing key disagree, not a way to prevent the new session from existing.
 
+A surviving cookie is exactly why `resume({ verifyIdentity: true })` exists. The
+cookie outlives both the terminated session and the page itself, so a plain
+`resume()` — which never consults the signer, by design — will restore whichever
+identity that cookie belongs to, however long ago the signer stopped being that
+person. Pass the flag on any path where the signer was rebuilt rather than
+carried over, a reload above all; it terminates through the same
+`terminateForIdentity` as the login guard.
+
 **Locking a key-free signer.** `isEvictableSigner()` is false for NIP-07 and
 NIP-46 — there is nothing in the page to evict — but `lock()` still locks the
 session, and a locked session refuses to authenticate. Call `unlock()` to clear
 it: there is no key to restore and therefore no passphrase, and the signer's own
 prompt on the next signature is the re-authorization. It throws for a session
 that holds its own key — that one needs `reunlock()`.
+
+Ask `session.lockRecovery()` rather than inferring it. It answers `'unlock'`,
+`'passphrase'` or `'reauthenticate'`, is constant for the session's lifetime, and
+is the only way a UI can pick the right unlock before a lock happens. Guessing
+wrong dead-ends the user: a passphrase field is unusable for NIP-07/NIP-46, and
+`unlock()` on a session holding its own key throws.
 
 ### 6.3 Idle lock, shutdown, and cross-tab sync
 
@@ -1493,8 +1507,8 @@ takes no passphrase and is the only way out of a lock for those signers.
 ### 6.4 React
 
 `@imani/nap-react` is a thin binding. `NapProvider` takes an already-constructed
-`NapSession` and mirrors three booleans into React state
-(`packages/nap-react/src/NapProvider.tsx:35`):
+`NapSession` and mirrors its booleans into React state
+(`NapProvider` in `packages/nap-react/src/NapProvider.tsx`):
 
 ```tsx
 import { useMemo, useEffect } from 'react';
@@ -1502,7 +1516,7 @@ import { createNapSession, createNip07Signer } from '@imani/nap-client-web';
 import { NapProvider, useNapCallbacks, useNapSession } from '@imani/nap-react';
 
 function Root() {
-  const [, callbacks] = useNapCallbacks();
+  const [napState, callbacks] = useNapCallbacks();
 
   const session = useMemo(
     () => createNapSession({
@@ -1517,7 +1531,7 @@ function Root() {
   useEffect(() => () => session.destroy(), [session]);
 
   return (
-    <NapProvider session={session}>
+    <NapProvider session={session} identityChange={napState.identityChange}>
       <App />
     </NapProvider>
   );
@@ -1534,31 +1548,137 @@ function LoginButton() {
 ```
 
 `useNapSession()` throws if used outside a `NapProvider`
-(`NapProvider.tsx:81`), so no silent-null handling is needed.
+(`useNapSession` in `NapProvider.tsx`), so no silent-null handling is needed.
 
-Two implementation details you should know about:
+Three implementation details you should know about:
 
 1. **`NapProvider` polls.** It runs `setInterval(sync, 500)` plus a
-   `visibilitychange` listener (`NapProvider.tsx:50`) to catch imperative
+   `visibilitychange` listener (the sync effect in `NapProvider.tsx`) to catch imperative
    mutations that bypass the callbacks. A 500 ms interval per provider is cheap
    but not free, and it means up to half a second of staleness after
    `session.lock()`.
-2. **`onLogin` fires on `login()` and on a `resume()` that restores a session.**
-   The hook returns `{ onLock, onUnlock, onShutdown, onLogout, onLogin }`
-   (`NapProvider.tsx:139`) and `NapClientOptions` accepts all five, so spreading
+2. **`onLogin` fires on `login()` and on a `resume()` that restores a session,
+   and its `via` argument separates them.** A `login()` is a fresh signature; a
+   `resume()` only proves a cookie is still valid, and the identity guard sends
+   no `/auth/logout`, so a terminated identity's cookie outlives its session.
+   Anything treating authentication as evidence about *who is signing* — clearing
+   an identity-changed banner above all — must act on `via === 'login'` only.
+   `NapClientOptions` accepts every callback the hook returns, so spreading
    `...callbacks` into `createNapSession()` wires the tuple's `isAuthenticated`
    correctly. A `resume()` that finds no session does **not** fire it — that path
    calls `onSessionExpired` instead. Either source of truth works:
    `useNapSession().isAuthenticated` reads through `session.isAuthenticated()` on
    the poll, while the `useNapCallbacks()` tuple is event-driven and has no
    polling latency.
+3. **`identityChange` is the one thing polling cannot recover, and it must be
+   threaded in by hand.** `terminateForIdentity` (in `session.ts`) nulls the
+   session, so from outside it is indistinguishable from a logout — yet the
+   correct response is the opposite of a logout's (prompt a fresh login, never
+   retry silently). Spread `...callbacks` rather than listing them: naming a
+   subset silently drops `onIdentityChanged`, and the guard becomes invisible to
+   the UI. Pass `napState.identityChange` to the provider to surface it on
+   `useNapSession()`.
 
 `useReunlock()` (`packages/nap-react/src/useReunlock.ts`) manages a modal
-lifecycle around `session.reunlock()`. Its `withSigningGuard(fn)` wraps an async
-action so a locked session prompts before proceeding, and rejects with
+lifecycle around unlocking. Its `withSigningGuard(fn)` wraps an async action so a
+locked session regains signing access before proceeding, and rejects with
 `ReunlockCancelledError` carrying a `reason` of `user_cancelled`,
-`session_expired`, `logout`, or `unmounted`
-(`packages/nap-react/src/types.ts:37`) — catch it to stop spinners silently.
+`session_expired`, `logout`, `unmounted`, `identity_changed`, or `shutdown`
+(`packages/nap-react/src/types.ts`) — catch it to stop spinners silently.
+
+`useNapSession()` also surfaces `roles`, `permissions`, `hasRole` and
+`hasPermission`, kept in sync with the session body so a render can branch on
+them. **These are UI affordance and nothing more** — the authorization boundary
+is `requirePermission` / `requireRole` / `requireSession` in the adapters (§3.4),
+and a check that exists only in the browser does not exist. Prefer the hook's
+`hasPermission` over `session.hasPermission()`: the method reads the session
+closure directly, so it answers correctly but never triggers a render, which
+looks right until the grants change. Both are the login-time snapshot, matching
+the guards' own default.
+
+**Which unlock a lock needs depends on the signer, and getting it wrong strands
+the user.** `session.lockRecovery()` answers it, and it is surfaced on
+`useNapSession()`:
+
+| Setup | `lockRecovery()` | Way out of a lock |
+| --- | --- | --- |
+| NIP-07 / NIP-46 | `'unlock'` | `unlock()` — nothing was evicted, so there is nothing to restore |
+| In-page key + `keyStore` | `'passphrase'` | `reunlock(passphrase)` — decrypt the key back out of the store |
+| In-page key, no `keyStore` | `'reauthenticate'` | build a fresh signer and `login()` — nothing can restore the zeroed key |
+
+**The signer decides; the `keyStore` only breaks the tie for signers that hold a
+key here.** An app offering both nsec and extension login passes one store to
+`createNapSession`, and letting the store decide would drag its extension users
+into a passphrase prompt for a key they never had and nothing ever enrolled.
+Per §28.6(4) a caller-supplied signer holding a key *without* implementing
+`EvictableSigner` reports `'unlock'` as well — it owns its own eviction, and the
+session cannot tell it apart from a NIP-07 one.
+
+This was a `requiresPassphrase(): boolean` for one release. A two-way answer to a
+three-way question produced a bug in each arm it did not model, in both
+directions, which is why it is an enum now.
+
+`withSigningGuard` routes this for you via `acquireSigningAccess`
+(`packages/nap-react/src/signingAccess.ts`), which is exported separately for
+state layers that are not `nap-react`. Any unlock UI you write yourself —
+a shutdown overlay in particular — must branch on `lockRecovery`.
+
+Four related refusals, all deliberate.
+
+1. **`autoLock` that nothing could clear is refused at construction.** An
+   `EvictableSigner` with no `keyStore` has its key zeroed by the lock and
+   nowhere to get it back from, and a timer doing that minutes after a clean
+   return is a wiring error. `lock()` and `shutdown()` deliberately do *not*
+   refuse: zeroing the key is the point of §28.6, and refusing a user's explicit
+   lock would leave a live nsec in the page. `lockRecovery()` reports
+   `'reauthenticate'` so the UI can say so.
+2. **Locking a session nobody logged into is a no-op.** The idle timer starts at
+   construction, so a login page left open past `timeoutMs` would lock itself,
+   and `locked` gates `authenticate()` — the lock would refuse the login that
+   clears it. Same after `logout()` and `terminateForIdentity()`, which leave the
+   timer running and require a fresh login.
+3. **`resume()` does not clear a lock.** Restoring the server session says
+   nothing about the key. Clearing `locked` reported an unlocked session whose
+   key was still evicted, which skipped the passphrase prompt and then failed the
+   signature; for a key-free session it was an unlock with no `onUnlock` and no
+   broadcast, leaving sibling tabs locked.
+4. **`acquireSigningAccess` never unlocks on the user's behalf.** It refuses
+   with `locked`, `shutdown` or `reauthenticate_required` and leaves the gesture
+   to the UI. `unlock()` broadcasts, so a background save calling it would clear
+   the lock — and dismiss the shutdown overlay — in every tab with nobody
+   present. The earlier version auto-unlocked key-free sessions on the theory
+   that the signer re-prompts; a NIP-46 bunker with pre-granted permissions does
+   not, so it signed silently.
+
+`nap-react` intentionally exposes no NIP-46 connection status: that would require
+depending on `@imani/nap-client-nip46` and would break its opt-in isolation. Read
+`Nip46Signer.getStatus()` off the signer you already hold. `useStoredConnection`
+handles the restore flow without that dependency by taking `{ has, restore }`
+from the caller rather than importing either.
+
+#### What a reload keeps, and what it does not
+
+The session survives: the id is an `HttpOnly` cookie the browser re-attaches
+unasked, and `resume()` never invokes the signer, so returning to a live session
+costs no prompt (FR-024). The **signer does not** — it lived in a closure that is
+gone, and `createNapSession()` needs one before `resume()` can be called at all.
+
+That leaves one question for the reloaded page: which signer to rebuild.
+`createSignerPreferenceStore()` (or `useSignerPreference()` in React) answers it
+with a `'nip07' | 'nip46' | 'key'` discriminator plus the npub — public values,
+never key material, since RFC §1181 forbids plaintext key material at rest in
+`localStorage` as much as anywhere else. Its reads and writes never throw:
+storage can be absent under SSR, denied in a partitioned frame, or historically
+throw on write in Safari's private mode, and all three mean "ask which signer".
+
+Rebuilding then costs what the signer costs. NIP-07 is free once
+`detectNip07Provider()` (or `useNip07()`) sees `window.nostr`. NIP-46 and an
+in-page key both need a passphrase, because both have an encrypted record to
+decrypt — `SecretStore` and `KeyStore` respectively, and
+`createWebCryptoKeyStore()` is the reference implementation of the latter.
+Record the preference only *after* `login()` succeeds, and clear it on logout and
+on an identity change; a preference pointing at an account the user has left is a
+login that will trip the identity guard.
 
 ### 6.5 Carrying the session on your own API calls
 
@@ -2919,9 +3039,13 @@ Closed in 0.4.0, kept here so the diff against an older deployment is visible:
   (`tsc --noEmit`) (`package.json:9`). There is no `build`.
 - **Express is pinned to v4** (`express ^4.21.2`) while `@types/express` is `^5`.
   If your app is on Express 5, expect type friction.
-- **`nostr-tools ^2.10.4`** is a peer-in-practice across four packages. Version
-  skew between your app's copy and NAP's will produce confusing `verifyEvent`
-  failures; dedupe it.
+- **`nostr-tools ^2.23.0`** is a peer-in-practice across five packages
+  (`nap-core`, `nap-client-http`, `nap-client-web`, `nap-client-nip46`,
+  `nap-server`). The floor is `^2.23.0` rather than the older `^2.10.4` because
+  `BunkerSigner.fromBunker` / `fromURI` do not exist below it — pin lower and
+  `createNip46Signer().connect()` fails at runtime with
+  `BunkerSigner.fromBunker is not a function`. Version skew between your app's
+  copy and NAP's will also produce confusing `verifyEvent` failures; dedupe it.
 
 ### 11.5 Known roadmap
 
@@ -2996,7 +3120,7 @@ auditLogger: {
 | **401 on every request despite a successful login (cookie mode)** | Missing `credentials: 'include'` on your API calls, or a CORS config without `Access-Control-Allow-Credentials: true` and explicit origins, or `secure: true` on a plain-HTTP dev origin. |
 | **Login works, page reload logs you out** | `resume()` is not being called on mount, or `/auth/session` is not mounted, or the cookie is not being sent — check `credentials: 'include'` and the cookie's `SameSite`/`path` (§6.1). |
 | **Logout returns 204 but the browser keeps the cookie** | The clear does not match the attributes the cookie was set with — `path` and `domain` must be identical or the browser treats it as a different cookie. The adapters copy them from `writeNapCookieSuccess`, so this means either a hand-rolled `writeSuccess`, or a `clearCookieOptions` that overrides the copy with something narrower (§6.1). |
-| **React: `useNapSession must be used within a <NapProvider>`** | Self-explanatory (`packages/nap-react/src/NapProvider.tsx:81`). |
+| **React: `useNapSession must be used within a <NapProvider>`** | Self-explanatory (`useNapSession` in `packages/nap-react/src/NapProvider.tsx`). |
 | **Login fails intermittently under load / with two server processes** | `InMemoryChallengeStore` is per-process. Nothing is shared. Move to Postgres (§5.4). |
 | **`nap_challenges` growing without bound** | Nobody calls `markExpired()`, and it only flips `state` anyway — it never deletes. Add a sweeper (§5.4). |
 

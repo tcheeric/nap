@@ -251,6 +251,8 @@ function waitForNostrConnect(input: {
 
   return new Promise<string>((resolve, reject) => {
     let sawWrongSecret = false;
+    /** An unauthenticated `{error}` addressed to us. A hint, not a verdict. */
+    let declineReason: string | null = null;
     let settled = false;
     let timer: ReturnType<typeof setTimeout>;
     // Declared before `settle` closes over it: a pool that delivers an event
@@ -286,6 +288,23 @@ function waitForNostrConnect(input: {
             if (payload.error) {
               input.onAuthUrl?.(payload.error);
             }
+          } else if (payload.result === undefined && payload.error !== undefined) {
+            // Looks like a decline — but recorded, never settled on.
+            //
+            // Decrypting proves only that someone encrypted *to* our pubkey, and
+            // that pubkey is public: it is in the `#p` filter every relay sees
+            // and in the URI the user scans. NIP-44 conversation keys are ECDH,
+            // so any party holding it can produce a message we decrypt. Only the
+            // `result === input.secret` branch authenticates anything, because
+            // only someone who read the URI knows the secret.
+            //
+            // Aborting here would therefore let any relay operator kill any
+            // pairing by publishing `{error}`: we would close the subscription
+            // and reject before the real signer's ack arrived. Keeping it as a
+            // hint costs a genuine decline nothing but the wait it was already
+            // going to have, and downgrades an attacker to changing which error
+            // message a failing pairing ends with.
+            declineReason ??= payload.error;
           } else {
             sawWrongSecret = true;
           }
@@ -304,14 +323,21 @@ function waitForNostrConnect(input: {
     }
 
     timer = setTimeout(() => {
+      // Classification only, once nothing better has arrived. A decline is the
+      // most specific answer and the most likely explanation for the silence
+      // that followed it, so it wins — but it can only ever change the error on
+      // a pairing that was already going to fail, never abort a live one. See
+      // the DECLINED branch above for why it is not trusted to settle.
       settle(() =>
         reject(
-          sawWrongSecret
-            ? new Nip46Error(
-                'SECRET_MISMATCH',
-                'a signer answered the connection URI without the matching secret'
-              )
-            : new Nip46Error('TIMEOUT', 'no signer answered the connection URI in time')
+          declineReason !== null
+            ? new Nip46Error('DECLINED', declineReason)
+            : sawWrongSecret
+              ? new Nip46Error(
+                  'SECRET_MISMATCH',
+                  'a signer answered the connection URI without the matching secret'
+                )
+              : new Nip46Error('TIMEOUT', 'no signer answered the connection URI in time')
         )
       );
     }, input.timeoutMs);

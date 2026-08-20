@@ -42,10 +42,9 @@ export function createBroadcastBus(
 
   const channel = new BroadcastChannel(channelName);
   channel.addEventListener('message', (event: MessageEvent<unknown>) => {
-    // Bare strings are what pre-`identity-changed` tabs post. Reading them keeps
-    // old→new working; new→old does not, and cannot without posting both shapes
-    // — which would make every new tab handle its own messages twice. So a tab
-    // still running the old build misses a logout broadcast until it reloads.
+    // Bare strings are the pre-`identity-changed` wire format, and still what
+    // `publish` sends for every detail-free type — so this branch carries both
+    // old→new and new→new traffic. See `publish` for why it is not the object.
     if (isMessageType(event.data)) {
       onMessage(event.data);
       return;
@@ -59,7 +58,16 @@ export function createBroadcastBus(
 
   return {
     publish(type, detail) {
-      channel.postMessage({ type, detail });
+      // The bare string is the pre-0.8 wire format, and both builds read it —
+      // the listener above still accepts it. Only `identity-changed` carries a
+      // payload, and that is a type older tabs do not know regardless, so
+      // sending the string whenever there is no detail restores cross-version
+      // `lock` / `logout` / `shutdown` without posting each message twice.
+      //
+      // This matters beyond tidiness: a tab on the older build that drops a
+      // `lock` keeps its decrypted in-page key live after the session was
+      // locked everywhere else, which is the whole point of the broadcast.
+      channel.postMessage(detail === undefined ? type : { type, detail });
     },
     close() {
       channel.close();
