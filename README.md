@@ -91,6 +91,19 @@ npm run typecheck
 npm test          # vitest run
 ```
 
+## Requirements
+
+**TypeScript >= 5.7 in the consuming project.** There is no build step — every package points
+`exports` and `types` at `./src/index.ts`, so it is *your* compiler that compiles NAP's source,
+and NAP's source uses the generic `Uint8Array<ArrayBuffer>` that TypeScript models only from 5.7
+(`webCryptoSecretStore.ts`, where WebCrypto refuses a possibly-`SharedArrayBuffer`-backed view).
+On an older compiler this surfaces as `TS2315: Type 'Uint8Array' is not generic` pointing into
+`node_modules`, which reads as a bug in NAP rather than a compiler floor. Each package declares
+it as an optional peer dependency, so npm says so at install time instead.
+
+CI tests Node 20.19.0 and 22.x. `nostr-tools` is `^2.23.0` — dedupe it, four packages depend
+on it and version skew surfaces as confusing `verifyEvent` failures.
+
 ## Documentation
 
 - [docs/NAP-v2-RFC.md](docs/NAP-v2-RFC.md) — the protocol specification. The authority.
@@ -107,5 +120,6 @@ implemented but incomplete. Beyond that:
 
 - packaging — no build step, so nothing is publishable (see the note above)
 - more store adapters (Redis, etc.)
-- better proxy/trust-policy helpers for `createRequestDerivedBaseUrlResolver()`
+- scheme trust for `createRequestDerivedBaseUrlResolver()` — the host is allowlisted, the
+  scheme is still the framework's `trust proxy` decision unless the entry pins it
 - no sliding idle window or `absolute_expiry_at`; the Java implementation has both

@@ -8,6 +8,7 @@ export {
   createRevokingAclStore,
   validatePermissionRegistry,
 } from './acl.js';
+export { createAudienceHostAllowlist } from './audience.js';
 export { createNoopMetricsRecorder, withMetrics } from './metrics.js';
 export { createInMemoryRateLimiter } from './rateLimit.js';
 export type { InMemoryRateLimiterOptions } from './rateLimit.js';

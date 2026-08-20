@@ -226,8 +226,11 @@ export interface AuditLogger {
  * NIP-98 compares the exact absolute URL, so behind a proxy, gateway, or mesh
  * the URL the application sees is not the one the client signed. This is the
  * seam where that is corrected, and it is security-relevant: whatever it
- * returns *is* the audience. Prefer a pinned constant or a Host allowlist over
- * anything derived from request headers, which an arbitrary client can set.
+ * returns *is* the audience. Prefer a pinned constant. Anything derived from
+ * request headers — which an arbitrary client can set — must go through
+ * `createAudienceHostAllowlist()`, which is what the adapters'
+ * `createRequestDerivedBaseUrlResolver()` is built on and why it demands a list
+ * of hosts.
  *
  * Generic over the request type because each adapter has its own — the server
  * core never sees a request object.

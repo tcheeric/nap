@@ -92,7 +92,7 @@ function createApp(options: NapServerOptions) {
     '/auth',
     createNapExpressRouter({
       server: options,
-      getExternalBaseUrl: createRequestDerivedBaseUrlResolver(),
+      getExternalBaseUrl: createRequestDerivedBaseUrlResolver(['api.example.com']),
     })
   );
   app.use((error: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -137,6 +137,20 @@ describe('nap-adapter-express', () => {
     expect(complete.body.principal.npub).toBe(NPUB);
   });
 
+  it('refuses a Host nobody allowlisted', async () => {
+    // The audience is what every NIP-98 proof is checked against, and `Host` is
+    // client-supplied. WebAuthn L3 §13.5.9 forbids the same thing for origins.
+    const app = createApp(buildServerOptions());
+    const init = await request(app)
+      .post('/auth/init')
+      .set('host', 'evil.example')
+      .set('x-forwarded-proto', 'https')
+      .send({ npub: NPUB });
+
+    expect(init.status).toBe(500);
+    expect(init.body.error).toMatch(/not in the allowlist/);
+  });
+
   it('supports cookie mode', async () => {
     const app = express();
     app.set('trust proxy', true);
@@ -144,7 +158,7 @@ describe('nap-adapter-express', () => {
       '/auth',
       createNapExpressRouter({
         server: buildServerOptions(),
-        getExternalBaseUrl: createRequestDerivedBaseUrlResolver(),
+        getExternalBaseUrl: createRequestDerivedBaseUrlResolver(['api.example.com']),
         writeSuccess: writeNapCookieSuccess('session', {
           httpOnly: true,
           secure: true,
@@ -617,7 +631,7 @@ describe('nap-adapter-express', () => {
       '/auth',
       createNapExpressRouter({
         server: buildServerOptions(),
-        getExternalBaseUrl: createRequestDerivedBaseUrlResolver(),
+        getExternalBaseUrl: createRequestDerivedBaseUrlResolver(['api.example.com']),
       })
     );
 

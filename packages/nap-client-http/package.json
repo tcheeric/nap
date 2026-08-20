@@ -1,11 +1,19 @@
 {
   "name": "@imani/nap-client-http",
-  "version": "0.9.0",
+  "version": "0.10.1",
   "type": "module",
   "exports": "./src/index.ts",
   "types": "./src/index.ts",
   "dependencies": {
-    "@imani/nap-core": "0.9.0",
+    "@imani/nap-core": "0.10.1",
     "nostr-tools": "^2.23.0"
+  },
+  "peerDependencies": {
+    "typescript": ">=5.7"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
   }
 }
