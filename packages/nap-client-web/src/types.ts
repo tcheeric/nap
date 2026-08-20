@@ -2,6 +2,7 @@ import type { AuthSuccessResponse } from '@imani/nap-core';
 import type { EventSigner } from '@imani/nap-client-http';
 import type { IdentityChangedDetail } from './broadcast.js';
 import type { KeyStore } from './keyStore.js';
+import type { SignerPreferenceStore } from './signerPreference.js';
 
 /**
  * How a locked session gets back to signing. The signer decides first, the
@@ -141,6 +142,16 @@ export interface NapClientOptions {
    */
   onIdentityChanged?: (detail: IdentityChangedDetail) => void;
   keyStore?: KeyStore;
+  /**
+   * The store the app writes its `'nip07' | 'nip46' | 'key'` choice to.
+   *
+   * Passing it lets the session *clear* it — on a terminal `/auth/init` or
+   * `/auth/complete` failure, and when the identity guard terminates. It is
+   * never written here: only the app knows which kind of signer it built.
+   * Omitting it means a login the server has stopped accepting stays on the
+   * screen, offered on every reload, failing every time.
+   */
+  signerPreference?: SignerPreferenceStore;
   fetch?: typeof fetch;
 }
 

@@ -90,7 +90,7 @@ async function createApp(options: NapServerOptions) {
   await app.register(napFastifyPlugin, {
     routePrefix: '/auth',
     server: options,
-    getExternalBaseUrl: createRequestDerivedBaseUrlResolver(),
+    getExternalBaseUrl: createRequestDerivedBaseUrlResolver(['api.example.com']),
   });
 
   return app;
@@ -146,13 +146,26 @@ describe('nap-adapter-fastify', () => {
     await app.close();
   });
 
+  it('refuses a Host nobody allowlisted', async () => {
+    // Same trust decision as the Express adapter, same allowlist behind it.
+    const app = await createApp(buildServerOptions());
+    const init = await app.inject({
+      method: 'POST',
+      url: '/auth/init',
+      headers: { host: 'evil.example', 'x-forwarded-proto': 'https' },
+      payload: { npub: NPUB },
+    });
+
+    expect(init.statusCode).toBe(500);
+  });
+
   it('supports cookie mode', async () => {
     const app = Fastify({ trustProxy: true });
 
     await app.register(napFastifyPlugin, {
       routePrefix: '/auth',
       server: buildServerOptions(),
-      getExternalBaseUrl: createRequestDerivedBaseUrlResolver(),
+      getExternalBaseUrl: createRequestDerivedBaseUrlResolver(['api.example.com']),
       writeSuccess: writeNapCookieSuccess('session', {
         httpOnly: true,
         secure: true,

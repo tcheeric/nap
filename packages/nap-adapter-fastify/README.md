@@ -24,6 +24,6 @@ const app = Fastify({ trustProxy: true });
 await app.register(napFastifyPlugin, {
   routePrefix: '/auth',
   server: napServerOptions,
-  getExternalBaseUrl: createRequestDerivedBaseUrlResolver(),
+  getExternalBaseUrl: createRequestDerivedBaseUrlResolver(['api.example.com']),
 });
 ```

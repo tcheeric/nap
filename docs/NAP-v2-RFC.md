@@ -96,12 +96,84 @@ NAP v2 therefore extends NIP-98 by adding:
 | Replay of completion request | Single-use challenge + redemption state + short TTL |
 | Cross-endpoint proof replay | NIP-98 exact `u` and `method` binding |
 | Body tampering | NIP-98 `payload` hash on completion request body |
-| MITM / forwarding | TLS + exact audience binding |
+| MITM / forwarding | TLS + exact audience binding (see §7.1 — this does **not** cover a hostile origin obtaining a correctly-addressed proof) |
 | Key confusion | Standard NIP-98 event shape, exact pubkey/npub matching |
 | User enumeration | Indistinguishable challenge issuance for known/unknown users |
 | Cluster race / retry ambiguity | Atomic challenge redemption + short result cache |
 | Session theft | Short-lived access token + optional refresh rotation + risk checks |
 | DoS | Rate limiting, bounded challenge TTL, bounded outstanding challenges |
+
+### 7.1 What Audience Binding Does Not Cover
+
+Audience binding stops a proof being *forwarded* to a different endpoint. It does not
+stop a hostile origin *obtaining* a correctly-addressed one. NAP's audience binding is
+**server-verified, not signer-enforced**: the server checks the `u` tag, but the signer
+that produced the event will sign whatever `u` tag the calling page asks for.
+
+**Origin substitution.** A hostile page calls `POST /auth/init` with the victim's npub —
+§10.1's anti-enumeration guarantee means a challenge always comes back — asks the
+victim's signer for a kind-27235 event addressed to the real server, and redeems it from
+its own backend. The session is valid and the principal is the victim. NIP-07 grants are
+scoped by (origin, kind), not by audience, so a site the user has already approved for
+kind 27235 can mint login proofs for *every* NAP server with no further prompt. This is
+ambient authority, not only phishing.
+
+W3C WebAuthn Level 3 names this trust model in §13.4.1 (`remoteClientDataJSON`), where a
+remote-desktop client supplies the origin instead of the user agent deriving it from the
+execution context:
+
+> Origin substitution: the user agent accepts an origin supplied by the calling Remote
+> desktop web client rather than deriving it from the current execution context. Any user
+> agent granting this permission MUST therefore trust that the caller accurately and
+> honestly supplies the origin of the remote Relying Party.
+
+WebAuthn permits this only as a per-origin, explicitly configured degradation, and
+requires the user agent to indicate that a proxied operation is in progress. Under NIP-07
+and NIP-46 it is the default, for every origin, with no user-visible indication.
+
+**There is no server-side fix.** The signed event is a bearer credential and the whole
+client is attacker-controlled. Dead ends, recorded so they are not re-derived:
+
+- an `origin` tag on the event — the page composes the event, so the page writes the tag,
+  and the server cannot tell signer-added from attacker-added
+- an `Origin` header allowlist or strict CORS on `/auth/complete` — forces the attacker
+  server-side, where the header is a string it types
+- a cookie planted at `/auth/init` and required at `/auth/complete` — the attacker runs
+  both legs from its own jar
+- DPoP-style binding to a non-extractable WebCrypto key — the attacker generates and
+  holds the keypair
+- IP or fingerprint binding (§14.3) — init, complete and use all happen on attacker
+  infrastructure, so there is no drift to detect
+
+The user's only unforgeable contribution is a signature, and the signer signs blind. The
+refusal has to come from the signer. A NIP-46 bunker is a separate process the hostile
+page does not control, and `nostrconnect://` pairing already carries app identity, so a
+bunker that pins the paired app's URL and refuses kind-27235 whose `u` host is outside
+policy is the WebAuthn refusal in the right place — per-origin policy plus a prompt the
+page cannot forge. **NIP-46 with an audience-enforcing bunker is the phishing-resistant
+path; NIP-07 is the weak one.** This is bunker configuration: no NIP change, no NAP wire
+change. Deployments SHOULD record which of the two they rely on.
+
+**No user-presence signal.** A kind-27235 event carries no evidence that a human was
+involved. WebAuthn signs user presence (UP) and user verification (UV) as bits inside
+`authenticatorData`, covered by the assertion signature, and requires the Relying Party
+to check them. NAP has no equivalent and cannot acquire one at this layer. See §10.3 for
+what that costs step-up.
+
+**Clone detection is impossible in principle.** WebAuthn authenticators keep a
+per-credential signature counter, and the Relying Party compares it against the stored
+value every ceremony; a counter that fails to increase is evidence the authenticator may
+have been cloned. A Nostr key is *designed* to be copied between devices — that is normal
+use, not compromise — so there is no observable difference between the user's key and a
+stolen copy of it, ever. WebAuthn gets a probabilistic signal here; NAP gets none,
+permanently.
+
+**No multi-credential recovery.** WebAuthn Relying Parties are advised to have users
+register several credentials across several authenticators, because a private key that
+never leaves its authenticator is unrecoverable once the authenticator is lost. NAP has no
+enrollment ceremony — the npub *is* the account — so key loss is terminal. Mapping several
+npubs onto one account is an application-layer concern this RFC does not model, and is out
+of scope.
 
 ---
 
@@ -243,6 +315,23 @@ A step-up token MUST NOT be accepted as an `access_token`, and MUST NOT extend t
 Which operations require step-up is an application decision, carried in the permission registry (§15) as `stepUp: true` on a permission definition. A conforming server that receives a request for a step-up-marked permission without a valid, unexpired step-up token MUST refuse it, and SHOULD do so with the same status it uses for any other authorization failure on that route.
 
 If a server does not implement step-up, it MUST ignore `step_up` rather than fail the completion, and MUST omit both response fields. Clients MUST treat a missing `step_up_token` as "step-up unavailable" and MUST NOT proceed as though it had been granted.
+
+**Step-up proves key control, not user intent.** The client demonstrates that it can still
+produce a signature for the principal's key at this moment. It does not demonstrate that a
+human approved anything: NIP-98 carries no user-presence bit (§7.1), and a signer holding a
+remembered NIP-07 grant, or a NIP-46 bunker with pre-granted permissions, completes the
+entire ceremony — new challenge, new signature, new `step_up_token` — with nobody present.
+Marking a permission `stepUp: true` therefore defends against a **stolen access token**,
+whose holder has no signer access, and not at all against a **hostile page that already has
+signer access**, which simply re-runs the ceremony. Step-up caps blast radius; it is not a
+consent control, and MUST NOT be documented to integrators as one. A deployment that needs
+consent needs a signer that prompts per request, on a device the page does not control.
+
+Implementations MUST NOT add a user-presence or user-verification tag to the completion
+event to close this gap. The page composes the event, so the page writes the tag, and the
+server cannot distinguish a signer-asserted bit from a page-asserted one. A presence bit is
+worth something only if the signer sets it and refuses to lie, which is a change to NIP-98,
+not to NAP.
 
 ---
 
@@ -474,7 +563,13 @@ Safer alternatives:
 
 - short-lived access tokens
 - rotating refresh tokens
-- optional risk scoring on drift
+- optional risk scoring on drift — but note that this RFC specifies **no per-principal
+  state to score against**. A conforming server stores a challenge and an ACL decision, and
+  nothing survives the ceremony, so there is no last-seen record for a new request to drift
+  from. WebAuthn Relying Parties can do this because they keep a credential record updated
+  every ceremony (§7.1). A deployment that wants drift scoring MUST add its own principal
+  record — last seen at, last audience, last address — first; without one this bullet is not
+  implementable.
 - future sender-constrained session extension if needed
 
 ---
@@ -1214,6 +1309,10 @@ Implementations MUST NOT present a bounded key lifetime as protection against sc
 | Compromised dependency in the client bundle | **Not protected** — same origin, same memory |
 
 The client must be able to decrypt the key to use it, so any code running with it can do the same. Bounding the lifetime narrows the window; it does not close it. Only `§28.2`'s first two options remove the key from reach.
+
+This table covers key custody only. For what the *protocol* does not defend against — origin
+substitution, the absent user-presence signal, clone detection, and account recovery — see
+§7.1.
 
 ### 28.6 Implementation Obligation
 

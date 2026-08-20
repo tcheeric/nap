@@ -583,6 +583,12 @@ function Boot() {
 }
 ```
 
+`createNapSession({ signerPreference })` clears the stored record itself on a
+terminal login failure and on an identity change — see the `nap-client-web`
+changelog. Keep the `forget()` above anyway if you wire it: this hook's
+`preference` is a snapshot taken on mount, and nothing tells it the session
+cleared the underlying storage. `forget()` is idempotent, so doing both is fine.
+
 Call `forget()` on logout and on an identity change. A preference pointing at an
 account the user has left is a login attempt that will fail the identity guard.
 

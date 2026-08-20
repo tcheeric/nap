@@ -11,6 +11,7 @@ import {
   isVerifyFailure,
   refreshSession,
   verifyCompletion,
+  createAudienceHostAllowlist,
   type AclResolver,
   type AudienceResolver,
   type Clock,
@@ -878,20 +879,27 @@ export function writeNapCookieSuccess(
 }
 
 /**
- * Derives the audience from the incoming request. Contains no trust policy:
- * `Host` is read raw, and whether `X-Forwarded-Proto` is believed is entirely
- * Express's `trust proxy` setting. Prefer a pinned constant
- * (`() => 'https://api.example.com'`) or a Host allowlist. See §9.4 of
+ * Derives the audience from the incoming request, restricted to hosts you name.
+ *
+ * `Host` is client-supplied, and whatever this returns *is* the audience every
+ * NIP-98 proof is checked against, so an unrestricted version is a request
+ * header deciding a security parameter. WebAuthn L3 §13.5.9 forbids the
+ * equivalent for origins; the allowlist is the same answer.
+ *
+ * Entries are exact hosts (`api.example.com`, with the port when it is not the
+ * scheme default), optionally scheme-pinned (`https://api.example.com` — the
+ * only way to stop a believed `X-Forwarded-Proto` from downgrading the audience
+ * to `http`), and optionally subdomain wildcards (`*.example.com`, opt-in per
+ * entry because §13.5.8's default is no).
+ *
+ * A pinned constant (`() => 'https://api.example.com'`) is still the simplest
+ * correct answer when the deployment answers on exactly one host. See §9.4 of
  * docs/NAP-INTEGRATION-GUIDE.md.
  */
-export function createRequestDerivedBaseUrlResolver(): (req: Request) => string {
-  return (req) => {
-    const host = req.get('host');
+export function createRequestDerivedBaseUrlResolver(
+  allowedHosts: readonly string[]
+): (req: Request) => string {
+  const allow = createAudienceHostAllowlist(allowedHosts);
 
-    if (!host) {
-      throw new Error('Unable to resolve external host for NAP request');
-    }
-
-    return `${req.protocol}://${host}`;
-  };
+  return (req) => allow(req.get('host'), req.protocol);
 }
