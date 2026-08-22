@@ -32,6 +32,15 @@ export const REGISTRY: PermissionRegistry = {
       description: 'Runs a shop and owns the money',
       permissions: ['merchant:read', 'voucher:create', 'stripe:manage'],
     },
+    {
+      key: 'support',
+      description: 'Staff. Can look up a merchant, and nothing this app offers',
+      // Deliberately empty. Support is not part of the merchant vocabulary —
+      // there is no permission that means "is staff", and inventing one would
+      // put a key in the registry that no merchant role should ever hold.
+      // This is the case `requireRole()` exists for; see tutorial 03.
+      permissions: [],
+    },
   ],
   // Every principal with no ACL row lands here. Make it the least you are
   // willing to hand a stranger who can produce a valid signature.

@@ -155,6 +155,69 @@ describe('merchant-app', () => {
     expect(payout.status).toBe(403);
   });
 
+  it('lets viewer read and refuses viewer the write', async () => {
+    const { app, aclStore } = build();
+    await grant(aclStore, 'viewer');
+    const token = (await login(app)).body.access_token;
+
+    const list = await request(app).get('/api/vouchers').set('authorization', `Bearer ${token}`);
+    expect(list.status).toBe(200);
+
+    const created = await request(app)
+      .post('/api/vouchers')
+      .set('authorization', `Bearer ${token}`)
+      .send({ amount_cents: 2500 });
+
+    // The refusal is the half worth asserting. A test that only proves the
+    // happy path passes just as well against a route with no guard on it.
+    expect(created.status).toBe(403);
+  });
+
+  it('guards the staff route on the role, which no permission expresses', async () => {
+    const { app, aclStore } = build();
+
+    const merchant = (await login(app)).body.access_token;
+    expect(
+      (await request(app).get('/api/support/lookup').set('authorization', `Bearer ${merchant}`))
+        .status
+    ).toBe(403);
+
+    await grant(aclStore, 'support');
+    const staff = (await login(app)).body.access_token;
+    expect(
+      (await request(app).get('/api/support/lookup').set('authorization', `Bearer ${staff}`)).status
+    ).toBe(200);
+  });
+
+  it('applies a revocation to a live session because the guards re-read the ACL', async () => {
+    const { app, aclStore } = build();
+    await grant(aclStore, 'owner');
+    const token = (await login(app)).body.access_token;
+
+    expect(
+      (
+        await request(app)
+          .post('/api/vouchers')
+          .set('authorization', `Bearer ${token}`)
+          .send({ amount_cents: 100 })
+      ).status
+    ).toBe(201);
+
+    // Same session, same token, downgraded role. Without `aclResolver` in the
+    // guard options this would keep working until the session TTL expired,
+    // because `session.permissions` is the login-time snapshot.
+    await grant(aclStore, 'viewer');
+
+    expect(
+      (
+        await request(app)
+          .post('/api/vouchers')
+          .set('authorization', `Bearer ${token}`)
+          .send({ amount_cents: 100 })
+      ).status
+    ).toBe(403);
+  });
+
   it('demands a step-up token for a stepUp permission, and accepts one', async () => {
     const { app, aclStore } = build();
     await grant(aclStore, 'owner');

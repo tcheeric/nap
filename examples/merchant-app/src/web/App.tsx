@@ -3,6 +3,7 @@ import type { SessionSigner } from '@imani/nap-client-web';
 import { NapProvider, useNapSession } from '@imani/nap-react';
 import { SignerPicker, describe } from './SignerPicker.js';
 import { useNapBootstrap } from './useNapBootstrap.js';
+import { Vouchers } from './Vouchers.js';
 
 export function App() {
   const [signer, setSigner] = useState<SessionSigner | null>(null);
@@ -83,6 +84,7 @@ function Account() {
         Sign out
       </button>
       {error ? <p role="alert">{error}</p> : null}
+      <Vouchers />
     </section>
   );
 }

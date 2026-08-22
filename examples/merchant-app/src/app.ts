@@ -15,6 +15,7 @@ import {
   createNapExpressRouter,
   createPermissionsRouter,
   requirePermission,
+  requireRole,
   requireSession,
   validatePermissions,
   writeNapCookieSuccess,
@@ -166,6 +167,15 @@ export function createMerchantApp(options: MerchantAppOptions): MerchantApp {
       res.json({ status: 'payout settings updated' });
     }
   );
+
+  // The one route guarded by role rather than permission. `support` holds no
+  // permissions at all, so there is no permission check that expresses it —
+  // which is the test for whether a role guard is the right tool. Everywhere
+  // else, guard the permission: adding a role that should have access is then a
+  // registry edit rather than an edit to every guard site.
+  app.get('/api/support/lookup', requireRole('support', guardOptions), (_req, res) => {
+    res.json({ vouchers: vouchers.list().length });
+  });
 
   // Every permission string used in a guard above must be declared in the
   // registry. Called after the routes are mounted, so it can see all of them,
