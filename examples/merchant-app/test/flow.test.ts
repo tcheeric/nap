@@ -7,6 +7,7 @@ import {
   InMemoryAclStore,
   InMemoryChallengeStore,
   InMemorySessionStore,
+  createInMemoryRateLimiter,
   type AclStore,
   type Clock,
 } from '@imani/nap-server';
@@ -326,6 +327,45 @@ describe('merchant-app', () => {
         .status
     ).toBe(401);
     expect((await request(app).get('/api/vouchers').set('cookie', secondCookie)).status).toBe(401);
+  });
+
+  it('refuses an oversize /auth/init body before it parses it', async () => {
+    const { app } = build();
+
+    // An init body is one npub. A completion is one signed event. The 1 kB
+    // limit is the adapter's default and the app sets it explicitly; what this
+    // pins is that it is *the NAP router's* limit, not `express.json()`'s
+    // 100 kB, which is what you inherit by parsing these routes yourself.
+    const oversize = await request(app)
+      .post('/auth/init')
+      .set('content-type', 'application/json')
+      .send(JSON.stringify({ npub: NPUB, padding: 'x'.repeat(2048) }));
+
+    expect(oversize.status).toBe(413);
+  });
+
+  it('rate limits /auth/init and says how long to wait', async () => {
+    // Two per window rather than the app's 30, so the test does not have to
+    // send 31 requests to observe the behaviour. The limiter is the same one
+    // the app wires; only the number changes.
+    const { app } = build({
+      server: {
+        minAuthResponseMillis: 0,
+        rateLimiter: createInMemoryRateLimiter({ windowSeconds: 60, maxPerWindow: 2 }),
+      },
+    });
+
+    expect((await request(app).post('/auth/init').send({ npub: NPUB })).status).toBe(200);
+    expect((await request(app).post('/auth/init').send({ npub: NPUB })).status).toBe(200);
+
+    const limited = await request(app).post('/auth/init').send({ npub: NPUB });
+
+    // A 429, not the indistinguishable 401 every auth failure gets. The status
+    // already tells an attacker they were throttled, so there is nothing left
+    // to hide by withholding the retry hint — and without it a client backs off
+    // by guessing.
+    expect(limited.status).toBe(429);
+    expect(Number(limited.headers['retry-after'])).toBeGreaterThan(0);
   });
 
   it('carries a session in a cookie and clears it on logout', async () => {

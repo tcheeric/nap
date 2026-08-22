@@ -35,6 +35,11 @@ export interface Stores {
   aclStore: AclStore;
   /** Call on shutdown. `undefined` for the in-memory set. */
   close?: () => Promise<void>;
+  /**
+   * Delete rows nothing will ever read again. `undefined` for the in-memory
+   * set, which drops everything on restart anyway.
+   */
+  deleteExpiredRows?: () => Promise<{ challenges: number; sessions: number }>;
 }
 
 /**
@@ -60,23 +65,50 @@ export function createStores(databaseUrl = process.env.DATABASE_URL): Stores {
     sessionStore: new PostgresSessionStore(pool),
     aclStore: new PostgresAclStore(pool),
     close: () => pool.end(),
+    async deleteExpiredRows() {
+      // The job tutorial 04 said you would have to write. `markExpired()` flips
+      // `state`; it never deletes, and nothing sweeps sessions at all.
+      //
+      // The horizon is a decision, not a default — that is why NAP does not
+      // make it for you. An hour for challenges, because a challenge row is
+      // what makes a completion idempotent and deleting one on the stroke of
+      // expiry turns a retried request into a confusing failure. Seven days for
+      // sessions, because "was this person logged in on Tuesday" is a question
+      // someone eventually asks. Pick your own numbers on purpose.
+      const now = Math.floor(Date.now() / 1000);
+      // `state <> 'issued'` so a row the sweeper has not marked yet survives.
+      const challenges = await pool.query(
+        "DELETE FROM nap_challenges WHERE state <> 'issued' AND expires_at < $1",
+        [now - 3600]
+      );
+      const sessions = await pool.query(
+        'DELETE FROM nap_sessions WHERE expires_at < $1',
+        [now - 7 * 24 * 3600]
+      );
+      return { challenges: challenges.rowCount ?? 0, sessions: sessions.rowCount ?? 0 };
+    },
   };
 }
 
 /**
- * Flip expired challenges to `'expired'` on a timer. Nothing calls this for
- * you.
+ * Flip expired challenges to `'expired'` on a timer, and delete rows old
+ * enough that nothing will read them again. Nothing calls either for you.
  *
- * Note what it does *not* do: it never deletes a row, and expired sessions are
- * not swept at all. Both tables grow forever without a DELETE job you write
- * yourself. See tutorial 04.
+ * Two jobs rather than one because they are different operations with
+ * different risks: marking is cheap and idempotent, deleting is neither. See
+ * tutorial 04 for the marking and tutorial 09 for the deleting.
  */
 export function startChallengeSweeper(
-  challengeStore: ChallengeStore,
+  stores: Pick<Stores, 'challengeStore' | 'deleteExpiredRows'>,
   intervalMs = 60_000
 ): () => void {
   const timer = setInterval(() => {
-    void challengeStore.markExpired(Math.floor(Date.now() / 1000));
+    void stores.challengeStore.markExpired(Math.floor(Date.now() / 1000));
+    // Hourly, not every minute: a DELETE over two tables is not something to
+    // run sixty times as often as it can possibly find work.
+    if (Date.now() % 3_600_000 < intervalMs) {
+      void stores.deleteExpiredRows?.();
+    }
   }, intervalMs);
 
   timer.unref();

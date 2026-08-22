@@ -39,7 +39,7 @@ const { app } = createMerchantApp({
   },
 });
 
-startChallengeSweeper(stores.challengeStore);
+startChallengeSweeper(stores);
 
 app.listen(port, () => {
   console.log(`merchant-app listening on ${baseUrl} (${mode} mode, ${backend} stores, session ${sessionTtlSeconds}s, refresh ${refreshTtlSeconds > 0 ? `${refreshTtlSeconds}s` : 'off'})`);

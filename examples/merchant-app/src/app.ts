@@ -3,6 +3,7 @@ import {
   InMemoryAclStore,
   InMemoryChallengeStore,
   InMemorySessionStore,
+  createInMemoryRateLimiter,
   createRegistryAclResolver,
   type AclStore,
   type AuditLogger,
@@ -48,6 +49,16 @@ export interface MerchantAppOptions {
   clock?: Clock;
   auditLogger?: AuditLogger;
   vouchers?: VoucherStore;
+  /**
+   * Turn on Express's `trust proxy` when something else terminates TLS.
+   *
+   * It decides two things NAP depends on: `req.ip`, which is the dimension the
+   * per-IP challenge cap counts on, and `req.protocol`, which a
+   * request-derived audience resolver would read. Off, both describe the proxy
+   * rather than the client. On with nothing in front of you, both are whatever
+   * a header says — so this is a deployment fact, not a default.
+   */
+  trustProxy?: boolean | string | number;
   server?: Partial<NapServerOptions>;
 }
 
@@ -71,11 +82,34 @@ export function createMerchantApp(options: MerchantAppOptions): MerchantApp {
     sessionStore,
     aclResolver: createRegistryAclResolver(REGISTRY, aclStore),
     auditLogger: options.auditLogger ?? consoleAuditLogger,
+    // On by default, and spelled out here anyway, because the defaults are the
+    // thing you are supposed to size. 30 challenge requests a minute per
+    // address is generous for a human and mean for a script.
+    //
+    // It counts in one process. Behind N instances the effective rate is N
+    // times this, and a restart forgets everything. Anything production-facing
+    // wants a shared backend behind the same `RateLimiter` interface — this one
+    // is a floor, not a control.
+    rateLimiter: createInMemoryRateLimiter({ windowSeconds: 60, maxPerWindow: 30 }),
+    // The rate limiter caps how fast challenges arrive; these cap how many can
+    // be alive at once. Different failure: a challenge row lives for its whole
+    // TTL, so a slow drip under the rate limit still accumulates. Both defaults
+    // (10 and 30), both enforced only because the stores here implement
+    // `countOutstanding` — a store that cannot count silently does not cap.
+    maxOutstandingChallengesPerNpub: 10,
+    // Counted per address, and the address has to be real: without
+    // `trustProxy` set behind a proxy, every request shares the proxy's IP and
+    // this becomes a global cap on all users at once.
+    maxOutstandingChallengesPerIp: 30,
     ...(clock ? { clock } : {}),
     ...options.server,
   };
 
   const app = express();
+
+  if (options.trustProxy !== undefined) {
+    app.set('trust proxy', options.trustProxy);
+  }
 
   // Note the absence of a global `express.json()`. The NAP router installs its
   // own parser that keeps the raw bytes, because the NIP-98 payload tag is a
@@ -87,6 +121,12 @@ export function createMerchantApp(options: MerchantAppOptions): MerchantApp {
       server: napServerOptions,
       getExternalBaseUrl: () => options.baseUrl,
       cookieName: COOKIE_NAME,
+      // The adapter's own default, written out because the number that matters
+      // is the one you chose. An /auth/init body is two short strings and a
+      // completion is one signed event; nothing legitimate approaches 1 kB.
+      // `express.json()`'s default is 100 kB, which is what you would inherit
+      // if you parsed these routes yourself.
+      bodyLimit: '1kb',
       ...(options.mode === 'cookie'
         ? {
             writeSuccess: writeNapCookieSuccess(
