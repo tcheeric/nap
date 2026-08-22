@@ -266,6 +266,47 @@ describe('merchant-app', () => {
     expect(replayed.status).toBe(401);
   });
 
+  it('rotates the cookie too, and a replay takes the whole session down', async () => {
+    const { app } = build({
+      mode: 'cookie',
+      server: { minAuthResponseMillis: 0, refreshTtlSeconds: 3600 },
+    });
+
+    const first = await login(app);
+    const firstCookie = first.headers['set-cookie'];
+
+    // The access token is in the cookie; the refresh token cannot be, because
+    // /auth/refresh reads Authorization: Bearer. So cookie mode plus refresh
+    // means a transformBody, and the adapter refuses to start without one.
+    expect(first.body.access_token).toBeUndefined();
+    const original = first.body.refresh_token;
+    expect(original).toBeTruthy();
+
+    const refreshed = await request(app)
+      .post('/auth/refresh')
+      .set('authorization', `Bearer ${original}`)
+      .send();
+
+    expect(refreshed.status).toBe(200);
+    const secondCookie = refreshed.headers['set-cookie'];
+    expect(String(secondCookie)).toContain('HttpOnly');
+
+    // Rotation replaces the access token as well, so the cookie the browser
+    // was holding a moment ago is now dead. A client that ignores the
+    // Set-Cookie on the refresh response has logged itself out.
+    expect((await request(app).get('/api/vouchers').set('cookie', firstCookie)).status).toBe(401);
+    expect((await request(app).get('/api/vouchers').set('cookie', secondCookie)).status).toBe(200);
+
+    // Presenting the spent token is indistinguishable from a thief presenting
+    // a stolen one, so the server assumes the worse case: not just a 401, but
+    // the session revoked out from under the legitimate holder.
+    expect(
+      (await request(app).post('/auth/refresh').set('authorization', `Bearer ${original}`).send())
+        .status
+    ).toBe(401);
+    expect((await request(app).get('/api/vouchers').set('cookie', secondCookie)).status).toBe(401);
+  });
+
   it('carries a session in a cookie and clears it on logout', async () => {
     const { app } = build({ mode: 'cookie' });
 

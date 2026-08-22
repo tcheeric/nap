@@ -89,12 +89,27 @@ export function createMerchantApp(options: MerchantAppOptions): MerchantApp {
       cookieName: COOKIE_NAME,
       ...(options.mode === 'cookie'
         ? {
-            writeSuccess: writeNapCookieSuccess(COOKIE_NAME, {
-              httpOnly: true,
-              sameSite: 'lax',
-              secure: options.secureCookies ?? false,
-              path: '/',
-            }),
+            writeSuccess: writeNapCookieSuccess(
+              COOKIE_NAME,
+              {
+                httpOnly: true,
+                sameSite: 'lax',
+                secure: options.secureCookies ?? false,
+                path: '/',
+              },
+              // Everything the bearer body would have carried, minus the two
+              // fields that are now in the cookie. Not a render optimisation:
+              // `nap-client-web`'s login() maps this body into its session
+              // state and dereferences `principal.pubkey`, so against the
+              // default `{status:'ok'}` a browser login throws a TypeError
+              // before it ever has a session (CONTEXT.md finding 11).
+              //
+              // It is also the only way the refresh token reaches the client:
+              // /auth/refresh reads `Authorization: Bearer`, which a cookie
+              // cannot produce, so the token has to be readable by script.
+              // That is the trade tutorial 05 makes explicit.
+              ({ access_token, token_type, ...rest }) => rest
+            ),
           }
         : {}),
     })

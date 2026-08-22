@@ -1,6 +1,7 @@
-import { useState, type ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import type { SessionSigner } from '@imani/nap-client-web';
 import { NapProvider, useNapSession } from '@imani/nap-react';
+import { createRefreshLoop } from './refreshLoop.js';
 import { SignerPicker, describe } from './SignerPicker.js';
 import { useNapBootstrap } from './useNapBootstrap.js';
 import { Vouchers } from './Vouchers.js';
@@ -41,6 +42,19 @@ function Account() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const refresh = useMemo(
+    () =>
+      createRefreshLoop({
+        baseUrl: window.location.origin,
+        // Not `logout()`. The loop cannot tell a dead session from a dead
+        // network, and only the server can. A `resume()` asks: a 401 fires
+        // onSessionExpired and this component re-renders signed out, while a
+        // session that is somehow still good simply stays.
+        onLost: () => void session.resume().catch(() => undefined),
+      }),
+    [session]
+  );
+
   const run = async (action: () => Promise<unknown>) => {
     setError(null);
     setBusy(true);
@@ -57,7 +71,17 @@ function Account() {
     return (
       <section>
         <p>Signing in asks your extension for one signature.</p>
-        <button disabled={busy} onClick={() => run(() => session.login())}>
+        <button
+          disabled={busy}
+          onClick={() =>
+            run(async () => {
+              // login() returns the raw completion body, which is the only
+              // place the refresh token appears. `/auth/session` never carries
+              // one, so a resume() cannot re-arm this — tutorial 05 §6.
+              refresh.arm(await session.login());
+            })
+          }
+        >
           Sign in
         </button>
         {error ? <p role="alert">{error}</p> : null}
@@ -80,7 +104,15 @@ function Account() {
         Roles: {roles.join(', ') || '(none)'} · Permissions:{' '}
         {permissions.join(', ') || '(none)'}
       </p>
-      <button disabled={busy} onClick={() => run(() => session.logout())}>
+      <button
+        disabled={busy}
+        onClick={() =>
+          run(async () => {
+            refresh.disarm();
+            await session.logout();
+          })
+        }
+      >
         Sign out
       </button>
       {error ? <p role="alert">{error}</p> : null}

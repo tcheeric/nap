@@ -912,10 +912,29 @@ createNapExpressRouter({
 ```
 
 The response body collapses to `{"status":"ok"}` and `Set-Cookie: session=…` is
-added. A third argument lets you keep part of the body — e.g.
-`writeNapCookieSuccess('session', opts, (body) => ({ status: 'ok', principal: body.principal, permissions: body.permissions }))`
-so the SPA can render without a second round trip. The guards read the cookie
-automatically (`cookieName` defaults to `session`).
+added. The guards read the cookie automatically (`cookieName` defaults to `session`).
+
+A third argument — `transformBody` — keeps part of the body, and for two cases it
+is **required rather than an optimisation**:
+
+- **`nap-client-web` clients.** `login()` maps the completion body into its session
+  state and dereferences `principal.pubkey`, so against the bare `{"status":"ok"}`
+  it throws a `TypeError` before the caller ever has a session. Return at least
+  `principal`, `roles`, `permissions`, and `expires_at`.
+- **`refreshTtlSeconds`.** `/auth/refresh` reads `Authorization: Bearer`, which a
+  cookie cannot produce, so the refresh token has to survive into the body. The
+  adapter throws at wiring time for this combination rather than mint a token the
+  client can never present.
+
+Dropping only what the cookie now carries covers both:
+
+```ts
+writeNapCookieSuccess('session', opts, ({ access_token, token_type, ...rest }) => rest)
+```
+
+That keeps the access token out of script's reach and leaves the refresh token in
+it — a deliberate trade, spelled out in
+[tutorial 05](tutorials/05-refresh-tokens.md).
 
 The name you pass to `writeNapCookieSuccess` and the adapter's `cookieName` are two
 separate settings and **both have to be the same string** — the writer sets the
@@ -3143,10 +3162,16 @@ Closed in 0.4.0, kept here so the diff against an older deployment is visible:
   RFC `§14.1` specifies no cap, and the ACL re-read on every refresh bounds what
   a stale session can *do* — but not how long it lives. Cap it in your own
   `rotateRefreshToken` if you need one. `nap-java` does cap it (§11.2).
-- **No client refreshes for you.** `refresh_token` is returned to the browser and
-  `POST /auth/refresh` accepts it, but `nap-client-web` and `nap-react` neither
-  store it nor call the endpoint. Until they do, refresh is a server-side
-  capability an integrator wires up by hand (§6.1).
+- **No client refreshes for you.** `POST /auth/refresh` accepts a `refresh_token`,
+  but `nap-client-web` and `nap-react` neither store one nor call the endpoint —
+  refresh is a server-side capability an integrator wires up by hand (§6.1).
+  In **cookie mode** the token does not even reach the browser by default: the
+  default `writeNapCookieSuccess` body is `{status:'ok'}`, so the adapter refuses
+  to start when `refreshTtlSeconds` is set alongside it. A `transformBody` that
+  returns `refresh_token` is required, which necessarily makes a week-long
+  credential readable by script. `GET /auth/session` never carries one either, so
+  a `resume()` after a reload cannot re-arm a refresh loop.
+  [Tutorial 05](tutorials/05-refresh-tokens.md) wires the whole client half.
 - **Renewal still costs a prompt.** When a session expires, the only way back is
   `login()`, which signs a fresh NIP-98 event — so an extension or remote-signer
   user sees an approval prompt every session lifetime. Prompt-free renewal needs

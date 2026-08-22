@@ -145,6 +145,19 @@ cost time while building `examples/merchant-app` and each is worth a ticket of i
     or register the INT8 parser itself; the example works around it with a pool-scoped
     `getTypeParser`.
 
+11. **Cookie mode's default body makes `nap-client-web.login()` throw.**
+    `writeNapCookieSuccess` without a `transformBody` replies `{"status":"ok"}`, and
+    `session.ts`'s `toSessionState()` dereferences `response.principal.pubkey` — so the
+    first browser login against a stock cookie-mode backend dies on a bare
+    `TypeError: Cannot read properties of undefined (reading 'pubkey')`, before there is
+    a session, with nothing naming the cause. The integration guide framed
+    `transformBody` as a render optimisation ("so the SPA can render without a second
+    round trip"); it is mandatory for every `nap-client-web` consumer. Verified by
+    probing the example in cookie mode. The library should either throw a named error
+    naming `transformBody`, or fall back to `resume()` when the completion body carries
+    no principal. Guide text corrected in the tutorial-05 commit; the library is
+    untouched.
+
 ## Open
 
 Nothing. Frontier was emptied over five rounds. Next step is `/to-spec`.
