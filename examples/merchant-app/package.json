@@ -1,0 +1,28 @@
+{
+  "name": "@imani/nap-example-merchant-app",
+  "private": true,
+  "version": "0.10.1",
+  "type": "module",
+  "description": "The runnable example that docs/tutorials/ is built around.",
+  "exports": {
+    ".": "./src/app.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts"
+  },
+  "dependencies": {
+    "@imani/nap-adapter-express": "0.10.1",
+    "@imani/nap-core": "0.10.1",
+    "@imani/nap-server": "0.10.1",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@imani/nap-client-http": "0.10.1",
+    "@types/express": "^5.0.0",
+    "@types/supertest": "^6.0.2",
+    "nostr-tools": "^2.23.0",
+    "supertest": "^7.0.0",
+    "tsx": "^4.19.2"
+  }
+}

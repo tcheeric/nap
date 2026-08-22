@@ -7,7 +7,8 @@ and a role/permission ACL layer. Server, browser, and React packages in one npm 
 The protocol is specified in [docs/NAP-v2-RFC.md](docs/NAP-v2-RFC.md). `nap-java` is the JVM
 implementation of the same protocol; the two are wire-compatible and must stay that way.
 
-npm workspace, all packages on `0.8.0`.
+npm workspace. Every package shares one version — a release bumps all of them together, so
+the root `package.json` is the single place to read it.
 
 > **There is no build step.** Every package points `exports` and `types` at `./src/index.ts`,
 > so there is no `dist/` and nothing to compile — and these are **not npm-publishable as-is**.

@@ -49,10 +49,11 @@ All three satisfy the same two-method `SessionSigner`, and the server cannot tel
 them apart — the completion proof is byte-identical in shape. Swapping one for
 another is a one-line change (§6.2).
 
-If you can live with NIP-07, take it. A local key means implementing a `KeyStore`
-yourself — NAP ships the *interface*, not an implementation — plus WebCrypto
-encryption and passphrase UX, and even then you cannot defend a key that is
-unlocked while hostile script runs (§9.7, RFC §28.5).
+If you can live with NIP-07, take it. A local key means a `KeyStore` — NAP ships
+`createWebCryptoKeyStore()`, so the encryption is not yours to write, but the
+passphrase UX, the eviction policy and all of RFC §28 still are. And even a
+correctly encrypted key cannot be defended while it is unlocked and hostile
+script runs (§9.7, RFC §28.5).
 
 An extension can fail in four distinguishable ways, and the codes exist so your UI
 does not have to collapse them into "login failed":
@@ -139,7 +140,10 @@ Each phase is independently verifiable, so a failure tells you which layer broke
 
 ### 0.6 Plan around these, not on them
 
-- **`stepUp()` always throws.** Nothing issues a step-up token (§11.3).
+- **Nothing refreshes the session for you.** `POST /auth/refresh` works and the
+  browser is handed a `refresh_token`, but `nap-client-web` neither stores nor
+  spends it — so a session expiry costs the user a signer prompt until you wire
+  the refresh call yourself (§11.3).
 - **Permissions are a login-time snapshot.** An ACL revocation takes up to one
   session TTL to take effect (§3.4).
 - **Packages are not npm-publishable as they stand** — `exports` points at
@@ -1475,9 +1479,11 @@ Two independent features, both off-by-default-ish:
   re-broadcast, to avoid tab ping-pong (`session.ts:71`).
 
 `reunlock(passphrase)` is for apps that keep an encrypted key in browser storage.
-You supply the `KeyStore` (`packages/nap-client-web/src/keyStore.ts:1`) — NAP
-provides the *interface*, not an implementation, so the encryption scheme is
-yours:
+It takes a `KeyStore` (`packages/nap-client-web/src/keyStore.ts:1`). Use
+`createWebCryptoKeyStore()` unless you have a reason not to — it is AES-GCM over
+PBKDF2, sharing its parameters with `createWebCryptoSecretStore()` so there is
+one set of crypto choices to review. The interface is small enough to implement
+yourself if you must:
 
 ```ts
 interface KeyStore {
@@ -3242,7 +3248,7 @@ auditLogger: {
 | **`PostgresSessionStore could not reload session for challenge '…'`** | The `ON CONFLICT (challenge_id) DO NOTHING` insert was a no-op but the reload found nothing. Almost certainly a missing `UNIQUE` constraint on `nap_sessions.challenge_id` (§5.5), or a concurrent delete. |
 | **`syntax error at or near "ON CONFLICT"` / `no unique or exclusion constraint matching`** | Missing `UNIQUE (challenge_id)` on `nap_sessions` or `PRIMARY KEY (app_id, pubkey)` on `nap_acl` (§5.5). |
 | **404 on `GET /auth/session` or `POST /auth/logout`** | You wired the init/complete handlers individually instead of mounting `createNapExpressRouter()` / `napFastifyPlugin`, which mount all four. Add `createNapExpressSessionHandler` / `createNapExpressLogoutHandler` (or the Fastify equivalents) (§6.1). |
-| **`NAP step-up response did not include a step-up token`** | `session.stepUp()` cannot work in 0.2.0 — nothing issues step-up tokens (§6.1). |
+| **`NAP step-up response did not include a step-up token`** | The server completed the step-up exchange but minted no token. Check `stepUpTtlSeconds` is set on `NapServerOptions` and that the completion body carried `"step_up": true` — a middleware that reserialises the body drops it *and* breaks the payload hash (§6.1). |
 | **403 `{"message":"forbidden"}` on a guarded route** | Valid session, but `session.permissions` lacks the key. Remember permissions are a **login-time snapshot** — if you just granted the permission, the user must re-login or you must `revokeByPrincipal()` (§3.4). |
 | **403 `{"message":"step-up required"}`** | `requireStepUp()`, or `requirePermission()` with a registry marking the permission `stepUp: true`, found no `X-Step-Up-Token`, a mismatch, or an expired one. Have the client call `session.stepUp()` and resend with the returned token. |
 | **429 with `Retry-After`** | The `rateLimiter` rejected, or the caller is holding more outstanding challenges than `maxOutstandingChallengesPerNpub` / `PerIp` allows (§9.5). Deliberately not a 401. |
