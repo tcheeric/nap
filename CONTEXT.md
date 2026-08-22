@@ -158,6 +158,18 @@ cost time while building `examples/merchant-app` and each is worth a ticket of i
     no principal. Guide text corrected in the tutorial-05 commit; the library is
     untouched.
 
+12. **Guard denials reach no `AuditLogger`.** `NapExpressGuardOptions` has no
+    `auditLogger` field, and neither does the Fastify equivalent, so every
+    `requirePermission` / `requireRole` / `requireSession` refusal is invisible: no
+    code, no principal, no record. Verified by running the whole tutorial-06 sequence
+    — a plain-session 403, a step-up completion, a success, and a cross-paired 403 —
+    against a logging server and getting exactly two records out, both
+    `NAP_COMPLETE_SUCCESS`. The `/auth/*` endpoints are well covered; the guards, which
+    are the actual authorization boundary, are not covered at all. CLAUDE.md's "wire an
+    `AuditLogger` and read the `code`" trap therefore does not help for the half of the
+    surface an operator most needs to see. The guards should accept the same
+    `AuditLogger` and log a denial code per refusal reason.
+
 ## Open
 
 Nothing. Frontier was emptied over five rounds. Next step is `/to-spec`.

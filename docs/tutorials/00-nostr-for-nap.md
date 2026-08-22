@@ -87,7 +87,7 @@ The page and the signer find each other through a pairing step: one side produce
 `bunker://` or `nostrconnect://` URI containing a relay, a pubkey, and a secret, and the
 other reads it. From then on they exchange encrypted messages through the relay.
 
-Two consequences worth knowing before [tutorial 07](./07-remote-signers-nip46.md):
+Two consequences worth knowing before [tutorial 07](./07-nip46.md):
 
 - **Every signature is a network round trip.** Signing is meaningfully slower than an
   extension, and it can fail for network reasons rather than user reasons.
@@ -103,7 +103,7 @@ passphrase UX, eviction on idle, and the honest conversation with yourself about
 can and cannot protect. NAP ships a WebCrypto key store so you are not writing the
 cryptography, but **the responsibility does not ship with it.**
 
-[Tutorial 08](./08-holding-a-key-in-the-page.md) covers it, and it is deliberately last in
+[Tutorial 08](./08-in-page-keys.md) covers it, and it is deliberately last in
 the series.
 
 > **The ceiling, stated once.** If hostile script runs on your origin, no key-custody

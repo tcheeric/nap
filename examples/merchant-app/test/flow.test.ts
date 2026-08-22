@@ -242,6 +242,27 @@ describe('merchant-app', () => {
       .send({});
 
     expect(withToken.status).toBe(200);
+
+    // A step-up is a full re-authentication, so it mints a *second* session
+    // rather than upgrading the first. The guard compares the step-up token
+    // against the session the request's own credential names, so pairing the
+    // new token with the old access token proves nothing and is refused. A
+    // bearer client has to adopt both halves of the step-up response.
+    expect(
+      (
+        await request(app)
+          .post('/api/payouts')
+          .set('authorization', `Bearer ${plain}`)
+          .set('x-step-up-token', stepped.body.step_up_token)
+          .send({})
+      ).status
+    ).toBe(403);
+
+    // And the plain session is still a session: it was never revoked, it just
+    // never carried a step-up token.
+    expect(
+      (await request(app).get('/api/vouchers').set('authorization', `Bearer ${plain}`)).status
+    ).toBe(200);
   });
 
   it('rotates a refresh token and refuses the spent one', async () => {

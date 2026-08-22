@@ -285,7 +285,7 @@ HTTP/1.1 403 Forbidden
 **401 and 403 are saying different things.** 401 is "I do not know who you are." 403 is "I
 know exactly who you are and the answer is still no." The registry marks `stripe:manage` as
 `stepUp: true`, so even the role that *does* carry it needs one more thing —
-[tutorial 06](./06-high-value-actions-step-up.md).
+[tutorial 06](./06-step-up.md).
 
 ## 4b. Where the vocabulary lives
 

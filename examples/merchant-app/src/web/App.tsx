@@ -4,6 +4,7 @@ import { NapProvider, useNapSession } from '@imani/nap-react';
 import { createRefreshLoop } from './refreshLoop.js';
 import { SignerPicker, describe } from './SignerPicker.js';
 import { useNapBootstrap } from './useNapBootstrap.js';
+import { Payouts } from './Payouts.js';
 import { Vouchers } from './Vouchers.js';
 
 export function App() {
@@ -117,6 +118,7 @@ function Account() {
       </button>
       {error ? <p role="alert">{error}</p> : null}
       <Vouchers />
+      <Payouts />
     </section>
   );
 }
