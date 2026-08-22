@@ -5,6 +5,7 @@ import {
   type SessionSigner,
 } from '@imani/nap-client-web';
 import { useNip07 } from '@imani/nap-react';
+import { RemoteSigner, describeNip46 } from './RemoteSigner.js';
 
 /**
  * The four NIP-07 outcomes, each rendered as itself.
@@ -34,6 +35,9 @@ export function SignerPicker({ onSigner }: { onSigner: (signer: SessionSigner) =
           then come back.
         </p>
         <button onClick={retry}>I have installed one</button>
+        {/* Not a dead end. A user with a key on their phone needs no extension
+            at all, and this is the branch where that matters most. */}
+        <RemoteSigner onSigner={onSigner} />
       </section>
     );
   }
@@ -54,13 +58,18 @@ export function SignerPicker({ onSigner }: { onSigner: (signer: SessionSigner) =
         Continue with extension
       </button>
       {error ? <p role="alert">{error}</p> : null}
+      <RemoteSigner onSigner={onSigner} />
     </section>
   );
 }
 
 export function describe(cause: unknown): string {
   if (!(cause instanceof Nip07Error)) {
-    return cause instanceof Error ? cause.message : 'Something went wrong.';
+    // `login()` and `stepUp()` surface whichever signer is behind the session,
+    // so the same handler has to speak both taxonomies. Collapsing a NIP-46
+    // TIMEOUT into "something went wrong" throws away the only thing that
+    // tells the user their phone is asleep.
+    return describeNip46(cause);
   }
 
   switch (cause.code) {

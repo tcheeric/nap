@@ -21,6 +21,7 @@
     "@imani/nap-server": "0.10.1",
     "express": "^4.21.2",
     "@imani/nap-client-web": "0.10.1",
+    "@imani/nap-client-nip46": "0.10.1",
     "@imani/nap-react": "0.10.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
