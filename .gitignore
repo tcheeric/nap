@@ -6,3 +6,4 @@ coverage/
 /.claude/
 /.specify/
 specs/001-nip46-signer-support/
+dist/

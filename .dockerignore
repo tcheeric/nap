@@ -1,0 +1,6 @@
+# Used when nap is passed as a named build context (`--build-context nap=../nap`),
+# e.g. by imani-wallet's Dockerfile. Without this, buildx transfers ~100 MB of
+# node_modules on every build only for `npm ci` to replace it.
+node_modules
+graphify-out
+.git

@@ -9,13 +9,19 @@
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "start": "tsx src/server.ts"
+    "start": "tsx src/server.ts",
+    "dev:web": "vite",
+    "build:web": "vite build"
   },
   "dependencies": {
     "@imani/nap-adapter-express": "0.10.1",
     "@imani/nap-core": "0.10.1",
     "@imani/nap-server": "0.10.1",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "@imani/nap-client-web": "0.10.1",
+    "@imani/nap-react": "0.10.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@imani/nap-client-http": "0.10.1",
@@ -23,6 +29,10 @@
     "@types/supertest": "^6.0.2",
     "nostr-tools": "^2.23.0",
     "supertest": "^7.0.0",
-    "tsx": "^4.19.2"
+    "tsx": "^4.19.2",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.11"
   }
 }

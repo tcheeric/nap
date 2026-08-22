@@ -225,6 +225,10 @@ describe('merchant-app', () => {
 
     const logout = await request(app).post('/auth/logout').set('cookie', cookie).send();
     expect([200, 204]).toContain(logout.status);
+    // Cleared under the same name it was written with. A mismatch here is the
+    // failure the adapter's single-source cookie name exists to prevent: the
+    // browser keeps a cookie the server thinks it revoked.
+    expect(String(logout.headers['set-cookie'])).toMatch(/^session=;/);
 
     const after = await request(app).get('/api/vouchers').set('cookie', cookie);
     expect(after.status).toBe(401);

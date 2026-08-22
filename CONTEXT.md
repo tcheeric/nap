@@ -128,6 +128,12 @@ cost time while building `examples/merchant-app` and each is worth a ticket of i
    `@types/express@^5.0.0` against `express@^4`. A consumer declaring `^4.17` gets a nested
    copy and every handler fails to typecheck against the adapter's — a structural type
    mismatch that reads as a bug in NAP. Worth adding to the CLAUDE.md dedupe trap.
+9. **`nap-react` declares no `react` peer dependency.** It has `@types/react@^19` as a
+   *dev* dependency and nothing else, so a consumer on React 18 installs cleanly, gets a
+   nested `@types/react@18`, and every `ReactNode` fails to typecheck against the
+   package's — finding 8 again, in a second package. A React library should declare
+   `react` (and `react-dom` where it needs one) as a peer. The example pins React 19 to
+   dodge it.
 
 ## Open
 

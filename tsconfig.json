@@ -27,6 +27,7 @@
     "examples/*/src/**/*.tsx",
     "examples/*/test/**/*.ts",
     "examples/*/test/**/*.tsx",
+    "examples/*/vite.config.ts",
     "vitest.config.ts"
   ]
 }
