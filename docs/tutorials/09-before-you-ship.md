@@ -259,7 +259,7 @@ If you genuinely answer on several — `api.example.com` and `api.eu.example.com
 ```ts
 createNapExpressRouter({
   server: napServerOptions,
-  audienceResolver: createRequestDerivedBaseUrlResolver([
+  getExternalBaseUrl: createRequestDerivedBaseUrlResolver([
     'https://api.example.com',
     'https://api.eu.example.com',
   ]),
@@ -267,8 +267,15 @@ createNapExpressRouter({
 })
 ```
 
-Exactly one of `getExternalBaseUrl` and `audienceResolver` may be passed, and
-both go on the **router**, not on `createNapServer`.
+It goes in the same slot the pinned constant did: `createRequestDerivedBaseUrlResolver`
+returns a `(req) => string`, which is exactly what `getExternalBaseUrl` takes. The
+adapter appends `/auth/complete` to it.
+
+There is a third option, `audienceResolver`, for the case where the completion
+endpoint is not `<base>/auth/complete` — a rewriting gateway. It takes the full
+URL rather than an origin. **Exactly one** of `getExternalBaseUrl` and
+`audienceResolver` may be passed, and both go on the **router**, not on
+`createNapServer`.
 
 **There is no default and no empty-list escape hatch.** The value this returns
 is the audience every NIP-98 proof is checked against, and `Host` is a
@@ -372,7 +379,8 @@ once before you commit to NAP for something that matters, not after.
 4. Set `maxOutstandingChallengesPerNpub: 2` and repeat. The wall moves to three.
 5. Send a 2 kB `/auth/init` body. Confirm the 413, and confirm nothing about it
    reaches your `AuditLogger`.
-6. Swap `getExternalBaseUrl` for `createRequestDerivedBaseUrlResolver([])`. The
+6. Replace the pinned constant with
+   `getExternalBaseUrl: createRequestDerivedBaseUrlResolver([])`. The
    app refuses to start. Read the message — that is the shape every wiring check
    in NAP is trying to have.
 7. Now give it `['localhost:3100']` and log in. Then give it
