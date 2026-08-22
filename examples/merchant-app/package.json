@@ -11,7 +11,9 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "dev:web": "vite",
-    "build:web": "vite build"
+    "build:web": "vite build",
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down -v"
   },
   "dependencies": {
     "@imani/nap-adapter-express": "0.10.1",
@@ -21,7 +23,9 @@
     "@imani/nap-client-web": "0.10.1",
     "@imani/nap-react": "0.10.1",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "@imani/nap-store-postgres": "0.10.1",
+    "pg": "^8.13.1"
   },
   "devDependencies": {
     "@imani/nap-client-http": "0.10.1",
@@ -33,6 +37,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
-    "vite": "^5.4.11"
+    "vite": "^5.4.11",
+    "@types/pg": "^8.11.10"
   }
 }

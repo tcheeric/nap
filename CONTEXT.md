@@ -135,6 +135,16 @@ cost time while building `examples/merchant-app` and each is worth a ticket of i
    `react` (and `react-dom` where it needs one) as a peer. The example pins React 19 to
    dodge it.
 
+10. **`PostgresSessionStore` returns `expires_at` / `issued_at` as strings.** `pg` parses
+    BIGINT as a string to protect precision; `mapSessionRecord` casts it to `number`
+    without converting, so the `/auth/session` body ships `"expires_at":"1787407576"` on
+    Postgres and `1787407576` in memory. Comparisons coerce and appear to work; arithmetic
+    does not (`expiresAt + 60` concatenates), and the session body is the
+    cross-implementation contract, so a field whose JSON type depends on the store backend
+    is an interop bug. Verified against Postgres 16. The store should convert in the mapper
+    or register the INT8 parser itself; the example works around it with a pool-scoped
+    `getTypeParser`.
+
 ## Open
 
 Nothing. Frontier was emptied over five rounds. Next step is `/to-spec`.
