@@ -3,12 +3,16 @@
 A practical guide for engineers who already run a Nostr web app and need NAP for
 authentication and authorisation.
 
-This guide is written against the `nap` TypeScript monorepo at version **0.3.0**
+This guide is written against the `nap` TypeScript monorepo at version **0.10.1**
 (branch `develop`). Anything specified by the RFC but not present in the source is
 marked explicitly.
 
 **New to NAP? Read §0 first** — it covers what to decide before writing code, what
 order to build in, and the four mistakes that each cost an afternoon.
+
+**Would rather be walked through it?** [`docs/tutorials/`](./tutorials/README.md) builds a
+working app one step at a time, following the same phase order as §0.4. This guide is the
+reference underneath it; sections that a tutorial walks say so.
 
 ## Table of contents
 
@@ -94,13 +98,18 @@ are a product decision wearing config parameters' clothes.
 
 Each phase is independently verifiable, so a failure tells you which layer broke.
 
-| Phase | Do | Done when |
-|---|---|---|
-| **0** | Router mounted, in-memory stores, bearer mode, pinned base URL, `AuditLogger` wired. No frontend. | `curl` completes `/auth/init` → `/auth/complete` and gets a session |
-| **1** | Swap in `@imani/nap-store-postgres`; switch to cookie mode via `writeNapCookieSuccess` | Sessions survive a server restart; logout clears the cookie |
-| **2** | `createNapSession` + `createNip07Signer`; `resume()` on mount; `isRestoringSession` loading state | Reload keeps you logged in without a signing prompt |
-| **3** | Permission registry; `requirePermission` guards; `validatePermissions()` after routes register | A typo'd permission key fails at startup |
-| **4** | `rateLimiter` wired; outstanding-challenge caps sized; `aclResolver` passed to the guards; cookie flags reviewed | `/auth/init` is no longer an uncapped write, and revoking access takes effect on the next request |
+| Phase | Do | Done when | Tutorial |
+|---|---|---|---|
+| **0** | Router mounted, in-memory stores, bearer mode, pinned base URL, `AuditLogger` wired. No frontend. | `curl` completes `/auth/init` → `/auth/complete` and gets a session | [01](./tutorials/01-a-server-you-can-curl.md) |
+| **1** | Swap in `@imani/nap-store-postgres`; switch to cookie mode via `writeNapCookieSuccess` | Sessions survive a server restart; logout clears the cookie | [04](./tutorials/04-postgres.md); cookie mode in [02](./tutorials/02-logging-in-from-a-browser.md) |
+| **2** | `createNapSession` + `createNip07Signer`; `resume()` on mount; `isRestoringSession` loading state | Reload keeps you logged in without a signing prompt | [02](./tutorials/02-logging-in-from-a-browser.md) |
+| **3** | Permission registry; `requirePermission` guards; `validatePermissions()` after routes register | A typo'd permission key fails at startup | [03](./tutorials/03-roles-and-permissions.md) |
+| **4** | `rateLimiter` wired; outstanding-challenge caps sized; `aclResolver` passed to the guards; cookie flags reviewed | `/auth/init` is no longer an uncapped write, and revoking access takes effect on the next request | [09](./tutorials/09-before-you-ship.md) |
+
+The tutorials cover three things §0.4 does not, because they are optional rather than ordered:
+refresh tokens ([05](./tutorials/05-refresh-tokens.md)), step-up
+([06](./tutorials/06-step-up.md)), and the two signers that are not a NIP-07 extension
+([07](./tutorials/07-nip46.md), [08](./tutorials/08-in-page-keys.md)).
 
 ### 0.5 Checklist
 
@@ -516,6 +525,8 @@ rejects the token if `revoked_at` is set or `expires_at` has passed.
 
 ## 3. Authorisation model
 
+> **Walk it:** [tutorial 03 — roles and permissions](./tutorials/03-roles-and-permissions.md) builds a working subset of this section against a running app.
+
 NAP 0.2.0 ships a real ACL layer, added in commit `436a40e`. It is
 role-based with per-principal overrides, scoped by `app_id`. All of it lives in
 `packages/nap-server/src/acl.ts` and `packages/nap-server/src/types.ts`.
@@ -844,6 +855,8 @@ export const napServerOptions: NapServerOptions = {
 
 ### 5.2 Express
 
+> **Walk it:** [tutorial 01 — a NAP server you can `curl`](./tutorials/01-a-server-you-can-curl.md) wires exactly this, then drives the flow by hand.
+
 ```ts
 import express from 'express';
 import {
@@ -951,6 +964,8 @@ client.
 
 ### 5.3 Fastify
 
+> **Walk it:** [the Fastify appendix](./tutorials/appendix-fastify.md) is the whole Express-to-Fastify substitution for the tutorial series, in one place.
+
 ```ts
 import Fastify from 'fastify';
 import {
@@ -1055,6 +1070,8 @@ Expired sessions are not swept at all — `getByAccessToken()` filters on
 Add your own `DELETE` job.
 
 ### 5.5 Postgres schema
+
+> **Walk it:** [tutorial 04 — sessions that survive a restart](./tutorials/04-postgres.md) applies this schema and shows the rows changing.
 
 > **There is no migration file or DDL constant in the repo.** I checked: no
 > `.sql` files, and no `CREATE TABLE` string anywhere under `packages/`. The
@@ -1305,6 +1322,8 @@ The `NapSession` surface (`packages/nap-client-web/src/types.ts:38`):
 
 ### 6.2 Signers
 
+> **Walk it:** one tutorial per signer — [02 (NIP-07)](./tutorials/02-logging-in-from-a-browser.md), [07 (NIP-46)](./tutorials/07-nip46.md), [08 (in-page key)](./tutorials/08-in-page-keys.md).
+
 A `SessionSigner` is just two methods (`types.ts:13`):
 
 ```ts
@@ -1484,6 +1503,8 @@ field can. Serve the pages that render it with `frame-ancestors 'none'`.
 
 ### 6.3 Idle lock, shutdown, and cross-tab sync
 
+> **Walk it:** [tutorial 08 §5–§7](./tutorials/08-in-page-keys.md) drives the lock, the passphrase re-unlock, and the cross-tab broadcast in a browser.
+
 Two independent features, both off-by-default-ish:
 
 - **`autoLock`** (`packages/nap-client-web/src/activityLock.ts`) — disabled
@@ -1553,6 +1574,8 @@ takes no passphrase and is the only way out of a lock for those signers.
 > window, it does not close it.
 
 ### 6.4 React
+
+> **Walk it:** [tutorial 02 — logging in from a browser](./tutorials/02-logging-in-from-a-browser.md) builds the provider, the login button, and the reload path.
 
 `@imani/nap-react` is a thin binding. `NapProvider` takes an already-constructed
 `NapSession` and mirrors its booleans into React state
@@ -2499,6 +2522,8 @@ bounded inter-node skew a cluster-safety requirement.
 
 ### 9.2 Session lifetime and rotation
 
+> **Walk it:** [tutorial 05 — refresh tokens](./tutorials/05-refresh-tokens.md), including the client-side rotation nothing in NAP does for you.
+
 - Default `sessionTtlSeconds` is **900 (15 min)**, matching the RFC's 5–15
   minute recommendation (`docs/NAP-v2-RFC.md:415`).
 - **Expiry is absolute, not sliding.** Nothing touches `expires_at` after
@@ -2569,6 +2594,8 @@ origins and credentials are mutually exclusive. `nap-client-web` always sends
 mandatory, not optional.
 
 ### 9.4 Proxy and audience resolution — the sharpest edge
+
+> **Walk it:** [tutorial 09 §6](./tutorials/09-before-you-ship.md) wires the allowlist and shows the wiring-time throw.
 
 The NIP-98 `u` tag is compared for exact equality against
 `getExternalBaseUrl(req) + '/auth/complete'`. Get this wrong and **every** login
@@ -2685,6 +2712,8 @@ Three more audience gotchas:
   that makes `base + '/auth/complete'` come out right.
 
 ### 9.5 Rate limiting and resource bounds
+
+> **Walk it:** [tutorial 09 §2](./tutorials/09-before-you-ship.md) drives 32 requests at a real server and shows why the two caps are indistinguishable on the wire.
 
 `/auth/init` is an unauthenticated endpoint that performs a bech32 decode, 44
 bytes of CSPRNG, and a database `INSERT` per call. Three separate bounds cover it
