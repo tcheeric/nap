@@ -17,28 +17,28 @@
   },
   "dependencies": {
     "@imani/nap-adapter-express": "0.10.1",
-    "@imani/nap-core": "0.10.1",
-    "@imani/nap-server": "0.10.1",
-    "express": "^4.21.2",
-    "@imani/nap-client-web": "0.10.1",
     "@imani/nap-client-nip46": "0.10.1",
+    "@imani/nap-client-web": "0.10.1",
+    "@imani/nap-core": "0.10.1",
     "@imani/nap-react": "0.10.1",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
+    "@imani/nap-server": "0.10.1",
     "@imani/nap-store-postgres": "0.10.1",
-    "pg": "^8.13.1"
+    "express": "^4.21.2",
+    "nostr-tools": "^2.23.0",
+    "pg": "^8.13.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@imani/nap-client-http": "0.10.1",
     "@types/express": "^5.0.0",
-    "@types/supertest": "^6.0.2",
-    "nostr-tools": "^2.23.0",
-    "supertest": "^7.0.0",
-    "tsx": "^4.19.2",
+    "@types/pg": "^8.11.10",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/supertest": "^6.0.2",
     "@vitejs/plugin-react": "^4.3.4",
-    "vite": "^5.4.11",
-    "@types/pg": "^8.11.10"
+    "supertest": "^7.0.0",
+    "tsx": "^4.19.2",
+    "vite": "^5.4.11"
   }
 }

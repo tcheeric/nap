@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Nip46Error, createNip46Signer } from '@imani/nap-client-nip46';
-import { createWebCryptoSecretStore, type SessionSigner } from '@imani/nap-client-web';
+import { createWebCryptoSecretStore } from '@imani/nap-client-web';
+import type { OnSigner } from './signerChoice.js';
 
 /**
  * A key that never comes near this page.
@@ -11,7 +12,7 @@ import { createWebCryptoSecretStore, type SessionSigner } from '@imani/nap-clien
  * on the phone and every signature is a relay round trip — see tutorial 07 for
  * what that costs.
  */
-export function RemoteSigner({ onSigner }: { onSigner: (signer: SessionSigner) => void }) {
+export function RemoteSigner({ onSigner }: { onSigner: OnSigner }) {
   const [token, setToken] = useState('');
   const [passphrase, setPassphrase] = useState('');
   const [uri, setUri] = useState<string | null>(null);
@@ -47,7 +48,12 @@ export function RemoteSigner({ onSigner }: { onSigner: (signer: SessionSigner) =
       // Restores a stored pairing if there is one, and pairs afresh if not.
       // The same call covers both, so the UI does not have to know which.
       await signer.connect();
-      onSigner(signer);
+      // `verifyIdentity` unconditionally, because `connect()` deliberately
+      // does not tell us whether it restored a stored pairing or made a fresh
+      // one — and a restored pairing may point at a different key than the
+      // live cookie belongs to. It costs one more relay round trip on a path
+      // that has just made several.
+      onSigner({ signer, kind: 'nip46', verifyIdentity: true });
     } catch (cause) {
       setError(describeNip46(cause));
     } finally {

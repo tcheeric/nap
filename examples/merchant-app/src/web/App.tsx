@@ -1,18 +1,31 @@
-import { useMemo, useState, type ReactNode } from 'react';
-import type { SessionSigner } from '@imani/nap-client-web';
-import { NapProvider, useNapSession } from '@imani/nap-react';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import type { SignerKind } from '@imani/nap-client-web';
+import { NapProvider, useNapSession, useSignerPreference } from '@imani/nap-react';
 import { createRefreshLoop } from './refreshLoop.js';
+import { LockScreen } from './LockScreen.js';
+import type { SignerChoice } from './signerChoice.js';
 import { SignerPicker, describe } from './SignerPicker.js';
 import { useNapBootstrap } from './useNapBootstrap.js';
 import { Payouts } from './Payouts.js';
 import { Vouchers } from './Vouchers.js';
 
 export function App() {
-  const [signer, setSigner] = useState<SessionSigner | null>(null);
-  const { session, phase, identityChange } = useNapBootstrap(signer);
+  const [picked, setPicked] = useState<SignerChoice | null>(null);
+  const { session, phase, identityChange } = useNapBootstrap(picked?.signer ?? null, {
+    verifyIdentity: picked?.verifyIdentity ?? false,
+  });
+
+  // Stable, because `SignerPicker` restores a remembered extension signer from
+  // an effect keyed on it. A fresh arrow every render would re-run that effect
+  // every render.
+  const onSigner = useCallback((choice: SignerChoice) => setPicked(choice), []);
 
   if (!session) {
-    return <Shell><SignerPicker onSigner={setSigner} /></Shell>;
+    return (
+      <Shell>
+        <SignerPicker onSigner={onSigner} />
+      </Shell>
+    );
   }
 
   if (phase === 'resuming') {
@@ -24,7 +37,7 @@ export function App() {
 
   return (
     <NapProvider session={session} identityChange={identityChange}>
-      <Shell><Account /></Shell>
+      <Shell><Account signerKind={picked?.kind ?? null} /></Shell>
     </NapProvider>
   );
 }
@@ -38,10 +51,11 @@ function Shell({ children }: { children: ReactNode }) {
   );
 }
 
-function Account() {
-  const { session, isAuthenticated, roles, permissions } = useNapSession();
+function Account({ signerKind }: { signerKind: SignerKind | null }) {
+  const { session, isAuthenticated, isLocked, isShutdown, roles, permissions } = useNapSession();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const { remember, forget } = useSignerPreference();
 
   const refresh = useMemo(
     () =>
@@ -68,6 +82,14 @@ function Account() {
     }
   };
 
+  // Before the authentication branch, not after. A lock that arrived from a
+  // sibling tab before this one logged in would otherwise render a Sign in
+  // button that `authenticate()` refuses, with no affordance to clear the
+  // lock that is doing the refusing.
+  if (isLocked || isShutdown) {
+    return <LockScreen />;
+  }
+
   if (!isAuthenticated) {
     return (
       <section>
@@ -79,7 +101,15 @@ function Account() {
               // login() returns the raw completion body, which is the only
               // place the refresh token appears. `/auth/session` never carries
               // one, so a resume() cannot re-arm this — tutorial 05 §6.
-              refresh.arm(await session.login());
+              const success = await session.login();
+              refresh.arm(success);
+
+              // After the login, not on the click that started it. Recording a
+              // choice that then fails sends the next visit down a path the
+              // user cannot complete.
+              if (signerKind) {
+                remember(signerKind, success.principal.npub);
+              }
             })
           }
         >
@@ -111,11 +141,28 @@ function Account() {
           run(async () => {
             refresh.disarm();
             await session.logout();
+            // A deliberate sign-out is the one case where the remembered
+            // choice should not survive: the next visitor to this browser may
+            // not be the same person.
+            forget();
           })
         }
       >
         Sign out
       </button>
+
+      {/* Always evicts, even where recovery is awkward. Zeroing the key is
+          the point of a lock; refusing an explicit one to spare the user a
+          passphrase leaves a live key in the page, which is the worse trade.
+          Open a second tab and press it: both lock. */}
+      <button
+        onClick={() => {
+          session.lock();
+        }}
+      >
+        Lock now
+      </button>
+
       {error ? <p role="alert">{error}</p> : null}
       <Vouchers />
       <Payouts />
