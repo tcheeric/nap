@@ -1,0 +1,18 @@
+# Names in docs that are not types in this repository. Checked by `doccheck`.
+
+# Cookie attributes, not types
+HttpOnly
+SameSite
+
+# node-postgres / cookie library types named in the integration guide
+PoolClient
+SerializeOptions
+
+# Rate-limit scope named in prose
+PerIp
+
+# Types described in the voucher-bound-authorization extension proposal
+# (docs/extensions/0001), which is a design document rather than shipped code.
+VoucherAclResolver
+VoucherCredential
+AuthCompleteHttpRequest
