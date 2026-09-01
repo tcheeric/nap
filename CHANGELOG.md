@@ -45,6 +45,14 @@ All packages in this workspace share a single version.
   review question B, its open-questions list, and its recommendation, so the answer is found
   rather than rediscovered.
 
+- **The `@imani/nap-voucher` README is checked against the source.**
+  `readmeTypecheck.test.ts` extracts the TypeScript blocks from the README itself and
+  type-checks them against the real API, so a renamed export or a changed option name fails
+  the suite instead of silently rotting the documentation. The companion
+  `readmeExample.test.ts` executes the same wiring and pins the error messages the README
+  quotes. A hand-copied example test cannot catch drift in the document it was copied from,
+  which is the gap this closes.
+
 - **Extension 0001 is linked from RFC §22.** The RFC listed five open extensions but pointed
   at no document, leaving the drafted extension unreachable from the spec it extends.
 

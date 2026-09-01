@@ -46,8 +46,11 @@ if (!mint) {
 }
 ```
 
-Every snippet on this page is executed by `test/readmeExample.test.ts`, which
-also pins the construction-time error messages quoted below. A documented
+Every snippet on this page is checked two ways: `test/readmeTypecheck.test.ts`
+extracts the code blocks **from this file** and type-checks them against the
+real source, so a renamed export or a changed option breaks the build rather
+than rotting the docs; and `test/readmeExample.test.ts` executes the wiring and
+pins the construction-time error messages quoted below. A documented
 snippet that has never run is the first thing an integrator copies, and the
 failure lands on them rather than on us.
 
