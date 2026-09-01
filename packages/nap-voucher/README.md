@@ -165,3 +165,37 @@ Three consequences:
 Supplying a `degradedGrant` while in `deny` mode also throws: it means the
 operator believes degraded mode is on when it is not, and finding that out
 during an outage is worse than finding it out at startup.
+
+## Why the credential goes in the body
+
+Not a detail. When the resolver and the completion-body field land (#22, #23), the
+`VoucherCredential` travels in the **`/auth/complete` request body**, not in the NIP-98
+event, and that placement is load-bearing.
+
+The NIP-98 `payload` tag is `sha256(rawBody)` (RFC §11 rule 7). Putting the credential in
+the body means **the signature covers it**: a credential swapped in transit changes the
+hash, and the completion fails with `NAP_COMPLETE_PAYLOAD_MISMATCH`. This is the same
+mechanism that already protects `step_up`, whose flag cannot be added in transit for
+exactly this reason.
+
+### Consequence for adapters
+
+The raw-body trap documented in CLAUDE.md and guide §9.4 applies unchanged, **and with more
+at stake**. Previously a middleware that reparsed and re-stringified JSON broke logins.
+Under this extension the same bug would break the integrity of an authorization credential.
+
+Concretely, this must remain true on the `/auth/complete` route:
+
+- No global `express.json()` (or Fastify equivalent) ahead of the NAP router.
+- No logging, tracing, or gateway layer that round-trips the body through
+  `JSON.parse`/`JSON.stringify`.
+- No proxy that pretty-prints or re-orders JSON.
+
+The failure is loud — every completion 401s with `NAP_COMPLETE_PAYLOAD_MISMATCH` in the
+audit log — so it fails closed rather than silently accepting a swapped credential. But it
+fails closed for *every* user at once, so it is worth checking before rollout rather than
+after.
+
+**Status:** the field itself is #22, blocked on the secret-modelling decision in
+[ADR 0003](../../docs/adr/0003-voucher-secret-modelling.md). The transport argument above
+does not depend on that decision, which is why it is written down now.

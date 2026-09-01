@@ -280,6 +280,13 @@ nothing — the same property tutorial 03 establishes for the registry.
 against an unmodified mint. Option 1 is the only one that keeps `cashu-voucher`'s domain model
 intact. Which cost do we pay?
 
+> **Investigated.** The Imani mint **does not** enforce P2PK on a VOUCHER secret:
+> `VerifyProofsTask.getSpendingCondition()` dispatches first-match on kind, so a VOUCHER
+> secret never reaches `P2PKSpendingCondition`, and `VoucherSpendingCondition` contains no
+> witness check at all. Under option 1 as things stand, the §3.1 binding would be advisory
+> only. See [ADR 0003](../adr/0003-voucher-secret-modelling.md) for the evidence and the
+> two remaining paths.
+
 ---
 
 ## 6. Verification procedure
@@ -439,6 +446,9 @@ allowlists.
   and call site? (§5.1)
 - **B.** VOUCHER-with-P2PK-tags, P2PK-with-voucher-tags, or a composite kind — and does the
   Imani mint enforce the lock in the chosen shape? **This one is load-bearing.** (§5.3)
+  Answered on the factual half — it does not — in
+  [ADR 0003](../adr/0003-voucher-secret-modelling.md); the remaining choice is whether to
+  adopt option 2 now or upgrade the mint first.
 - **C.** Acceptable staleness between voucher death and session death. (§7.1)
 - **D.** Capability advertisement on `/auth/init`, or fail-closed? (§8)
 - **E.** Should `grant()` be validated against the `PermissionRegistry` at wiring time?
@@ -455,6 +465,9 @@ Worth building, in this order:
 1. **Settle question B first.** Everything downstream is contingent on how the P2PK lock and
    the voucher metadata coexist, and on whether the mint enforces it. If the mint does not
    enforce the lock in the chosen shape, stop: the security argument in §3.1 does not hold.
+   *(Status: the mint does not enforce it on a VOUCHER secret —
+   [ADR 0003](../adr/0003-voucher-secret-modelling.md). Awaiting a decision between adopting
+   option 2 and upgrading the mint.)*
 2. Build the verification client (allowlist, keyset cache, DLEQ, NUT-07) standalone and
    testable, with no NAP dependency.
 3. Fix CONTEXT.md finding 12 (guard audit logging), so §6.2 is observable.
