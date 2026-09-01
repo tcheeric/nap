@@ -182,10 +182,18 @@ All packages in this workspace share a single version.
   `AclResolutionContext` was absent entirely. An implementer building against the RFC would have
   produced a resolver that cannot revoke sessions, bound one, or see a credential.
 
-  Now covered by `rfcParity.test.ts`, which extracts the RFC's own blocks and compares them to
-  the real types. It compares **key sets**, not assignability: an interface missing an optional
-  field is still assignable in both directions, so the obvious version passed against a
-  deliberately drifted RFC. Each of the three drifts is mutation-checked.
+  Widening the check from three interfaces to all thirteen found six more: `RateLimiter` had an
+  entirely wrong shape (`consume(string)` against the real `check(RateLimitKey)`), `ChallengeStore`
+  and `SessionStore` omitted their optional methods, `ChallengeRecord` and `SessionRecord` omitted
+  optional fields, `VerifyCompleteFailure` omitted `retryAfterSeconds`, and both generic
+  interfaces had wrong method names *and* wrong return types.
+
+  Now covered by `rfcParity.test.ts`, which enumerates §25's own blocks and compares each to the
+  real type. It compares **key sets**, not assignability: an interface missing an optional field
+  is still assignable in both directions, so the obvious version passed against a deliberately
+  drifted RFC. The interfaces are discovered rather than listed, and a guard asserts every
+  declared one is compared, so a new interface cannot be silently uncovered. Mutation-checked
+  against eight separate drifts.
 
   Also re-exports `VoucherCredential` from `@imani/nap-server`, which the parity check surfaced:
   `AclResolutionContext.voucher` is public API naming a type consumers could not import.

@@ -37,10 +37,37 @@ const RFC = resolve(here, '../../../docs/NAP-v2-RFC.md');
  * optional, that version would have caught nothing it was written for.
  */
 
+/** The §25 section, so an interface declared elsewhere in the RFC is not mistaken for one. */
+function coreInterfacesSection(): string {
+  const doc = readFileSync(RFC, 'utf8');
+  const start = doc.indexOf('## 25. Core Library Interfaces');
+  const end = doc.indexOf('## 26. Deterministic Error Code Registry');
+
+  expect(start, 'the RFC should have a §25').toBeGreaterThan(-1);
+  expect(end, 'the RFC should have a §26 after it').toBeGreaterThan(start);
+
+  return doc.slice(start, end);
+}
+
+/**
+ * Every interface §25 declares, discovered rather than listed.
+ *
+ * Listing them by hand is how this check would rot: a new interface added to
+ * the RFC would simply never be compared, and the file would keep passing while
+ * covering less of the section every year.
+ */
+function declaredInterfaces(): string[] {
+  return [...coreInterfacesSection().matchAll(/^export interface ([A-Za-z]+)/gm)].map(
+    (match) => match[1]!
+  );
+}
+
 /** Pulls a named `export interface` block out of the RFC's fenced TypeScript. */
 function rfcInterface(name: string): string {
   const doc = readFileSync(RFC, 'utf8');
-  const start = doc.indexOf(`export interface ${name} {`);
+  // Matches both `interface X {` and `interface X<T = unknown> {`; anchoring on
+  // the brace missed every generic, which is how two of them went unchecked.
+  const start = doc.search(new RegExp(`^export interface ${name}[<{ ]`, 'm'));
 
   expect(start, `the RFC should declare ${name}`).toBeGreaterThan(-1);
 
@@ -91,16 +118,81 @@ function typeCheck(source: string): string[] {
 }
 
 const REAL = resolve(here, '../src/index.ts').replace(/\.ts$/, '.js');
+const CORE = resolve(here, '../../nap-core/src/index.ts').replace(/\.ts$/, '.js');
+
+/** Types the RFC lists under §25 that are declared in `@imani/nap-core`. */
+const IMPORTS: Record<string, string> = {
+  ChallengeRecord: CORE,
+  ChallengeState: CORE,
+  SessionRecord: CORE,
+  VerifyCompleteSuccess: CORE,
+  VerifyCompleteFailure: CORE,
+};
+
+/**
+ * Interfaces taking a type parameter, compared with it applied.
+ *
+ * `keyof AudienceResolver` on the bare name is a compile error rather than a
+ * comparison, so these need instantiating. Excluding them entirely was the
+ * first instinct and the wrong one: both had drifted -- wrong method names
+ * *and* wrong return types -- and skipping them would have preserved exactly
+ * the defect this file exists to find.
+ */
+const GENERIC = new Set(['AudienceResolver', 'RawBodyExtractor']);
+
+/**
+ * Types the RFC's blocks refer to but do not declare inline.
+ *
+ * Imported wholesale so a block naming one compiles. They are supporting cast:
+ * the assertion is always about the interface under test, and a block that
+ * referenced something genuinely undeclared would still fail here.
+ */
+const SUPPORTING_CORE = [
+  'ChallengeRecord',
+  'ChallengeState',
+  'NapErrorCode',
+  'SessionRecord',
+  'VoucherCredential',
+];
+const SUPPORTING_SERVER = [
+  'OutstandingChallengeFilter',
+  'RateLimitKey',
+  'RateLimitDecision',
+  'RecordChallengeFailureResult',
+  'RotateRefreshTokenParams',
+];
+
+/**
+ * Imports for the types an RFC block names but does not declare inline.
+ *
+ * The interface under test is excluded, since the block declares it and a
+ * duplicate import is a compile error rather than a finding.
+ */
+function supporting(name: string): string {
+  const core = SUPPORTING_CORE.filter((type) => type !== name);
+  const server = SUPPORTING_SERVER.filter((type) => type !== name);
+
+  return [
+    `import type { ${core.join(', ')} } from '${CORE}';`,
+    `import type { ${server.join(', ')} } from '${REAL}';`,
+  ].join('\n      ');
+}
+
+/** Every §25 interface, minus the resolver checked separately and the generics. */
+const NON_GENERIC_INTERFACES = declaredInterfaces().filter(
+  (name) => name !== 'AclResolver' && !GENERIC.has(name)
+);
 
 describe('the RFC §25 interfaces match the implementation', () => {
-  it.each(['AclDecision', 'AclResolutionContext'])(
+  it.each(NON_GENERIC_INTERFACES)(
     'declares the same %s the server actually uses',
     (name) => {
       // Key sets in both directions, plus assignability. The key check is what
       // catches a dropped optional field; assignability catches a retyped or
       // renamed one.
       const diagnostics = typeCheck(`
-      import type { ${name} as Real, VoucherCredential } from '${REAL}';
+      import type { ${name} as Real } from '${IMPORTS[name] ?? REAL}';
+      ${supporting(name)}
 
       ${rfcInterface(name)}
 
@@ -157,11 +249,45 @@ describe('the RFC §25 interfaces match the implementation', () => {
     expect(diagnostics).toEqual([]);
   });
 
+  it.each([...GENERIC])('declares the same %s once its type parameter is applied', (name) => {
+    const diagnostics = typeCheck(`
+      import type { ${name} as RealGeneric } from '${REAL}';
+
+      ${rfcInterface(name)}
+
+      type Real = RealGeneric<{ probe: true }>;
+      type FromRfc = ${name}<{ probe: true }>;
+
+      declare const missingFromRfc: Exclude<keyof Real, keyof FromRfc>;
+      declare const missingFromImplementation: Exclude<keyof FromRfc, keyof Real>;
+
+      export const rfcIsComplete: never = missingFromRfc;
+      export const implementationIsComplete: never = missingFromImplementation;
+
+      declare const fromRfc: FromRfc;
+      declare const fromImplementation: Real;
+
+      export const a: Real = fromRfc;
+      export const b: FromRfc = fromImplementation;
+    `);
+
+    expect(diagnostics).toEqual([]);
+  });
+
   it('still finds the blocks it claims to check', () => {
     // Guards the extractor itself: if §25 were renamed or reformatted, the
     // tests above would silently check an empty string and pass.
-    for (const name of ['AclDecision', 'AclResolutionContext', 'AclResolver']) {
-      expect(rfcInterface(name)).toContain(`export interface ${name} {`);
+    const declared = declaredInterfaces();
+
+    // Every §25 interface is either compared directly, compared as a generic,
+    // or is the resolver with its own case. Nothing is quietly skipped.
+    expect(declared.length).toBeGreaterThanOrEqual(13);
+    expect(new Set([...NON_GENERIC_INTERFACES, ...GENERIC, 'AclResolver'])).toEqual(
+      new Set(declared)
+    );
+
+    for (const name of declared) {
+      expect(rfcInterface(name)).toContain(`export interface ${name}`);
     }
   });
 });

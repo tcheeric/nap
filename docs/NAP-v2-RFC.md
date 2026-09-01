@@ -1055,6 +1055,10 @@ export interface ChallengeRecord {
   redeemed_event_id?: string;
   redeemed_session_id?: string;
   result_cache_until?: number;
+  /** Caller address, when the deployment records it for rate limiting (§18). */
+  client_ip?: string;
+  /** Consecutive failed completions, when the store tracks them (§18). */
+  failure_count?: number;
 }
 ```
 
@@ -1071,8 +1075,13 @@ export interface SessionRecord {
   permissions: string[];
   issued_at: number;
   expires_at: number;
+  /** Step-up token and its expiry, when the completion requested one (§16). */
+  step_up_token?: string;
+  step_up_expires_at?: number;
   refresh_token?: string;
   refresh_expires_at?: number;
+  /** The token this one replaced, retained so one replay is detectable (§14.1). */
+  previous_refresh_token?: string;
   revoked_at?: number;
 }
 ```
@@ -1093,6 +1102,13 @@ export interface ChallengeStore {
     | { status: 'expired' }
   >;
   markExpired(now: number): Promise<number>;
+  /** Outstanding-challenge cap (§18). Optional; the cap is skipped without it. */
+  countOutstanding?(filter: OutstandingChallengeFilter): Promise<number>;
+  /** Per-challenge failure tracking (§18). Optional. */
+  recordFailure?(
+    challengeId: string,
+    params: { now: number; maxFailures: number }
+  ): Promise<RecordChallengeFailureResult | null>;
 }
 
 export interface SessionStore {
@@ -1101,6 +1117,16 @@ export interface SessionStore {
   getByAccessToken(token: string): Promise<SessionRecord | null>;
   revokeBySessionId(sessionId: string, now: number): Promise<void>;
   revokeByPrincipal(pubkey: string, now: number): Promise<number>;
+  /**
+   * Refresh support (§14.1). Optional as a pair: a server configuring
+   * `refreshTtlSeconds` without a store implementing both fails at wiring time
+   * rather than on the first refresh.
+   */
+  getByRefreshToken?(token: string): Promise<SessionRecord | null>;
+  rotateRefreshToken?(
+    sessionId: string,
+    params: RotateRefreshTokenParams
+  ): Promise<SessionRecord | null>;
 }
 
 export interface AclDecision {
@@ -1161,15 +1187,19 @@ export interface AclResolver {
 }
 
 export interface RateLimiter {
-  consume(key: string): Promise<{ allowed: boolean; retry_after_seconds?: number }>;
+  check(key: RateLimitKey): Promise<RateLimitDecision> | RateLimitDecision;
 }
 
-export interface AudienceResolver<RequestLike = unknown> {
-  getExternalUrl(request: RequestLike): string;
+export interface AudienceResolver<TRequest = unknown> {
+  resolve(request: TRequest): string;
 }
 
-export interface RawBodyExtractor<RequestLike = unknown> {
-  getRawBody(request: RequestLike): Promise<Uint8Array> | Uint8Array;
+export interface RawBodyExtractor<TRequest = unknown> {
+  /**
+   * The exact bytes received, or `null` when they are unavailable — which MUST
+   * be treated as a failure, never as an empty body (§12 step 4).
+   */
+  extract(request: TRequest): Uint8Array | null;
 }
 
 export interface Clock {
@@ -1208,6 +1238,8 @@ export interface VerifyCompleteFailure {
   ok: false;
   code: NapErrorCode;
   retryable: boolean;
+  /** Set on `NAP_COMPLETE_RATE_LIMITED`, for the adapter's `Retry-After` header. */
+  retryAfterSeconds?: number;
 }
 
 export type VerifyCompleteResult =
