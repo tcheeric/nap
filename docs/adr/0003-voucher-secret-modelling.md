@@ -163,10 +163,19 @@ error in the earlier analysis. Given that, pay for the honest model.
   call sites: spec, flattened, and object forms); a secret class exposing both the voucher
   accessors and the P2PK lock. Note that `Kind.valueOf()` means the enum name is the wire
   string, so the member name is a public format decision.
-- **`cashu-voucher`**: `VoucherCanonicalBytes` must emit the new kind, and
-  `VoucherSignatureService` must sign and verify over it. **This invalidates issuer
-  signatures produced under the old form**, so it needs either a migration window or a
-  version tag in the canonical bytes.
+- **`cashu-voucher`**: ~~`VoucherCanonicalBytes` must emit the new kind…~~ **Done**
+  (`fc9d456`), and it turned out cheaper than predicted.
+
+  This ADR expected the change to invalidate every issuer signature already made, and said it
+  would need a migration window or a version tag. It does not. `VoucherCanonicalBytes` now
+  reads the kind from the secret rather than appending the literal `"VOUCHER"`, and for a
+  `VOUCHER` secret the value read *is* the string that was hardcoded — so the bytes are
+  identical. Verified against the golden vector before and after the change: the signing
+  hash stays `d640f94fa4633aeb0089be77df012a754a399315bd808acd7325d31e29a75751`.
+
+  The prediction assumed the canonical form was tied to `VoucherSecret`. It is not: it only
+  reads `getData`, `getNonce`, and `getTags`, all declared on `WellKnownSecret`, so widening
+  the parameter type was enough and the cryptography stayed one implementation.
 - **`cashu-mint`**: `VerifyProofsTask.getSpendingCondition()` must dispatch `P2PK_VOUCHER` to
   a condition that runs *both* the voucher checks and `P2PKSpendingCondition`. Ordering
   matters: it must be matched before the existing `isVoucherSecret` branch, or a

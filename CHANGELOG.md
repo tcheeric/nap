@@ -114,9 +114,12 @@ All packages in this workspace share a single version.
   witness check. Every option needs an upstream change, so the deciding factor became which
   model is honest rather than which is cheapest.
 
-  Cost: `cashu-lib`, `cashu-voucher` (invalidating issuer signatures made under the old
-  canonical form), and `cashu-mint`. **NAP must not ship ahead of the mint** — until the mint
-  enforces the kind, the binding holds only as far as NAP checks it.
+  Upstream status: `cashu-lib` has the kind and `P2PKVoucherSecret`; `cashu-voucher` signs and
+  verifies it, and **without invalidating existing signatures** — the canonical form now reads
+  the kind from the secret, which for a `VOUCHER` produces byte-identical output, so the ADR's
+  predicted migration window was not needed. `cashu-mint` dispatch is outstanding. **NAP must
+  not ship ahead of the mint** — until the mint enforces the kind, the binding holds only as
+  far as NAP checks it.
 
   The ADR also records where the new kind lives, since the question was asked twice: in
   `cashu-lib` beside `P2PKSecret`, with its meaning in `cashu-voucher`. No sister repository

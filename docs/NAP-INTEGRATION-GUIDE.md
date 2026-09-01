@@ -1083,10 +1083,11 @@ worth*, `P2PK` says who may *spend* it — and a composite kind is the only shap
 that keeps both first-class and both enforced.
 
 **The cost is real and it is upstream.** A new kind needs `cashu-lib`
-(deserialiser and secret class), `cashu-voucher` (canonical bytes and issuer
-signing, which invalidates signatures produced under the old form), and
-`cashu-mint` (dispatch, plus `/v1/info` advertising the kind so a wallet can
-tell the lock is enforced). **NAP must not ship ahead of the mint**: until the
+(deserialiser and secret class — landed), `cashu-voucher` (canonical bytes and
+issuer signing — landed, and without invalidating existing signatures: the
+canonical form now reads the kind from the secret, which for a `VOUCHER` yields
+the byte-identical result), and `cashu-mint` (dispatch, plus `/v1/info`
+advertising the kind so a wallet can tell the lock is enforced — outstanding). **NAP must not ship ahead of the mint**: until the
 mint enforces the new kind, the binding holds only as far as NAP checks it,
 which is the position the first option was rejected for.
 
