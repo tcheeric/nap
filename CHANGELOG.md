@@ -14,6 +14,12 @@ All packages in this workspace share a single version.
 - **`createVoucherAclResolver`** (#23): the §6 step-13 verification procedure, composing the
   allowlists, the mint client, DLEQ verification, and the availability policy.
 
+  End-to-end acceptance is asserted against the outcome rather than the steps: a voucher is
+  presented to the real Express endpoint and the resulting session's permissions — derived from
+  the voucher's own tags, with no ACL store wired at all — are honoured by a real guarded route
+  (200), while a permission the voucher does not carry is refused (403). The DLEQ is genuine
+  here rather than mocked, which the per-step tests could not establish.
+
   The order of steps (a)–(i) is the security property, so each is pinned by a negative test
   asserting its audit code — the codes are the only place the distinctions survive, since the
   client sees an identical 401 either way. `mint_url` is allowlisted before anything reaches the
