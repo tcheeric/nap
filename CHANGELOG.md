@@ -48,6 +48,26 @@ All packages in this workspace share a single version.
   retry was meant to prevent. Measured at 11 fetches for 10 unknown ids, now 2. A genuine
   rotation is still picked up within one request.
 
+### Testing
+
+- **Integration tests against real infrastructure** (`npm run test:integration`). Boots the
+  actual `cashu-mint-rest` image and a real `nostr-rs-relay` with testcontainers and points
+  the shipped mint client at them.
+
+  The existing end-to-end test drives a full NAP login, but its mint is one this repo wrote,
+  so it can only confirm our own assumptions about the wire shape. These pin the one thing it
+  cannot: that `parseKeysets()` agrees with what the real `/v1/keys` actually sends, that every
+  published key is a point the DLEQ code can parse, and that an unroutable mint reports
+  `unavailable` against a real socket. Mutation-checked — expecting a field the mint does not
+  send fails three of them.
+
+  Opt-in via `NAP_INTEGRATION=1`, so `npm test` stays fast and needs no Docker. Documented in
+  `docs/INTEGRATION-TESTS.md`, including how to run the mint standalone (the compose stack has
+  eight services; four settings suffice) and two upstream limits found while building this: the
+  NUT-07 endpoint needs a datastore, and voucher issuance is blocked by `commons-lang3` being
+  declared `<scope>test</scope>` in `cashu-mint-rest` while the voucher ledger needs it at
+  runtime.
+
 ### Documentation
 
 - **ADR 0003 records the voucher secret-modelling evidence** (`docs/adr/0003-voucher-secret-modelling.md`).

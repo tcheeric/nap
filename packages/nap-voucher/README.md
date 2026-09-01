@@ -13,6 +13,14 @@ the extension's build order: the verification client is built standalone and
 testable with no NAP dependency, so this package imports neither
 `@imani/nap-server` nor `@imani/nap-core`.
 
+## Tests
+
+Unit and end-to-end tests run with `npm test` and need nothing external.
+`npm run test:integration` additionally boots the real `cashu-mint-rest` image
+and a real Nostr relay to check our parsing against what the mint actually
+sends — see [`docs/INTEGRATION-TESTS.md`](../../docs/INTEGRATION-TESTS.md),
+which also records what the real mint could not be made to do standalone.
+
 ## Why there are two allowlists
 
 Any mint can sign a voucher whose tags claim `issuer: acme` and whose metadata
