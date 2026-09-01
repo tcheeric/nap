@@ -32,6 +32,15 @@ All packages in this workspace share a single version.
   proven. The credential used is deliberately valid — allowlisted, signed, correctly bound —
   because a prober would use one that passes every local check.
 
+- **`AclDecision.expires_at`** (#27 phase 1): a resolver can bound the session it authorises, and
+  the server clamps the session TTL to it. Only ever shortens — a resolver must not hand out
+  longer sessions than the operator configured — and never yields a session born expired.
+
+  Extension 0001's voucher carries an `expires_at` inside the secret, which the server never sees
+  again after login, so without this a voucher expiring in five minutes still minted a
+  full-length session. Observed with a 900-second TTL: a voucher living 5000s gives 900s, one
+  living 300s gives 300s.
+
 - **`supported_extensions` on `/auth/init`, and `NapServerOptions.supportedExtensions`** (#16):
   lets a client holding a credential tell "this server has no such feature" from "your
   credential was refused" — two 401s that are deliberately identical but call for opposite

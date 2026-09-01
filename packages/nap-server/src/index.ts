@@ -28,6 +28,7 @@ export {
   refreshSession,
   constantTimeEquals,
   resolveEffectiveAcl,
+  clampTtlToDecision,
   toPublicAuthFailure,
   toPublicAuthSuccess,
   toPublicSessionView,

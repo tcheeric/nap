@@ -201,6 +201,24 @@ export interface AclDecision {
    * everywhere, and only a fresh NIP-98 login gets them back.
    */
   revoke_sessions?: boolean;
+  /**
+   * Latest instant this decision remains valid, in epoch seconds.
+   *
+   * The session's expiry is clamped to it, so a session cannot outlive the
+   * thing that authorised it. Purely a ceiling: a value beyond the configured
+   * TTL does not extend the session, because a resolver must not be able to
+   * hand out longer sessions than the operator configured.
+   *
+   * Exists because a resolver may know something the server cannot: extension
+   * 0001's voucher carries an `expires_at`, and without this a voucher expiring
+   * in five minutes still produced a full-length session. The resolver had the
+   * fact and no way to say it.
+   *
+   * Ignored on refresh in the sense that refresh re-resolves and gets a fresh
+   * answer; a resolver that still considers the principal authorised simply
+   * returns a new bound.
+   */
+  expires_at?: number;
 }
 
 export type NapErrorCode =

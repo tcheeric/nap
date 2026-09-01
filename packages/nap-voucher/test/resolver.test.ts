@@ -640,3 +640,35 @@ describe('guard re-resolution, which never carries a credential', () => {
     expect(decision.allowed).toBe(false);
   });
 });
+
+/**
+ * The resolver reports the voucher's expiry so the server can clamp the session
+ * to it (#27). Without this the fact is unreachable: it lives inside the
+ * secret, which the server never sees again once login is over.
+ */
+describe('the decision carries the voucher expiry', () => {
+  it('reports expires_at from the secret', async () => {
+    const { resolver } = harness();
+
+    const decision = await resolver.resolve(NPUB, HOLDER_PUBKEY, {
+      voucher: credential({ secret: signedSecret({ expiresAt: NOW + 300 }) }),
+      now: NOW,
+    });
+
+    expect(decision).toMatchObject({ allowed: true, expires_at: NOW + 300 });
+  });
+
+  it('omits it for a voucher that does not expire', async () => {
+    // Absent rather than 0 or Infinity: the server treats absence as "no bound"
+    // and uses its configured TTL, which is the correct answer here.
+    const { resolver } = harness();
+
+    const decision = await resolver.resolve(NPUB, HOLDER_PUBKEY, {
+      voucher: credential({ secret: signedSecret({ expiresAt: null }) }),
+      now: NOW,
+    });
+
+    expect(decision.allowed).toBe(true);
+    expect(decision.expires_at).toBeUndefined();
+  });
+});

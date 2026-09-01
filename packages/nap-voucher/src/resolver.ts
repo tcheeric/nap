@@ -211,6 +211,7 @@ export interface AclResolverLike {
     permissions: string[];
     reason?: string;
     revoke_sessions?: boolean;
+    expires_at?: number;
   }>;
 }
 
@@ -524,6 +525,11 @@ export function createVoucherAclResolver(options: VoucherAclResolverOptions): Ac
         allowed: true,
         roles: [...(granted?.roles ?? [])],
         permissions: [...(granted?.permissions ?? [])],
+        // The server clamps the session to this, so a voucher expiring in five
+        // minutes cannot mint a fifteen-minute session. The resolver is the only
+        // party that knows the expiry -- it is inside the secret, which the
+        // server never sees again after login.
+        ...(secret.expiresAt !== null ? { expires_at: secret.expiresAt } : {}),
       };
     },
   };

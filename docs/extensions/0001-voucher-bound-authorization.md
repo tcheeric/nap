@@ -428,9 +428,24 @@ the session ceiling, or the ceiling is the only thing bounding anything.
 
 ### 7.2 Re-resolution at the guards
 
-`resolveEffectiveAcl` re-resolves per guarded request. A voucher resolver called there does a
-mint round trip per request unless results are cached. Cache TTL is then a security parameter:
-it is the maximum staleness of an authorization decision.
+`resolveEffectiveAcl` re-resolves per guarded request, and this section assumed that meant a
+mint round trip per request unless results were cached.
+
+**As built, it does not.** The credential is not available on re-resolution at all, so the
+resolver returns before reaching the mint:
+
+```
+100 guarded requests -> 0 keyset fetches, 0 state checks
+```
+
+The per-request mint dependency the section feared is structurally absent rather than avoided by
+tuning, which is the better outcome: there is no cache TTL to get wrong, and no configuration
+that reintroduces the problem. What replaces it is a staleness bound — `onMissingCredential:
+'trust-session'` accepts the session's snapshot, so authorization is as fresh as the session,
+which `maxSessionLifetimeSeconds` (§7.1) caps.
+
+A deployment that *wants* per-request mint checks would have to cache them, and the warning
+would apply again. §7.1 says why that is a trap.
 
 **There is a sharper problem than caching, found while implementing #24.** Re-resolution holds
 a *session*, never the credential — that lived in the login body and is gone. A voucher

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { encodeBase64String, hexToBytes, sha256Hex, utf8Bytes } from '@imani/nap-core';
 import type { AclDecision, SessionRecord } from '@imani/nap-core';
 import {
+  clampTtlToDecision,
   createInMemoryRateLimiter,
   InMemoryChallengeStore,
   InMemorySessionStore,
@@ -394,5 +395,43 @@ describe('maxSessionLifetimeSeconds bounds credential staleness', () => {
     harness.setNow(NOW + REFRESH_TTL);
     const outside = await refreshSession({ refreshToken: rotated.refresh_token! }, harness.options);
     expect(outside.ok).toBe(false);
+  });
+});
+
+/**
+ * Clamping the session to the resolver's bound (#27, extension 0001 §7.1).
+ *
+ * A resolver may know something the server cannot. Extension 0001's voucher
+ * carries an `expires_at` inside the secret, which the server never sees again
+ * after login — so without a way to report it, a voucher expiring in five
+ * minutes still minted a full-length session.
+ */
+describe('AclDecision.expires_at bounds the session', () => {
+  it('shortens the session to the decision, and only ever shortens', async () => {
+    expect(clampTtlToDecision(900, undefined, 1000)).toBe(900);
+    // A resolver must not be able to hand out longer sessions than the operator
+    // configured, so a distant bound is ignored rather than honoured.
+    expect(clampTtlToDecision(900, 1000 + 5000, 1000)).toBe(900);
+    expect(clampTtlToDecision(900, 1000 + 300, 1000)).toBe(300);
+  });
+
+  it('never produces a session that is born expired', async () => {
+    // A resolver answering `allowed: true` with a stale bound is a resolver
+    // bug. Turning it into a session whose expires_at precedes its issued_at
+    // would push that bug into every store and guard downstream.
+    expect(clampTtlToDecision(900, 950, 1000)).toBe(1);
+    expect(clampTtlToDecision(900, Number.NaN, 1000)).toBe(900);
+  });
+
+  it('applies at login, so the issued session really is shorter', async () => {
+    const harness = buildHarness();
+    harness.acl.expires_at = NOW + 120;
+
+    const session = await login(harness.options);
+
+    expect(session.expires_at).toBe(NOW + 120);
+    // The refresh window is the operator's, not the resolver's: this bounds how
+    // long *this* session is trusted, not whether the principal may return.
+    expect(session.refresh_expires_at).toBe(NOW + REFRESH_TTL);
   });
 });

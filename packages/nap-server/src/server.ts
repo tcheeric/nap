@@ -783,7 +783,12 @@ async function verifyCompletionUnpadded(
     createSessionRecord(
       challenge,
       now,
-      sessionTtlSeconds,
+      // Clamped to the resolver's bound, so a session cannot outlive what
+      // authorised it -- a voucher expiring in five minutes must not mint a
+      // fifteen-minute session. Only ever shortens: a resolver returning a
+      // distant bound gets the configured TTL, because a resolver must not be
+      // able to hand out longer sessions than the operator configured.
+      clampTtlToDecision(sessionTtlSeconds, aclDecision.expires_at, now),
       randomSource,
       aclDecision.roles,
       aclDecision.permissions,
@@ -1193,6 +1198,34 @@ export function constantTimeEquals(a: string, b: string): boolean {
   }
 
   return difference === 0;
+}
+
+/**
+ * The session TTL, shortened to a resolver's `expires_at` when it has one.
+ *
+ * Never lengthens, and never returns a non-positive TTL: a decision that has
+ * already expired yields the smallest usable session rather than one that is
+ * born expired or, worse, negative. A resolver answering `allowed: true` with a
+ * stale bound is a resolver bug, and turning it into a session whose
+ * `expires_at` precedes its `issued_at` would push that bug into every store
+ * and guard downstream.
+ */
+export function clampTtlToDecision(
+  configuredTtlSeconds: number,
+  decisionExpiresAt: number | undefined,
+  now: number
+): number {
+  if (decisionExpiresAt === undefined || !Number.isFinite(decisionExpiresAt)) {
+    return configuredTtlSeconds;
+  }
+
+  const remaining = Math.floor(decisionExpiresAt) - now;
+
+  if (remaining >= configuredTtlSeconds) {
+    return configuredTtlSeconds;
+  }
+
+  return Math.max(1, remaining);
 }
 
 export function toPublicAuthFailure(): { status: 401; body: AuthFailureResponse } {
