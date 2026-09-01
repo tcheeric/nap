@@ -159,6 +159,44 @@ error in the earlier analysis. Given that, pay for the honest model.
   rejected for. Extension 0001 §11 already couples the TypeScript and Java releases; this
   adds the mint to that set.
 
+### Where the new kind lives
+
+Asked twice during review, in two forms — "should the new type get its own sister repo?" and
+"should `cashu-voucher` be renamed to something not voucher-specific?" — so the answer is
+recorded rather than left to be re-derived.
+
+**The new kind goes in `cashu-lib`, beside `P2PKSecret` and `VoucherSecret`. Its meaning
+stays in `cashu-voucher`. Neither a new repo nor a rename.**
+
+The existing split is already the right seam, and it is not the one the question assumes:
+
+| Repo | Owns | Evidence |
+| --- | --- | --- |
+| `cashu-lib` | **What a secret is on the wire** — kinds, parsing, serialisation | `cashu-lib-common/.../nut10`, `nut11`, `nut18`; packages organised by NUT number |
+| `cashu-voucher` | **What a voucher means** — signing, validation, lifecycle, ledger, passes | `VoucherSignatureService`, `VoucherValidator`, `VoucherStatus`, `VoucherIssuanceService` |
+
+`cashu-voucher` contains no secret type at all. `VoucherSecret` lives in `cashu-lib` next to
+`P2PKSecret`, because that is where wire formats belong.
+
+- **A sister repo would split the wrong seam.** A NUT-10 kind is a wire format, so it belongs
+  where the other kinds are. Putting one kind elsewhere would leave
+  `WellKnownSecretDeserializer` either depending on the new repo or duplicating its parsing.
+- **A rename would misdescribe the contents.** The domain genuinely is voucher-specific:
+  `VoucherTags` carries `face_value`, `face_decimals`, `backing_strategy`, `issuance_ratio`,
+  and `merchant_metadata` — stored-value concepts, not credential concepts — and the app
+  module is issuance, redemption, and merchant verification, with a `-pass` module producing
+  branded wallet passes. A "generic credential" library whose core type has a face value and
+  a backing strategy would be a name the contents do not honour.
+- **The generic layer already exists.** `WellKnownSecret`, its `Kind` enum, and the tag
+  system are in `cashu-lib` and are already shared by `P2PK`, `HTLC`, and `VOUCHER`. A
+  future non-voucher credential has a home without any restructuring.
+
+The real question underneath both framings is **"is this new kind a voucher?"** It is: it has
+an issuer, a face value, an expiry, a redemption lifecycle, and a Nostr status ledger. The
+P2PK lock adds *who may spend it*, not a new category of thing. If a genuinely non-voucher
+credential appears later, it gets its own domain module or repo and the shared parts will be
+visible rather than guessed at — which is the cheaper order to discover them in.
+
 ### Reversing it
 
 Expensive, and the reason it is settled now. The options differ in wire form, so vouchers

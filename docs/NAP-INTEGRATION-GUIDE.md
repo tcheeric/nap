@@ -1082,6 +1082,12 @@ tell the lock is enforced). **NAP must not ship ahead of the mint**: until the
 mint enforces the new kind, the binding holds only as far as NAP checks it,
 which is the position the first option was rejected for.
 
+The kind itself belongs in `cashu-lib` beside `P2PKSecret` and `VoucherSecret` —
+that package is organised by NUT number and is where wire formats live — while
+its meaning stays in `cashu-voucher`. Neither a new repository nor a rename of
+`cashu-voucher` was needed; ADR 0003 records why, since the question came up
+twice.
+
 This choice is expensive to reverse — the shapes differ on the wire, so vouchers
 issued under one are not verifiable under another, and there is no in-place
 migration for a bearer credential already in circulation. It is settled now

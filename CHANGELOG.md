@@ -113,6 +113,12 @@ All packages in this workspace share a single version.
   canonical form), and `cashu-mint`. **NAP must not ship ahead of the mint** — until the mint
   enforces the kind, the binding holds only as far as NAP checks it.
 
+  The ADR also records where the new kind lives, since the question was asked twice: in
+  `cashu-lib` beside `P2PKSecret`, with its meaning in `cashu-voucher`. No sister repository
+  and no rename — `cashu-lib` owns wire formats and is organised by NUT number, while
+  `cashu-voucher`'s domain is genuinely voucher-specific (`face_value`, `backing_strategy`,
+  issuance, redemption, branded passes), so a generic name would misdescribe it.
+
 - **ADR 0003 records the voucher secret-modelling evidence** (`docs/adr/0003-voucher-secret-modelling.md`).
   The Imani mint does **not** enforce P2PK on a VOUCHER secret:
   `VerifyProofsTask.getSpendingCondition()` dispatches first-match on kind, so a VOUCHER
