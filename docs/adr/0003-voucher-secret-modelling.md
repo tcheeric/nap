@@ -176,12 +176,22 @@ error in the earlier analysis. Given that, pay for the honest model.
   The prediction assumed the canonical form was tied to `VoucherSecret`. It is not: it only
   reads `getData`, `getNonce`, and `getTags`, all declared on `WellKnownSecret`, so widening
   the parameter type was enough and the cryptography stayed one implementation.
-- **`cashu-mint`**: `VerifyProofsTask.getSpendingCondition()` must dispatch `P2PK_VOUCHER` to
-  a condition that runs *both* the voucher checks and `P2PKSpendingCondition`. Ordering
-  matters: it must be matched before the existing `isVoucherSecret` branch, or a
-  `P2PK_VOUCHER` secret could fall into the voucher-only path that has no witness check. `MeltTask`'s
-  Model B rejection needs the same treatment. `/v1/info` should advertise the new kind so a
-  wallet can tell whether the lock is real.
+- **`cashu-mint`**: ~~dispatch…~~ **Done** (`51024b9b`).
+  `P2PKVoucherSpendingCondition` delegates to both existing conditions, and
+  `VerifyProofsTask` matches the kind before both prior branches. Two other detector callers
+  take the *opposite* answer, because they ask a different question: `MeltTask`'s Model B
+  rejection covers both voucher kinds (a lock does not make a voucher meltable), and
+  `SwapTask`'s mixing rule treats both as vouchers (it is about what a proof is, not how it
+  is locked).
+
+  **`/v1/info` deliberately does not advertise it.** `NutSupport` requires every claim to be
+  backed by a wiring witness and, where the spec publishes them, by passing vectors — it
+  exists because NUT-11 was once advertised on the strength of a class existing while every
+  published vector failed. `P2PK_VOUCHER` has no NUT number and no vectors, so there is
+  nothing to key an honest claim on, and the existing `VOUCHER` kind is unadvertised for the
+  same reason. The consequence is acceptable: a wallet that does not know the kind rejects it
+  at parse, because `Kind.valueOf` throws on an unknown name, rather than falling through to
+  NUT-10's anyone-can-spend default.
 
 ### For NAP
 
@@ -191,10 +201,10 @@ error in the earlier analysis. Given that, pay for the honest model.
 - **The §6 step-13 procedure is unchanged in shape.** Step (d) — extract `K` and compare it
   to the completion pubkey — differs only in where `K` is read from, and it stays before the
   mint round trip.
-- **NAP must not ship ahead of the mint.** Until the mint enforces the new kind, the §3.1
-  binding holds only as far as NAP checks it, which is the same position option 1 was
-  rejected for. Extension 0001 §11 already couples the TypeScript and Java releases; this
-  adds the mint to that set.
+- ~~**NAP must not ship ahead of the mint.**~~ **Satisfied.** The mint enforces the kind as of
+  `51024b9b`, so the §3.1 binding is now backed by the mint rather than by NAP alone.
+  Extension 0001 §11's release coupling still includes the mint: all three upstream changes
+  must be *released* before NAP's resolver ships.
 
 ### Where the new kind lives
 

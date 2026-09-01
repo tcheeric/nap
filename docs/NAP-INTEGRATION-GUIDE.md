@@ -1086,10 +1086,11 @@ that keeps both first-class and both enforced.
 (deserialiser and secret class — landed), `cashu-voucher` (canonical bytes and
 issuer signing — landed, and without invalidating existing signatures: the
 canonical form now reads the kind from the secret, which for a `VOUCHER` yields
-the byte-identical result), and `cashu-mint` (dispatch, plus `/v1/info`
-advertising the kind so a wallet can tell the lock is enforced — outstanding). **NAP must not ship ahead of the mint**: until the
-mint enforces the new kind, the binding holds only as far as NAP checks it,
-which is the position the first option was rejected for.
+the byte-identical result), and `cashu-mint` (dispatch — landed;
+`/v1/info` deliberately does not advertise the kind, because the mint only
+claims NUTs backed by published vectors and this is a private extension). The
+mint now enforces the binding, so it no longer rests on NAP alone — but all
+three upstream changes must be **released** before NAP's resolver ships.
 
 The kind itself belongs in `cashu-lib` beside `P2PKSecret` and `VoucherSecret` —
 that package is organised by NUT number and is where wire formats live — while
