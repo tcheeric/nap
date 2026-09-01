@@ -1,0 +1,18 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: nap
+      POSTGRES_PASSWORD: nap
+      POSTGRES_DB: nap
+    ports:
+      - '5433:5432'
+    # Runs once, on an empty data volume. Change the schema after the first
+    # `up` and you must `docker compose down -v` for it to run again.
+    volumes:
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U nap -d nap']
+      interval: 2s
+      timeout: 2s
+      retries: 15

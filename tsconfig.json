@@ -9,15 +9,25 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
-    "lib": ["ES2022", "DOM"],
-    "types": ["node", "vitest/globals"]
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
+    "types": [
+      "node",
+      "vitest/globals"
+    ]
   },
   "include": [
     "packages/*/src/**/*.ts",
     "packages/*/src/**/*.tsx",
     "packages/*/test/**/*.ts",
     "packages/*/test/**/*.tsx",
+    "examples/*/src/**/*.ts",
+    "examples/*/src/**/*.tsx",
+    "examples/*/test/**/*.ts",
+    "examples/*/test/**/*.tsx",
+    "examples/*/vite.config.ts",
     "vitest.config.ts"
   ]
 }
-

@@ -7,11 +7,25 @@ and a role/permission ACL layer. Server, browser, and React packages in one npm 
 The protocol is specified in [docs/NAP-v2-RFC.md](docs/NAP-v2-RFC.md). `nap-java` is the JVM
 implementation of the same protocol; the two are wire-compatible and must stay that way.
 
-npm workspace, all packages on `0.8.0`.
+npm workspace. Every package shares one version — a release bumps all of them together, so
+the root `package.json` is the single place to read it.
 
 > **There is no build step.** Every package points `exports` and `types` at `./src/index.ts`,
 > so there is no `dist/` and nothing to compile — and these are **not npm-publishable as-is**.
-> Consume them from the workspace.
+> Consume them from the workspace: `examples/merchant-app` is a workspace package that
+> depends on them at the shared version and npm links them from `packages/`. That is the
+> arrangement the tutorials assume.
+
+## Start here
+
+**[docs/tutorials/](docs/tutorials/README.md)** — a ten-part series from an empty directory to
+an Express + React app doing NIP-07, NIP-46 and in-page-key logins, roles and permissions,
+Postgres sessions, refresh tokens, step-up, and the caps a deployment needs. It builds
+`examples/merchant-app`, which is in the workspace and covered by CI, so the code in it cannot
+quietly go stale.
+
+Already know Nostr and want the reference instead? Start at
+[integration guide §1–§3](docs/NAP-INTEGRATION-GUIDE.md#1-what-nap-is-and-the-problem-it-solves).
 
 ## Packages
 
@@ -106,12 +120,16 @@ on it and version skew surfaces as confusing `verifyEvent` failures.
 
 ## Documentation
 
+- [docs/tutorials/](docs/tutorials/README.md) — the tutorial series, in order, with what each
+  one gets you.
 - [docs/NAP-v2-RFC.md](docs/NAP-v2-RFC.md) — the protocol specification. The authority.
 - [docs/NAP-INTEGRATION-GUIDE.md](docs/NAP-INTEGRATION-GUIDE.md) — protocol walkthrough and
   integration guide (TypeScript, browser, and Java), security notes, and a section-by-section
   record of where each implementation diverges from the RFC.
 - [docs/NAP-IMPLEMENTATION-BEST-PRACTICES.md](docs/NAP-IMPLEMENTATION-BEST-PRACTICES.md) —
   operational guidance.
+- [docs/comparisons/webauthn.md](docs/comparisons/webauthn.md) — NAP against WebAuthn.
+- [docs/comparisons/oauth.md](docs/comparisons/oauth.md) — NAP against OAuth 2.0.
 
 ## Known gaps and next work
 

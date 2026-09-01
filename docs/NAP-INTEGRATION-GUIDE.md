@@ -3,12 +3,16 @@
 A practical guide for engineers who already run a Nostr web app and need NAP for
 authentication and authorisation.
 
-This guide is written against the `nap` TypeScript monorepo at version **0.3.0**
+This guide is written against the `nap` TypeScript monorepo at version **0.10.1**
 (branch `develop`). Anything specified by the RFC but not present in the source is
 marked explicitly.
 
 **New to NAP? Read §0 first** — it covers what to decide before writing code, what
 order to build in, and the four mistakes that each cost an afternoon.
+
+**Would rather be walked through it?** [`docs/tutorials/`](./tutorials/README.md) builds a
+working app one step at a time, following the same phase order as §0.4. This guide is the
+reference underneath it; sections that a tutorial walks say so.
 
 ## Table of contents
 
@@ -49,10 +53,11 @@ All three satisfy the same two-method `SessionSigner`, and the server cannot tel
 them apart — the completion proof is byte-identical in shape. Swapping one for
 another is a one-line change (§6.2).
 
-If you can live with NIP-07, take it. A local key means implementing a `KeyStore`
-yourself — NAP ships the *interface*, not an implementation — plus WebCrypto
-encryption and passphrase UX, and even then you cannot defend a key that is
-unlocked while hostile script runs (§9.7, RFC §28.5).
+If you can live with NIP-07, take it. A local key means a `KeyStore` — NAP ships
+`createWebCryptoKeyStore()`, so the encryption is not yours to write, but the
+passphrase UX, the eviction policy and all of RFC §28 still are. And even a
+correctly encrypted key cannot be defended while it is unlocked and hostile
+script runs (§9.7, RFC §28.5).
 
 An extension can fail in four distinguishable ways, and the codes exist so your UI
 does not have to collapse them into "login failed":
@@ -93,13 +98,18 @@ are a product decision wearing config parameters' clothes.
 
 Each phase is independently verifiable, so a failure tells you which layer broke.
 
-| Phase | Do | Done when |
-|---|---|---|
-| **0** | Router mounted, in-memory stores, bearer mode, pinned base URL, `AuditLogger` wired. No frontend. | `curl` completes `/auth/init` → `/auth/complete` and gets a session |
-| **1** | Swap in `@imani/nap-store-postgres`; switch to cookie mode via `writeNapCookieSuccess` | Sessions survive a server restart; logout clears the cookie |
-| **2** | `createNapSession` + `createNip07Signer`; `resume()` on mount; `isRestoringSession` loading state | Reload keeps you logged in without a signing prompt |
-| **3** | Permission registry; `requirePermission` guards; `validatePermissions()` after routes register | A typo'd permission key fails at startup |
-| **4** | `rateLimiter` wired; outstanding-challenge caps sized; `aclResolver` passed to the guards; cookie flags reviewed | `/auth/init` is no longer an uncapped write, and revoking access takes effect on the next request |
+| Phase | Do | Done when | Tutorial |
+|---|---|---|---|
+| **0** | Router mounted, in-memory stores, bearer mode, pinned base URL, `AuditLogger` wired. No frontend. | `curl` completes `/auth/init` → `/auth/complete` and gets a session | [01](./tutorials/01-a-server-you-can-curl.md) |
+| **1** | Swap in `@imani/nap-store-postgres`; switch to cookie mode via `writeNapCookieSuccess` | Sessions survive a server restart; logout clears the cookie | [04](./tutorials/04-postgres.md); cookie mode in [02](./tutorials/02-logging-in-from-a-browser.md) |
+| **2** | `createNapSession` + `createNip07Signer`; `resume()` on mount; `isRestoringSession` loading state | Reload keeps you logged in without a signing prompt | [02](./tutorials/02-logging-in-from-a-browser.md) |
+| **3** | Permission registry; `requirePermission` guards; `validatePermissions()` after routes register | A typo'd permission key fails at startup | [03](./tutorials/03-roles-and-permissions.md) |
+| **4** | `rateLimiter` wired; outstanding-challenge caps sized; `aclResolver` passed to the guards; cookie flags reviewed | `/auth/init` is no longer an uncapped write, and revoking access takes effect on the next request | [09](./tutorials/09-before-you-ship.md) |
+
+The tutorials cover three things §0.4 does not, because they are optional rather than ordered:
+refresh tokens ([05](./tutorials/05-refresh-tokens.md)), step-up
+([06](./tutorials/06-step-up.md)), and the two signers that are not a NIP-07 extension
+([07](./tutorials/07-nip46.md), [08](./tutorials/08-in-page-keys.md)).
 
 ### 0.5 Checklist
 
@@ -139,7 +149,10 @@ Each phase is independently verifiable, so a failure tells you which layer broke
 
 ### 0.6 Plan around these, not on them
 
-- **`stepUp()` always throws.** Nothing issues a step-up token (§11.3).
+- **Nothing refreshes the session for you.** `POST /auth/refresh` works and the
+  browser is handed a `refresh_token`, but `nap-client-web` neither stores nor
+  spends it — so a session expiry costs the user a signer prompt until you wire
+  the refresh call yourself (§11.3).
 - **Permissions are a login-time snapshot.** An ACL revocation takes up to one
   session TTL to take effect (§3.4).
 - **Packages are not npm-publishable as they stand** — `exports` points at
@@ -512,6 +525,8 @@ rejects the token if `revoked_at` is set or `expires_at` has passed.
 
 ## 3. Authorisation model
 
+> **Walk it:** [tutorial 03 — roles and permissions](./tutorials/03-roles-and-permissions.md) builds a working subset of this section against a running app.
+
 NAP 0.2.0 ships a real ACL layer, added in commit `436a40e`. It is
 role-based with per-principal overrides, scoped by `app_id`. All of it lives in
 `packages/nap-server/src/acl.ts` and `packages/nap-server/src/types.ts`.
@@ -840,6 +855,8 @@ export const napServerOptions: NapServerOptions = {
 
 ### 5.2 Express
 
+> **Walk it:** [tutorial 01 — a NAP server you can `curl`](./tutorials/01-a-server-you-can-curl.md) wires exactly this, then drives the flow by hand.
+
 ```ts
 import express from 'express';
 import {
@@ -908,10 +925,29 @@ createNapExpressRouter({
 ```
 
 The response body collapses to `{"status":"ok"}` and `Set-Cookie: session=…` is
-added. A third argument lets you keep part of the body — e.g.
-`writeNapCookieSuccess('session', opts, (body) => ({ status: 'ok', principal: body.principal, permissions: body.permissions }))`
-so the SPA can render without a second round trip. The guards read the cookie
-automatically (`cookieName` defaults to `session`).
+added. The guards read the cookie automatically (`cookieName` defaults to `session`).
+
+A third argument — `transformBody` — keeps part of the body, and for two cases it
+is **required rather than an optimisation**:
+
+- **`nap-client-web` clients.** `login()` maps the completion body into its session
+  state and dereferences `principal.pubkey`, so against the bare `{"status":"ok"}`
+  it throws a `TypeError` before the caller ever has a session. Return at least
+  `principal`, `roles`, `permissions`, and `expires_at`.
+- **`refreshTtlSeconds`.** `/auth/refresh` reads `Authorization: Bearer`, which a
+  cookie cannot produce, so the refresh token has to survive into the body. The
+  adapter throws at wiring time for this combination rather than mint a token the
+  client can never present.
+
+Dropping only what the cookie now carries covers both:
+
+```ts
+writeNapCookieSuccess('session', opts, ({ access_token, token_type, ...rest }) => rest)
+```
+
+That keeps the access token out of script's reach and leaves the refresh token in
+it — a deliberate trade, spelled out in
+[tutorial 05](tutorials/05-refresh-tokens.md).
 
 The name you pass to `writeNapCookieSuccess` and the adapter's `cookieName` are two
 separate settings and **both have to be the same string** — the writer sets the
@@ -927,6 +963,8 @@ the `NapErrorCode`, which is useful for metrics. Do not leak the code to the
 client.
 
 ### 5.3 Fastify
+
+> **Walk it:** [the Fastify appendix](./tutorials/appendix-fastify.md) is the whole Express-to-Fastify substitution for the tutorial series, in one place.
 
 ```ts
 import Fastify from 'fastify';
@@ -1032,6 +1070,8 @@ Expired sessions are not swept at all — `getByAccessToken()` filters on
 Add your own `DELETE` job.
 
 ### 5.5 Postgres schema
+
+> **Walk it:** [tutorial 04 — sessions that survive a restart](./tutorials/04-postgres.md) applies this schema and shows the rows changing.
 
 > **There is no migration file or DDL constant in the repo.** I checked: no
 > `.sql` files, and no `CREATE TABLE` string anywhere under `packages/`. The
@@ -1282,6 +1322,8 @@ The `NapSession` surface (`packages/nap-client-web/src/types.ts:38`):
 
 ### 6.2 Signers
 
+> **Walk it:** one tutorial per signer — [02 (NIP-07)](./tutorials/02-logging-in-from-a-browser.md), [07 (NIP-46)](./tutorials/07-nip46.md), [08 (in-page key)](./tutorials/08-in-page-keys.md).
+
 A `SessionSigner` is just two methods (`types.ts:13`):
 
 ```ts
@@ -1461,6 +1503,8 @@ field can. Serve the pages that render it with `frame-ancestors 'none'`.
 
 ### 6.3 Idle lock, shutdown, and cross-tab sync
 
+> **Walk it:** [tutorial 08 §5–§7](./tutorials/08-in-page-keys.md) drives the lock, the passphrase re-unlock, and the cross-tab broadcast in a browser.
+
 Two independent features, both off-by-default-ish:
 
 - **`autoLock`** (`packages/nap-client-web/src/activityLock.ts`) — disabled
@@ -1475,9 +1519,11 @@ Two independent features, both off-by-default-ish:
   re-broadcast, to avoid tab ping-pong (`session.ts:71`).
 
 `reunlock(passphrase)` is for apps that keep an encrypted key in browser storage.
-You supply the `KeyStore` (`packages/nap-client-web/src/keyStore.ts:1`) — NAP
-provides the *interface*, not an implementation, so the encryption scheme is
-yours:
+It takes a `KeyStore` (`packages/nap-client-web/src/keyStore.ts:1`). Use
+`createWebCryptoKeyStore()` unless you have a reason not to — it is AES-GCM over
+PBKDF2, sharing its parameters with `createWebCryptoSecretStore()` so there is
+one set of crypto choices to review. The interface is small enough to implement
+yourself if you must:
 
 ```ts
 interface KeyStore {
@@ -1528,6 +1574,8 @@ takes no passphrase and is the only way out of a lock for those signers.
 > window, it does not close it.
 
 ### 6.4 React
+
+> **Walk it:** [tutorial 02 — logging in from a browser](./tutorials/02-logging-in-from-a-browser.md) builds the provider, the login button, and the reload path.
 
 `@imani/nap-react` is a thin binding. `NapProvider` takes an already-constructed
 `NapSession` and mirrors its booleans into React state
@@ -2474,6 +2522,8 @@ bounded inter-node skew a cluster-safety requirement.
 
 ### 9.2 Session lifetime and rotation
 
+> **Walk it:** [tutorial 05 — refresh tokens](./tutorials/05-refresh-tokens.md), including the client-side rotation nothing in NAP does for you.
+
 - Default `sessionTtlSeconds` is **900 (15 min)**, matching the RFC's 5–15
   minute recommendation (`docs/NAP-v2-RFC.md:415`).
 - **Expiry is absolute, not sliding.** Nothing touches `expires_at` after
@@ -2544,6 +2594,8 @@ origins and credentials are mutually exclusive. `nap-client-web` always sends
 mandatory, not optional.
 
 ### 9.4 Proxy and audience resolution — the sharpest edge
+
+> **Walk it:** [tutorial 09 §6](./tutorials/09-before-you-ship.md) wires the allowlist and shows the wiring-time throw.
 
 The NIP-98 `u` tag is compared for exact equality against
 `getExternalBaseUrl(req) + '/auth/complete'`. Get this wrong and **every** login
@@ -2660,6 +2712,8 @@ Three more audience gotchas:
   that makes `base + '/auth/complete'` come out right.
 
 ### 9.5 Rate limiting and resource bounds
+
+> **Walk it:** [tutorial 09 §2](./tutorials/09-before-you-ship.md) drives 32 requests at a real server and shows why the two caps are indistinguishable on the wire.
 
 `/auth/init` is an unauthenticated endpoint that performs a bech32 decode, 44
 bytes of CSPRNG, and a database `INSERT` per call. Three separate bounds cover it
@@ -3137,10 +3191,16 @@ Closed in 0.4.0, kept here so the diff against an older deployment is visible:
   RFC `§14.1` specifies no cap, and the ACL re-read on every refresh bounds what
   a stale session can *do* — but not how long it lives. Cap it in your own
   `rotateRefreshToken` if you need one. `nap-java` does cap it (§11.2).
-- **No client refreshes for you.** `refresh_token` is returned to the browser and
-  `POST /auth/refresh` accepts it, but `nap-client-web` and `nap-react` neither
-  store it nor call the endpoint. Until they do, refresh is a server-side
-  capability an integrator wires up by hand (§6.1).
+- **No client refreshes for you.** `POST /auth/refresh` accepts a `refresh_token`,
+  but `nap-client-web` and `nap-react` neither store one nor call the endpoint —
+  refresh is a server-side capability an integrator wires up by hand (§6.1).
+  In **cookie mode** the token does not even reach the browser by default: the
+  default `writeNapCookieSuccess` body is `{status:'ok'}`, so the adapter refuses
+  to start when `refreshTtlSeconds` is set alongside it. A `transformBody` that
+  returns `refresh_token` is required, which necessarily makes a week-long
+  credential readable by script. `GET /auth/session` never carries one either, so
+  a `resume()` after a reload cannot re-arm a refresh loop.
+  [Tutorial 05](tutorials/05-refresh-tokens.md) wires the whole client half.
 - **Renewal still costs a prompt.** When a session expires, the only way back is
   `login()`, which signs a fresh NIP-98 event — so an extension or remote-signer
   user sees an approval prompt every session lifetime. Prompt-free renewal needs
@@ -3242,7 +3302,7 @@ auditLogger: {
 | **`PostgresSessionStore could not reload session for challenge '…'`** | The `ON CONFLICT (challenge_id) DO NOTHING` insert was a no-op but the reload found nothing. Almost certainly a missing `UNIQUE` constraint on `nap_sessions.challenge_id` (§5.5), or a concurrent delete. |
 | **`syntax error at or near "ON CONFLICT"` / `no unique or exclusion constraint matching`** | Missing `UNIQUE (challenge_id)` on `nap_sessions` or `PRIMARY KEY (app_id, pubkey)` on `nap_acl` (§5.5). |
 | **404 on `GET /auth/session` or `POST /auth/logout`** | You wired the init/complete handlers individually instead of mounting `createNapExpressRouter()` / `napFastifyPlugin`, which mount all four. Add `createNapExpressSessionHandler` / `createNapExpressLogoutHandler` (or the Fastify equivalents) (§6.1). |
-| **`NAP step-up response did not include a step-up token`** | `session.stepUp()` cannot work in 0.2.0 — nothing issues step-up tokens (§6.1). |
+| **`NAP step-up response did not include a step-up token`** | The server completed the step-up exchange but minted no token. Check `stepUpTtlSeconds` is set on `NapServerOptions` and that the completion body carried `"step_up": true` — a middleware that reserialises the body drops it *and* breaks the payload hash (§6.1). |
 | **403 `{"message":"forbidden"}` on a guarded route** | Valid session, but `session.permissions` lacks the key. Remember permissions are a **login-time snapshot** — if you just granted the permission, the user must re-login or you must `revokeByPrincipal()` (§3.4). |
 | **403 `{"message":"step-up required"}`** | `requireStepUp()`, or `requirePermission()` with a registry marking the permission `stepUp: true`, found no `X-Step-Up-Token`, a mismatch, or an expired one. Have the client call `session.stepUp()` and resend with the returned token. |
 | **429 with `Retry-After`** | The `rateLimiter` rejected, or the caller is holding more outstanding challenges than `maxOutstandingChallengesPerNpub` / `PerIp` allows (§9.5). Deliberately not a 401. |
