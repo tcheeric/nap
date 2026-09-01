@@ -106,10 +106,15 @@ Reaching that error also requires `SPRING_PROFILES_ACTIVE` to include `voucher`
 `MINT_VOUCHER_ISSUER_PRIVKEY` / `_PUBKEY`, a reachable relay, and HTTP Basic
 credentials, since `/v1/vouchers/**` is `hasRole("ADMIN")`.
 
-This is a real bug in `cashu-mint` and worth fixing there. Until it is, an
-issued voucher cannot be obtained from the real mint, so the voucher lifecycle
-stays covered by `endToEnd.test.ts`, which mints its own with genuine BDHKE and
-a genuine DLEQ.
+Filed upstream as [398ja/cashu-mint#405](https://github.com/398ja/cashu-mint/issues/405).
+Until it is fixed an issued voucher cannot be obtained from the real mint, so
+the voucher lifecycle stays covered by `endToEnd.test.ts`, which mints its own
+with genuine BDHKE and a genuine DLEQ.
+
+Two adjacent gotchas, also recorded on that issue: the issuer key properties
+only bind under the `voucher` profile (they live in `application-voucher.yml`,
+so setting them with `dev` alone silently fails), and `/v1/vouchers/**` is
+`hasRole("ADMIN")`, so it needs HTTP Basic plus a configured admin password.
 
 ## Adding to CI
 
