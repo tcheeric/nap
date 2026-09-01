@@ -1035,13 +1035,30 @@ async function refreshSessionUnpadded(
     return failure('NAP_REFRESH_ACL_DENIED');
   }
 
+  // The absolute ceiling, as an instant. A resolver's own bound (extension
+  // 0001's voucher expiry) narrows it further; whichever is sooner wins.
+  const ceiling =
+    maxLifetime === undefined ? undefined : session.issued_at + maxLifetime;
+  const decisionBound =
+    ceiling === undefined
+      ? aclDecision.expires_at
+      : Math.min(ceiling, aclDecision.expires_at ?? ceiling);
+
   const rotated = await store.rotateRefreshToken(session.session_id, {
     expectedRefreshToken: presented,
     accessToken: base64Url(randomSource.randomBytes(32)),
     refreshToken: base64Url(randomSource.randomBytes(32)),
     now,
-    expiresAt: now + sessionTtlSeconds,
-    refreshExpiresAt: now + refreshTtlSeconds,
+    // Both windows are clamped to the ceiling, so it is a wall rather than an
+    // approximation. Without this a refresh one second before the cap minted a
+    // full-length access token, and the session kept working for up to another
+    // `sessionTtlSeconds` past the limit -- observed at cap+898 with a 900s TTL.
+    // For extension 0001 that overhang is time a redeemed voucher still
+    // authorises, which is the interval `maxSessionLifetimeSeconds` exists to
+    // bound, so the ceiling has to bind the token it issues and not only the
+    // decision to issue one.
+    expiresAt: clampTtlToDecision(sessionTtlSeconds, decisionBound, now) + now,
+    refreshExpiresAt: Math.min(now + refreshTtlSeconds, ceiling ?? Number.MAX_SAFE_INTEGER),
     roles: aclDecision.roles,
     permissions: aclDecision.permissions,
   });

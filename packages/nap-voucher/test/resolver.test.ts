@@ -370,15 +370,23 @@ describe('step (h): the NUT-07 state check', () => {
     expect(logged[0]?.code).toBe(VOUCHER_DENIAL_CODES.SPENT);
   });
 
-  it('is read-only: login never spends', async () => {
-    // §6.1. The client exposes no spending method at all, so this asserts the
-    // shape rather than a call count -- a swap would have to be added first.
-    const { resolver, checkState } = harness();
+  it('checks the state exactly once, and only through the read-only client', async () => {
+    // §6.1: login must not spend. The strong form of that -- the client exposes
+    // no spending operation, its source names no spending endpoint, and it
+    // issues only GET /v1/keys and POST /v1/checkstate -- lives in
+    // `noSpend.test.ts`, which inspects the mint client itself.
+    //
+    // This asserts the resolver's part: one state check per resolution, no
+    // retry loop, nothing else. An earlier version of this test also asserted
+    // `Object.keys(resolver)`, which describes the *resolver* and would pass
+    // however the mint client changed. It looked like a second safeguard and
+    // was none.
+    const { resolver, checkState, getKey } = harness();
 
     await resolver.resolve(NPUB, HOLDER_PUBKEY, { voucher: credential(), now: NOW });
 
     expect(checkState).toHaveBeenCalledTimes(1);
-    expect(Object.keys(harness().resolver)).toEqual(['resolve']);
+    expect(getKey).toHaveBeenCalledTimes(1);
   });
 });
 

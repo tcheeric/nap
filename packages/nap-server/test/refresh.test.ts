@@ -367,16 +367,78 @@ describe('maxSessionLifetimeSeconds bounds credential staleness', () => {
       session = (outcome as { ok: true; session: SessionRecord }).session;
     }
 
-    // Past the ceiling, but the rotated refresh token is still young and would
-    // be accepted on its own. Without that gap the test would pass with the
-    // ceiling disabled -- the token would simply have aged out -- and would
-    // prove nothing.
-    const probeAt = NOW + 2 * REFRESH_TTL + 100;
-    harness.setNow(probeAt);
-    expect(session.refresh_expires_at!).toBeGreaterThan(probeAt);
+    // The rotated windows are themselves clamped to the ceiling, so the token
+    // now expires exactly there rather than outliving it.
+    const ceiling = NOW + 2 * REFRESH_TTL;
+    expect(session.refresh_expires_at).toBe(ceiling);
+    expect(session.expires_at).toBe(ceiling);
+
+    // Past the ceiling: refused. This originally probed a moment where the
+    // token was still valid and only the session's age refused it -- a gap that
+    // no longer exists, because clamping removed it. The check that the test
+    // still bites is the mutation run, not the gap.
+    harness.setNow(ceiling + 1);
     const second = await refreshSession({ refreshToken: session.refresh_token! }, harness.options);
 
     expect(second.ok).toBe(false);
+  });
+
+  it('clamps the tokens it issues, so the ceiling is a wall not an estimate', async () => {
+    // Found in the second review round. Enforcing the ceiling only as a
+    // *decision* to refresh left the token it minted running past the limit: a
+    // refresh one second before the cap issued a full-length access token, and
+    // guarded requests kept succeeding for another sessionTtl. Observed at
+    // cap+898 with a 900s TTL.
+    //
+    // That overhang is precisely the interval extension 0001 cares about -- time
+    // a redeemed voucher still authorises -- so the ceiling has to bind the
+    // token, not just the decision.
+    const harness = buildHarness({ maxSessionLifetimeSeconds: 2 * REFRESH_TTL });
+    let session = await login(harness.options);
+    const ceiling = NOW + 2 * REFRESH_TTL;
+
+    // Two refreshes, each inside the current window, walking up to the point
+    // where the next rotation would reach past the ceiling. That is the moment
+    // the ceiling has to bind the token rather than merely permit the refresh.
+    for (const at of [REFRESH_TTL - 50, 2 * REFRESH_TTL - 100]) {
+      harness.setNow(NOW + at);
+      const step = await refreshSession({ refreshToken: session.refresh_token! }, harness.options);
+
+      expect(step.ok).toBe(true);
+      session = (step as { ok: true; session: SessionRecord }).session;
+    }
+
+    const rotated = session;
+
+    // Both windows stop at the ceiling rather than a full TTL beyond it.
+    expect(rotated.expires_at).toBe(ceiling);
+    expect(rotated.refresh_expires_at).toBe(ceiling);
+  });
+
+  it('lets a resolver bound narrow the ceiling further, but never widen it', async () => {
+    // The two bounds compose: whichever is sooner wins. A voucher expiring
+    // before the ceiling must shorten the session, and one expiring after it
+    // must not extend the session past the operator's limit.
+    const harness = buildHarness({ maxSessionLifetimeSeconds: 2 * REFRESH_TTL });
+    let session = await login(harness.options);
+    const ceiling = NOW + 2 * REFRESH_TTL;
+
+    harness.setNow(NOW + REFRESH_TTL - 50);
+    session = (
+      (await refreshSession({ refreshToken: session.refresh_token! }, harness.options)) as {
+        ok: true;
+        session: SessionRecord;
+      }
+    ).session;
+
+    // A resolver bound well past the ceiling must not widen the session.
+    harness.acl.expires_at = ceiling + 10_000;
+    harness.setNow(NOW + 2 * REFRESH_TTL - 100);
+
+    const outcome = await refreshSession({ refreshToken: session.refresh_token! }, harness.options);
+    const rotated = (outcome as { ok: true; session: SessionRecord }).session;
+
+    expect(rotated.expires_at).toBe(ceiling);
   });
 
   it('measures from issued_at, which rotation preserves', async () => {

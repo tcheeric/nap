@@ -116,8 +116,15 @@ All packages in this workspace share a single version.
 
 ### Fixed
 
-- **Self-review of the extension 0001 work found four defects** (`CODE-REVIEW-EXT-0001.md`),
-  all now closed and mutation-verified:
+- **`maxSessionLifetimeSeconds` now clamps the tokens it issues**, so the ceiling is a wall
+  rather than an estimate. It previously gated only the *decision* to refresh: a refresh one
+  second before the ceiling minted a full-length access token, and guarded requests kept
+  succeeding for up to another `sessionTtlSeconds` past the limit — observed at `cap+898` with a
+  900-second TTL. That overhang is the interval extension 0001 cares about, so an approximate
+  ceiling undercut the reason it was added.
+
+- **Self-review of the extension 0001 work found six defects across two rounds**
+  (`CODE-REVIEW-EXT-0001.md`), all now closed and mutation-verified:
 
   - **Duplicate tags were accepted** where `cashu-lib` rejects them. The issuer signature covers
     both copies, so a doctored secret verified here while being unspendable at the mint — NAP
