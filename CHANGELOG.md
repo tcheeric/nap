@@ -9,6 +9,43 @@ All packages in this workspace share a single version.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Guards now honour an injected `clock`.** `NapExpressGuardOptions.clock` and its Fastify
+  equivalent were passed to `resolveEffectiveAcl` but ignored by session-expiry and
+  step-up-expiry checks, which read `Date.now()` directly. A guard configured with the same
+  clock as the server therefore agreed about the ACL and disagreed about time: a session
+  minted at the injected `now` was rejected by the very next guarded request with
+  `NAP_GUARD_NO_SESSION`.
+
+  Only reachable when a clock is injected, so it affected tests and any deployment on a
+  controlled clock rather than production wall time. Found by running the extension-0001
+  end-to-end test, where the server clock is pinned to a fixed timestamp — no per-module test
+  could surface it, because it only appears once a login and a guarded request run against one
+  clock. `clock` is now also documented on both guard options interfaces and in guide §9.6.1,
+  since being undocumented is part of why the mismatch went unnoticed.
+
+### Documentation
+
+- **ADR 0003 records the voucher secret-modelling evidence** (`docs/adr/0003-voucher-secret-modelling.md`).
+  The Imani mint does **not** enforce P2PK on a VOUCHER secret:
+  `VerifyProofsTask.getSpendingCondition()` dispatches first-match on kind, so a VOUCHER
+  secret never reaches `P2PKSpendingCondition`, and `VoucherSpendingCondition` has no witness
+  check at all. Under extension 0001 §5.3 option 1 as things stand, the §3.1 binding would be
+  advisory only — checkable by the NAP server, invisible to the mint.
+
+  Status is `proposed` rather than `accepted`: what remains is an operational choice between
+  adopting option 2 now and upgrading every deployed mint first. Cross-linked from the spec's
+  review question B, its open-questions list, and its recommendation, so the answer is found
+  rather than rediscovered.
+
+- **Extension 0001 is linked from RFC §22.** The RFC listed five open extensions but pointed
+  at no document, leaving the drafted extension unreachable from the spec it extends.
+
+- **`AclDecision` is re-exported from `@imani/nap-server`.** `AclResolver.resolve()` returns
+  it, so implementing that interface previously meant importing one type from
+  `@imani/nap-core` — a seam that reads as a mistake.
+
 ### Added
 
 - **Mint-availability policy for `@imani/nap-voucher` (§7.3).**
@@ -85,10 +122,6 @@ All packages in this workspace share a single version.
 
   Nothing consumes this yet. The keyset cache, DLEQ, and NUT-07 check are #20; the
   resolver is #23, blocked on the secret-modelling decision in #13.
-
-- **`AclDecision` is re-exported from `@imani/nap-server`.** `AclResolver.resolve()` returns
-  it, so implementing that interface previously meant importing one type from
-  `@imani/nap-core` — a seam that reads as a mistake.
 
 - **Guard denials now reach the `AuditLogger`.** `requirePermission()`,
   `requireRole()`, `requireStepUp()`, and `requireSession()` in both adapters accept an
