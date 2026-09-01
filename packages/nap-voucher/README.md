@@ -3,13 +3,15 @@
 Verification primitives for **NAP Extension 0001 — Voucher-Bound Authorization**
 (`docs/extensions/0001-voucher-bound-authorization.md`).
 
-**Status: incomplete.** This package currently ships the two allowlists (§4.3).
-The keyset cache, DLEQ verification, and NUT-07 state check (#20) are not built
-yet, and the resolver that consumes them (#23) is blocked on decision #13.
+**Status: incomplete.** This package ships the two allowlists (§4.3), NUT-12
+DLEQ verification, NUT-00 `hash_to_curve`, and a mint client with a keyset TTL
+cache and the NUT-07 state check. The resolver that consumes them (#23) is
+blocked on decision #13.
 
-Deliberately dependency-free, per the extension's build order: the verification
-client is built standalone and testable with no NAP dependency, so this package
-imports neither `@imani/nap-server` nor `@imani/nap-core`.
+Deliberately dependency-free apart from `@noble/curves` and `@noble/hashes`, per
+the extension's build order: the verification client is built standalone and
+testable with no NAP dependency, so this package imports neither
+`@imani/nap-server` nor `@imani/nap-core`.
 
 ## Why there are two allowlists
 
@@ -67,3 +69,51 @@ if (!mint) {
 - **Entries with a path, query, fragment, userinfo, or a duplicate after
   normalization are refused.** Each is a case where the operator believes they
   configured something narrower than they did.
+
+## DLEQ and the state check
+
+```ts
+import { createMintClient, verifyProofDleq } from '@imani/nap-voucher';
+
+const mint = createMintClient({ allowlist: mints, keysetCacheTtlSeconds: 3600 });
+
+// The client resolves through the allowlist itself, so an unvetted mint_url
+// never reaches the network.
+const A = await mint.getKey(credential.mint_url, credential.keyset_id, credential.amount);
+
+if (!verifyProofDleq({ A, secret, C, dleq })) {
+  // NAP_VOUCHER_DLEQ_INVALID
+}
+
+if ((await mint.checkState(credential.mint_url, secret)) !== 'UNSPENT') {
+  // NAP_VOUCHER_SPENT
+}
+```
+
+`verifyProofDleq` is the form the extension needs: a `VoucherCredential` carries
+a `Proof`, not a `BlindSignature`, so `B'` and `C'` are reconstructed from the
+blinding factor `r`. Both forms are verified against the official NUT-12 test
+vectors, and `hash_to_curve` against the NUT-00 vectors.
+
+**DLEQ is necessary but not sufficient.** It proves the mint signed this proof.
+It says nothing about whether the proof is still unspent — a burned voucher
+carries a perfectly valid DLEQ. Only the NUT-07 state check answers liveness,
+which is why §4.2 makes the mint mandatory.
+
+### Failure modes are distinguished on purpose
+
+`MintUnavailableError.reason` is one of `mint_not_allowed`, `unavailable`,
+`malformed_response`, or `unknown_keyset`. Only `unavailable` may trigger §7.3
+degraded mode: collapsing "the mint is down" into "the check failed" would let
+degraded mode fire on a mint that answered clearly and said `SPENT`.
+
+Verification functions return `false` rather than throwing, for a failed proof
+*and* for malformed input alike. Every voucher failure reaches the client as the
+same generic 401, so the two must not be separable by exception shape or timing.
+
+Other properties: requests carry a mandatory timeout, since an unresponsive mint
+would otherwise pin the login path until the platform default and turn a slow
+third party into resource exhaustion. An unknown keyset triggers exactly one
+refetch, so an attacker supplying random keyset ids cannot drive one mint request
+per attempt. The state check matches on `Y` rather than trusting response order.
+An unrecognised state is refused rather than assumed `UNSPENT`.

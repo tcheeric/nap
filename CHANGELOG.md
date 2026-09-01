@@ -11,6 +11,29 @@ All packages in this workspace share a single version.
 
 ### Added
 
+- **`@imani/nap-voucher` gains the Cashu verification client**: NUT-12 DLEQ, NUT-00
+  `hash_to_curve`, and a mint client with a keyset TTL cache and the NUT-07 state check.
+  Verified against the official NUT-12 and NUT-00 test vectors, including both DLEQ forms
+  and the deterministic-nonce vector.
+
+  `verifyProofDleq()` is the form the extension needs — a `VoucherCredential` carries a
+  `Proof` rather than a `BlindSignature`, so `B'` and `C'` are reconstructed from the
+  blinding factor `r`. DLEQ proves the mint signed the proof and says nothing about
+  whether it is still unspent, which is why the NUT-07 check is not optional (§4.2).
+
+  The client takes the `MintAllowlist` as a required constructor argument and resolves
+  through it on every call, so an unvetted `mint_url` never reaches the network (§6's SSRF
+  ordering note). `MintUnavailableError.reason` separates `unavailable` from
+  `mint_not_allowed`, `malformed_response`, and `unknown_keyset`: only the first may
+  trigger §7.3 degraded mode, and collapsing them would let degraded mode fire on a mint
+  that answered clearly and said `SPENT`.
+
+  Verification returns `false` for a failed proof and for malformed input alike, since
+  both reach the client as the same generic 401 and must not be separable by exception
+  shape or timing. Requests carry a mandatory timeout, an unknown keyset triggers exactly
+  one refetch, the state check matches on `Y` rather than trusting response order, and an
+  unrecognised state is refused rather than assumed `UNSPENT`.
+
 - **New package `@imani/nap-voucher`, carrying the mint and issuer allowlists** for
   extension 0001 (voucher-bound authorization, §4.3). Deliberately dependency-free, per
   the extension's build order: the verification client is built standalone and testable
