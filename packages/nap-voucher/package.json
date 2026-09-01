@@ -1,0 +1,15 @@
+{
+  "name": "@imani/nap-voucher",
+  "version": "0.10.1",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "types": "./src/index.ts",
+  "peerDependencies": {
+    "typescript": ">=5.7"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
+  }
+}

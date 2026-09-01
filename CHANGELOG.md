@@ -11,6 +11,36 @@ All packages in this workspace share a single version.
 
 ### Added
 
+- **New package `@imani/nap-voucher`, carrying the mint and issuer allowlists** for
+  extension 0001 (voucher-bound authorization, §4.3). Deliberately dependency-free, per
+  the extension's build order: the verification client is built standalone and testable
+  with no NAP dependency.
+
+  Any mint can sign a voucher whose tags claim `issuer: acme` and whose metadata implies
+  `role: admin`. A valid signature says the mint signed it and nothing about whether that
+  mint has authority to make claims this server honours. Since `mint_url` arrives in the
+  request, a field choosing the mint a credential is then verified against is the same
+  vulnerability class as a header choosing the NIP-98 audience — the flaw
+  `createAudienceHostAllowlist()` exists to prevent. `resolve()` therefore matches the
+  supplied value against the list and returns the *configured* origin, so nothing
+  downstream holds a value that arrived in the request.
+
+  `createMintAllowlist()` and `createIssuerAllowlist()` both throw on an empty list at
+  wiring time: an allowlist that allows every mint is the state they exist to make
+  unrepresentable. Entries are `https` only with no opt-out — unlike the audience, this is
+  an outbound call to a third party whose answer decides an authorization, and over
+  plaintext anyone on the path can forge an `UNSPENT` state check — and wildcards are
+  refused, since these entries are third parties rather than hosts this deployment answers
+  on. `resolve()` never throws and never fetches, so a malformed `mint_url` produces the
+  same generic 401 as every other voucher failure and an unvetted URL is never reached.
+
+  Issuers are keyed on the `(mint, issuerPubkey)` pair: trusting a mint is not trusting
+  everyone who ever used it. A pair naming a mint outside the mint allowlist is refused,
+  because it is dead configuration that reads as though it grants something.
+
+  Nothing consumes this yet. The keyset cache, DLEQ, and NUT-07 check are #20; the
+  resolver is #23, blocked on the secret-modelling decision in #13.
+
 - **Guard denials now reach the `AuditLogger`.** `requirePermission()`,
   `requireRole()`, `requireStepUp()`, and `requireSession()` in both adapters accept an
   `auditLogger` (and an optional `metrics`) and emit one `NAP_GUARD_*` code per refusal:
