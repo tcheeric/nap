@@ -5,12 +5,15 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { hexToBytes } from '@imani/nap-core';
 import {
   GUARD_DENIAL_CODES,
+  InMemoryChallengeStore,
   InMemorySessionStore,
   type AclResolver,
   type AuditLogger,
+  type NapServerOptions,
   type PermissionRegistry,
 } from '@imani/nap-server';
 import {
+  createNapExpressRouter,
   requirePermission,
   requireRole,
   requireSession,
@@ -272,6 +275,37 @@ describe('guard audit logging (CONTEXT.md finding 12)', () => {
 
     expect(response.status).toBe(401);
     expect(events[0]?.code).toBe(GUARD_DENIAL_CODES.NO_SESSION);
+  });
+
+  it('stamps revoked_at from the server clock on logout', async () => {
+    // Same class of bug as the session-expiry one above: the logout handler
+    // read the wall clock while the server ran on an injected one, so it wrote
+    // a revocation timestamp years away from every other timestamp in the
+    // store. Found by auditing the remaining currentEpochSeconds() calls after
+    // fixing the guard paths.
+    const now = 1_710_000_000;
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore, { issued_at: now, expires_at: now + 900 });
+    const app = express();
+    app.use(
+      '/auth',
+      createNapExpressRouter({
+        server: {
+          challengeStore: new InMemoryChallengeStore(),
+          sessionStore,
+          clock: { nowUnix: () => now },
+        } as unknown as NapServerOptions,
+        getExternalBaseUrl: () => 'https://api.example.com',
+      })
+    );
+
+    expect((await request(app).post('/auth/logout').set('cookie', 'session=token-1')).status).toBe(
+      204
+    );
+
+    const revoked = await sessionStore.getBySessionId('session-1');
+
+    expect(revoked?.revoked_at).toBe(now);
   });
 
   it('logs nothing when the guard allows the request', async () => {

@@ -25,6 +25,12 @@ All packages in this workspace share a single version.
   clock. `clock` is now also documented on both guard options interfaces and in guide §9.6.1,
   since being undocumented is part of why the mismatch went unnoticed.
 
+  The same bug reached `POST /auth/logout` in both adapters, found by auditing the remaining
+  wall-clock reads rather than by a failing test: the handler loaded the session without the
+  server's clock and stamped `revoked_at` from `Date.now()`, writing a revocation timestamp
+  years away from every other timestamp in the store. Both now share
+  `NapServerOptions.clock`.
+
 ### Documentation
 
 - **ADR 0003 records the voucher secret-modelling evidence** (`docs/adr/0003-voucher-secret-modelling.md`).

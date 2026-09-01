@@ -649,15 +649,21 @@ export function createNapExpressSessionHandler(options: NapExpressOptions): Requ
 export function createNapExpressLogoutHandler(options: NapExpressOptions): RequestHandler {
   return async (req, res, next) => {
     try {
-      const session = await loadSession(req, {
+      // Shares the server's clock: `loadSession` decides whether the session is
+      // already expired, and `revoked_at` is a timestamp the store keeps. A
+      // logout stamping wall-clock time into a store the server reads on an
+      // injected clock writes a revocation dated in the future or the past.
+      const guardOptions = {
         sessionStore: options.server.sessionStore,
         cookieName: options.cookieName,
-      });
+        clock: options.server.clock,
+      };
+      const session = await loadSession(req, guardOptions);
 
       if (session) {
         await options.server.sessionStore.revokeBySessionId(
           session.session_id,
-          currentEpochSeconds()
+          guardNow(guardOptions)
         );
       }
 
