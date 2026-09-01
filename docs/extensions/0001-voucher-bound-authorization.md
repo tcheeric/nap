@@ -258,10 +258,19 @@ export interface VoucherAclResolverOptions {
 }
 ```
 
-`grant` is the application's policy and stays outside the library. The registry validation
-that already exists (`validatePermissionRegistry`) SHOULD be applied to whatever `grant`
-returns, so a typo'd permission key fails at wiring time rather than silently granting
-nothing — the same property tutorial 03 establishes for the registry.
+`grant` is the application's policy and stays outside the library.
+
+**Review question E: SETTLED — validate at grant time**, accepted 2026-09-01. See
+[ADR 0004](../adr/0004-voucher-grant-registry-validation.md). Pass the optional
+`permissionRegistry` and an undeclared role or permission denies the login and logs
+`NAP_VOUCHER_GRANT_NOT_IN_REGISTRY`.
+
+Wiring-time validation, which this section previously proposed, turned out to be impossible
+rather than merely costly: `grant()` takes a *verified voucher*, so a policy deriving keys from
+the voucher's own tags has no output until a real voucher arrives. Probing it at construction
+with a synthetic voucher yields `voucher:view:PROBE:0` — validating that would report success
+for a policy that fails on every real login. Grant-time validation does not give tutorial 03's
+wiring-time guarantee; what it gives is the conversion of a silent failure into an audited one.
 
 ### 5.3 Secret modelling — open
 
@@ -462,8 +471,10 @@ allowlists.
   VOUCHER kind.
 - **C.** Acceptable staleness between voucher death and session death. (§7.1)
 - **D.** Capability advertisement on `/auth/init`, or fail-closed? (§8)
-- **E.** Should `grant()` be validated against the `PermissionRegistry` at wiring time?
-  (Consistent with tutorial 03; costs a construction-order constraint.)
+- **E.** ~~Should `grant()` be validated against the `PermissionRegistry` at wiring time?~~
+  **SETTLED 2026-09-01: at grant time, not wiring time** —
+  [ADR 0004](../adr/0004-voucher-grant-registry-validation.md). Wiring-time validation is not
+  possible for a callback whose output depends on the voucher it is given.
 - **F.** Does anything here belong in the core RFC, or does it stay an extension permanently?
   Current position: permanently an extension, per RFC §22.
 

@@ -32,6 +32,14 @@ All packages in this workspace share a single version.
   proven. The credential used is deliberately valid — allowlisted, signed, correctly bound —
   because a prober would use one that passes every local check.
 
+- **`permissionRegistry` on the voucher resolver** (#17): `grant()` output is checked against
+  the registry, and an undeclared role or permission denies the login with
+  `NAP_VOUCHER_GRANT_NOT_IN_REGISTRY` rather than issuing a session carrying a key no guard will
+  match. Roles are checked too, since an undeclared role expands to nothing downstream.
+
+  Validated at **grant time**, not wiring time, and [ADR 0004](docs/adr/0004-voucher-grant-registry-validation.md)
+  records why the wiring-time version the spec proposed is impossible rather than merely costly.
+
 - **`parseVoucherSecret` and `voucherCanonicalBytes`**: NUT-10 `P2PK_VOUCHER` parsing and the
   bytes an issuer signs.
 

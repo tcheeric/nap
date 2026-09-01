@@ -61,6 +61,16 @@ export const VOUCHER_DENIAL_CODES = {
   SPENT: 'NAP_VOUCHER_SPENT',
   /** The mint could not be reached and the mode is `deny`. */
   MINT_UNAVAILABLE: 'NAP_VOUCHER_MINT_UNAVAILABLE',
+  /**
+   * `grant()` returned a role or permission the registry does not declare
+   * (#17).
+   *
+   * Almost always a typo. It denies rather than granting the rest, because a
+   * partially-applied policy is one nobody wrote: the operator meant the login
+   * to carry `voucher:view`, and a session carrying everything *except* that is
+   * not a safer version of their intent.
+   */
+  GRANT_NOT_IN_REGISTRY: 'NAP_VOUCHER_GRANT_NOT_IN_REGISTRY',
 } as const;
 
 export type VoucherDenialCode = (typeof VOUCHER_DENIAL_CODES)[keyof typeof VOUCHER_DENIAL_CODES];
@@ -109,6 +119,24 @@ export interface VoucherAclResolverOptions {
    * protocol library can know.
    */
   grant(voucher: VerifiedVoucher): VoucherGrant;
+  /**
+   * The permission registry `grant()` output is checked against (#17).
+   *
+   * Optional, and checked at **grant time** rather than at wiring time. That is
+   * forced by the signature: `grant()` takes a verified voucher, so a policy
+   * deriving a key from the voucher's own tags -- `voucher:view:${unit}` -- has
+   * no output at all until a real voucher arrives. Calling it at construction
+   * with a synthetic voucher would enumerate keys like `voucher:view:PROBE:0`
+   * and validate a set the application never grants, which is worse than not
+   * checking: it would report success for a policy that fails on every real
+   * login. See ADR 0004.
+   *
+   * So this does not give the wiring-time guarantee the adapters'
+   * `validatePermissions` gives. What it gives is the conversion of a *silent*
+   * failure into a loud and audited one: a typo'd key today grants nothing and
+   * denies at some guard far away, with no record of why.
+   */
+  permissionRegistry?: PermissionRegistryLike;
   clock?: Clock;
   auditLogger?: VoucherAuditLogger;
   /**
@@ -120,6 +148,18 @@ export interface VoucherAclResolverOptions {
    * through to a stored ACL instead.
    */
   fallback?: AclResolverLike;
+}
+
+/**
+ * The parts of `PermissionRegistry` this needs, structurally.
+ *
+ * Structural rather than imported so `@imani/nap-voucher` does not depend on
+ * `@imani/nap-server` for a type. The registry an application already passes to
+ * `validatePermissions()` satisfies it.
+ */
+export interface PermissionRegistryLike {
+  permissions: ReadonlyArray<{ key: string }>;
+  roles: ReadonlyArray<{ key: string }>;
 }
 
 /** The shape of `AclResolver` from `@imani/nap-server`, structurally. */
@@ -398,6 +438,24 @@ export function createVoucherAclResolver(options: VoucherAclResolverOptions): Ac
       };
 
       const granted = grant(verified);
+
+      // (i continued) The registry check, when one is wired. Roles are checked
+      // as well as permissions: a role expands into permissions downstream, so
+      // an undeclared role is an empty grant wearing the name of a real one.
+      const registry = options.permissionRegistry;
+
+      if (registry) {
+        const declaredPermissions = new Set(registry.permissions.map((entry) => entry.key));
+        const declaredRoles = new Set(registry.roles.map((entry) => entry.key));
+        const unknown = [
+          ...(granted?.permissions ?? []).filter((key) => !declaredPermissions.has(key)),
+          ...(granted?.roles ?? []).filter((key) => !declaredRoles.has(key)),
+        ];
+
+        if (unknown.length > 0) {
+          return deny(VOUCHER_DENIAL_CODES.GRANT_NOT_IN_REGISTRY, npub, pubkey, { unknown });
+        }
+      }
 
       await audit?.log({
         code: 'NAP_VOUCHER_ACCEPTED',

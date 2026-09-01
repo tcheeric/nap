@@ -31,6 +31,7 @@ export type {
 export { createVoucherAclResolver, VOUCHER_DENIAL_CODES } from './resolver.js';
 export type {
   AclResolverLike,
+  PermissionRegistryLike,
   VerifiedVoucher,
   VoucherAclResolverOptions,
   VoucherAuditLogger,

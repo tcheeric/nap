@@ -469,3 +469,102 @@ describe('denials are indistinguishable to the client', () => {
     }
   });
 });
+
+/**
+ * #17: `grant()` output against the `PermissionRegistry`.
+ *
+ * The decision is grant-time validation, not wiring-time. The signature forces
+ * it: `grant()` takes a verified voucher, so a policy keyed on the voucher's
+ * own tags has no output until a real voucher arrives. See the option's doc
+ * comment for why probing with a synthetic voucher would be worse than nothing.
+ */
+describe('grant() is checked against the registry', () => {
+  const registry = {
+    permissions: [{ key: 'voucher:view' }],
+    roles: [{ key: 'voucher-holder' }],
+  };
+
+  const withGrant = (granted: { roles: string[]; permissions: string[] }) => {
+    const logged: Array<{ code: string; details?: Record<string, unknown> }> = [];
+    const resolver = createVoucherAclResolver({
+      mintAllowlist: createMintAllowlist([MINT]),
+      issuerAllowlist: createIssuerAllowlist(
+        [{ mint: MINT, issuerPubkey: ISSUER_PUBKEY }],
+        createMintAllowlist([MINT])
+      ),
+      mintClient: {
+        getKey: async () => '02'.padEnd(66, 'b'),
+        checkState: async () => 'UNSPENT' as const,
+        clearCache: () => {},
+      } as MintClient,
+      availability: createMintAvailabilityPolicy(),
+      grant: () => granted,
+      permissionRegistry: registry,
+      auditLogger: {
+        log: (event) => void logged.push({ code: event.code, details: event.details }),
+      },
+    });
+
+    return { resolver, logged };
+  };
+
+  it('accepts a grant the registry declares', async () => {
+    const { resolver } = withGrant({ roles: ['voucher-holder'], permissions: ['voucher:view'] });
+
+    const decision = await resolver.resolve(NPUB, HOLDER_PUBKEY, {
+      voucher: credential(),
+      now: NOW,
+    });
+
+    expect(decision.allowed).toBe(true);
+  });
+
+  it('denies a typo, rather than granting a session that quietly does nothing', async () => {
+    // Today this is silent: the session is issued carrying a key no guard will
+    // ever match, and the denial surfaces later at some unrelated route with no
+    // record of the cause.
+    const { resolver, logged } = withGrant({
+      roles: ['voucher-holder'],
+      permissions: ['voucher:veiw'],
+    });
+
+    const decision = await resolver.resolve(NPUB, HOLDER_PUBKEY, {
+      voucher: credential(),
+      now: NOW,
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(logged[0]).toMatchObject({
+      code: VOUCHER_DENIAL_CODES.GRANT_NOT_IN_REGISTRY,
+      details: { unknown: ['voucher:veiw'] },
+    });
+  });
+
+  it('denies an undeclared role, which expands to nothing downstream', async () => {
+    // Checking permissions alone would miss this: roles expand into permissions
+    // in createRegistryAclResolver, so an undeclared role is an empty grant
+    // wearing the name of a real one.
+    const { resolver, logged } = withGrant({ roles: ['admn'], permissions: ['voucher:view'] });
+
+    const decision = await resolver.resolve(NPUB, HOLDER_PUBKEY, {
+      voucher: credential(),
+      now: NOW,
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(logged[0]?.details).toMatchObject({ unknown: ['admn'] });
+  });
+
+  it('is optional: without a registry the policy is trusted as before', async () => {
+    // Additive. An application that has no registry, or validates elsewhere,
+    // keeps working unchanged.
+    const { resolver } = harness();
+
+    const decision = await resolver.resolve(NPUB, HOLDER_PUBKEY, {
+      voucher: credential(),
+      now: NOW,
+    });
+
+    expect(decision.allowed).toBe(true);
+  });
+});
