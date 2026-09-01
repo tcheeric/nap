@@ -2827,6 +2827,54 @@ None of the RFC's recommended metrics (`:573`) are emitted. Derive them from the
 audit logger — the `code` field maps cleanly onto `auth_failure_total{code=…}`,
 and `details.retry === true` gives you `challenge_retry_hit_total`.
 
+#### 9.6.1 The guards need their own logger
+
+The `/auth/*` endpoints are only half the surface. The guards —
+`requirePermission()`, `requireRole()`, `requireStepUp()`, `requireSession()` —
+are the *actual* authorization boundary: `/auth/complete` decides who you are
+once, the guards decide what you may do on every request after. They take their
+own `auditLogger`, and **without it a refusal is invisible**: no code, no
+principal, no record. Wire the same logger you gave `NapServerOptions`:
+
+```ts
+const guard = {
+  sessionStore,
+  registry,
+  aclResolver,
+  auditLogger,   // the same one from napServerOptions
+  metrics,       // optional, counts denials alongside auth failures
+};
+
+app.get('/vouchers', requirePermission('voucher:issue', guard), handler);
+```
+
+The codes, all with `outcome: 'failure'`:
+
+| Code | Cause |
+|---|---|
+| `NAP_GUARD_NO_SESSION` | No token, or one that is unknown, expired, or revoked. |
+| `NAP_GUARD_ACL_DENIED` | The session is valid but the `aclResolver` now denies the principal. |
+| `NAP_GUARD_PERMISSION_DENIED` | Authenticated, but lacking the required permission. |
+| `NAP_GUARD_ROLE_DENIED` | Authenticated, but holding none of the accepted roles. |
+| `NAP_GUARD_STEP_UP_REQUIRED` | Permission held, but the step-up token is missing, wrong, or expired. |
+
+Two properties worth knowing:
+
+- **`NAP_GUARD_NO_SESSION` carries no `pubkey`**, because there is no principal
+  to name. That absence is the signal: principal-less denials in bulk are
+  unauthenticated traffic, whereas a burst naming one principal is a permission
+  problem for that user. Every other code names the principal.
+- **`NAP_GUARD_ACL_DENIED` is deliberately not `NAP_COMPLETE_ACL_DENIED`.** A
+  denial at login and a denial at a guard are different events with different
+  remedies — the first means they never got in, the second means their access
+  changed underneath a live session. Collapsing them makes "was this user
+  suspended mid-session?" unanswerable from the log.
+
+A logger that throws costs a log line and nothing else; the denial still goes
+out unchanged. A 500 on exactly one branch would tell an attacker which branch
+they hit, and the guards run outside the auth endpoints' `minAuthResponseMillis`
+floor, so nothing else is smoothing that difference out.
+
 ### 9.7 Threats NAP does not address
 
 - **XSS.** `HttpOnly` protects the token from being read, but an XSS payload can

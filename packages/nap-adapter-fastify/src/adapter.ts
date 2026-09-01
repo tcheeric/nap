@@ -21,11 +21,16 @@ import {
   refreshSession,
   verifyCompletion,
   createAudienceHostAllowlist,
+  logGuardDenial,
+  GUARD_DENIAL_CODES,
   type AclResolver,
   type AudienceResolver,
+  type AuditLogger,
   type Clock,
   type EffectiveAcl,
+  type GuardDenialDetails,
   type IssueChallengeResult,
+  type MetricsRecorder,
   type NapServerOptions,
   type PermissionRegistry,
   type RawBodyExtractor,
@@ -144,7 +149,51 @@ export interface NapFastifyGuardOptions {
    * documentation.
    */
   registry?: PermissionRegistry;
+  /**
+   * Records a `NAP_GUARD_*` code per refusal.
+   *
+   * The guards are the authorization boundary — `/auth/complete` decides who
+   * you are once, these decide what you may do on every request after — and
+   * without this a refusal is invisible: no code, no principal, no record. An
+   * operator watching the log sees an unbroken run of `NAP_COMPLETE_SUCCESS`
+   * whether or not half the traffic is being denied.
+   *
+   * Pass the same logger you gave `NapServerOptions.auditLogger`, so login and
+   * per-request authorization land in one stream.
+   */
+  auditLogger?: AuditLogger;
+  /** Pass the same recorder as `NapServerOptions.metrics` to count guard denials. */
+  metrics?: MetricsRecorder;
   clock?: Clock;
+}
+
+/**
+ * Why a guard refused, so the denial can be audited with a code.
+ *
+ * `loadGuardContext` previously collapsed "no session" and "the ACL now denies
+ * this principal" into a single `null`, which is exactly the distinction an
+ * operator needs: the first is unauthenticated traffic, the second is a live
+ * session whose access was revoked underneath it.
+ */
+type GuardContext =
+  | { ok: true; session: SessionRecord; acl: EffectiveAcl }
+  | { ok: false; code: typeof GUARD_DENIAL_CODES[keyof typeof GUARD_DENIAL_CODES]; session?: SessionRecord };
+
+async function denyGuard(
+  options: NapFastifyGuardOptions,
+  code: typeof GUARD_DENIAL_CODES[keyof typeof GUARD_DENIAL_CODES],
+  session: SessionRecord | undefined,
+  write: () => void,
+  details?: GuardDenialDetails
+): Promise<void> {
+  await logGuardDenial(code, {
+    auditLogger: options.auditLogger,
+    metrics: options.metrics,
+    session,
+    details,
+  });
+
+  write();
 }
 
 function setRawBody(req: FastifyRequest, rawBody: Uint8Array): void {
@@ -259,11 +308,11 @@ function requiresStepUp(permission: string, registry: PermissionRegistry | undef
 async function loadGuardContext(
   req: FastifyRequest,
   options: NapFastifyGuardOptions
-): Promise<{ session: SessionRecord; acl: EffectiveAcl } | null> {
+): Promise<GuardContext> {
   const session = await loadSession(req, options);
 
   if (!session) {
-    return null;
+    return { ok: false, code: GUARD_DENIAL_CODES.NO_SESSION };
   }
 
   const acl = await resolveEffectiveAcl(session, {
@@ -272,7 +321,11 @@ async function loadGuardContext(
     clock: options.clock,
   });
 
-  return acl ? { session, acl } : null;
+  // The session was valid, so the principal is nameable even though the ACL
+  // just refused them — which is the whole value of auditing this branch apart.
+  return acl
+    ? { ok: true, session, acl }
+    : { ok: false, code: GUARD_DENIAL_CODES.ACL_DENIED, session };
 }
 
 function authCompleteUrl(req: FastifyRequest, options: NapFastifyOptions): string {
@@ -717,13 +770,21 @@ export function requirePermission(
   return async (req, reply) => {
     const context = await loadGuardContext(req, options);
 
-    if (!context) {
-      unauthorized(reply);
+    if (!context.ok) {
+      await denyGuard(options, context.code, context.session, () => unauthorized(reply), {
+        permission,
+      });
       return;
     }
 
     if (!context.acl.permissions.includes(permission)) {
-      forbidden(reply);
+      await denyGuard(
+        options,
+        GUARD_DENIAL_CODES.PERMISSION_DENIED,
+        context.session,
+        () => forbidden(reply),
+        { permission }
+      );
       return;
     }
 
@@ -734,7 +795,13 @@ export function requirePermission(
       requiresStepUp(permission, options.registry) &&
       !hasValidStepUpToken(req, context.session)
     ) {
-      forbidden(reply, 'step-up required');
+      await denyGuard(
+        options,
+        GUARD_DENIAL_CODES.STEP_UP_REQUIRED,
+        context.session,
+        () => forbidden(reply, 'step-up required'),
+        { permission }
+      );
       return;
     }
   };
@@ -776,13 +843,21 @@ export function requireRole(
   return async (req, reply) => {
     const context = await loadGuardContext(req, options);
 
-    if (!context) {
-      unauthorized(reply);
+    if (!context.ok) {
+      await denyGuard(options, context.code, context.session, () => unauthorized(reply), {
+        roles: accepted,
+      });
       return;
     }
 
     if (!accepted.some((entry) => context.acl.roles.includes(entry))) {
-      forbidden(reply);
+      await denyGuard(
+        options,
+        GUARD_DENIAL_CODES.ROLE_DENIED,
+        context.session,
+        () => forbidden(reply),
+        { roles: accepted }
+      );
       return;
     }
   };
@@ -793,12 +868,16 @@ export function requireStepUp(options: NapFastifyGuardOptions): preHandlerHookHa
     const session = await loadSession(req, options);
 
     if (!session) {
-      unauthorized(reply);
+      await denyGuard(options, GUARD_DENIAL_CODES.NO_SESSION, undefined, () =>
+        unauthorized(reply)
+      );
       return;
     }
 
     if (!hasValidStepUpToken(req, session)) {
-      forbidden(reply, 'step-up required');
+      await denyGuard(options, GUARD_DENIAL_CODES.STEP_UP_REQUIRED, session, () =>
+        forbidden(reply, 'step-up required')
+      );
       return;
     }
   };
@@ -823,8 +902,8 @@ export function requireSession(options: NapFastifyGuardOptions): preHandlerHookH
   return async (req, reply) => {
     const context = await loadGuardContext(req, options);
 
-    if (!context) {
-      unauthorized(reply);
+    if (!context.ok) {
+      await denyGuard(options, context.code, context.session, () => unauthorized(reply));
       return;
     }
   };

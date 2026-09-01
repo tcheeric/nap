@@ -9,6 +9,12 @@ export {
   validatePermissionRegistry,
 } from './acl.js';
 export { createAudienceHostAllowlist } from './audience.js';
+export { GUARD_DENIAL_CODES, logGuardDenial } from './guard.js';
+export type {
+  GuardDenialCode,
+  GuardDenialDetails,
+  LogGuardDenialOptions,
+} from './guard.js';
 export { createNoopMetricsRecorder, withMetrics } from './metrics.js';
 export { createInMemoryRateLimiter } from './rateLimit.js';
 export type { InMemoryRateLimiterOptions } from './rateLimit.js';

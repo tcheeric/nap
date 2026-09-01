@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 All packages in this workspace share a single version.
 
+## [Unreleased]
+
+### Added
+
+- **Guard denials now reach the `AuditLogger`.** `requirePermission()`,
+  `requireRole()`, `requireStepUp()`, and `requireSession()` in both adapters accept an
+  `auditLogger` (and an optional `metrics`) and emit one `NAP_GUARD_*` code per refusal:
+  `NAP_GUARD_NO_SESSION`, `NAP_GUARD_ACL_DENIED`, `NAP_GUARD_PERMISSION_DENIED`,
+  `NAP_GUARD_ROLE_DENIED`, `NAP_GUARD_STEP_UP_REQUIRED`.
+
+  The guards are the authorization boundary — `/auth/complete` decides who you are once,
+  the guards decide what you may do on every request after — and until now a refusal
+  there produced no record at all. An operator running the whole tutorial-06 sequence
+  against a logging server got exactly two events out, both `NAP_COMPLETE_SUCCESS`, with
+  every 401 and 403 in between invisible. CLAUDE.md's "wire an `AuditLogger` and read the
+  `code`" therefore did not help on the half of the surface that most needs it
+  (CONTEXT.md finding 12).
+
+  Three properties are deliberate. `NAP_GUARD_NO_SESSION` carries no `pubkey`, because
+  there is no principal to name, and that absence is the signal: principal-less denials
+  in bulk are unauthenticated traffic, a burst naming one principal is a permission
+  problem for that user. `NAP_GUARD_ACL_DENIED` is distinct from the existing
+  `NAP_COMPLETE_ACL_DENIED` — a denial at login and a denial at a guard have different
+  remedies, and collapsing them makes "was this user suspended mid-session?"
+  unanswerable. And a throwing audit sink costs a log line and nothing else: the denial
+  goes out byte-identical, because a 500 on exactly one branch tells an attacker which
+  branch they hit, and the guards run outside the `minAuthResponseMillis` floor that
+  smooths the auth endpoints.
+
+  Purely additive. Guards wired without an `auditLogger` behave exactly as before.
+  `GUARD_DENIAL_CODES` and `logGuardDenial()` are exported from `@imani/nap-server` for
+  anyone writing their own guard.
+
 ## [0.10.1] - 2026-08-20
 
 No behaviour change. Declares a requirement that already existed and was only discoverable by

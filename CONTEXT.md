@@ -158,17 +158,26 @@ cost time while building `examples/merchant-app` and each is worth a ticket of i
     no principal. Guide text corrected in the tutorial-05 commit; the library is
     untouched.
 
-12. **Guard denials reach no `AuditLogger`.** `NapExpressGuardOptions` has no
-    `auditLogger` field, and neither does the Fastify equivalent, so every
-    `requirePermission` / `requireRole` / `requireSession` refusal is invisible: no
-    code, no principal, no record. Verified by running the whole tutorial-06 sequence
-    — a plain-session 403, a step-up completion, a success, and a cross-paired 403 —
-    against a logging server and getting exactly two records out, both
-    `NAP_COMPLETE_SUCCESS`. The `/auth/*` endpoints are well covered; the guards, which
-    are the actual authorization boundary, are not covered at all. CLAUDE.md's "wire an
-    `AuditLogger` and read the `code`" trap therefore does not help for the half of the
-    surface an operator most needs to see. The guards should accept the same
-    `AuditLogger` and log a denial code per refusal reason.
+12. ~~**Guard denials reach no `AuditLogger`.**~~ **Fixed** (issue #21). The guards in
+    both adapters now take an `auditLogger` (and an optional `metrics`) and emit a
+    `NAP_GUARD_*` code per refusal: `NO_SESSION`, `ACL_DENIED`, `PERMISSION_DENIED`,
+    `ROLE_DENIED`, `STEP_UP_REQUIRED`. `loadGuardContext` no longer collapses "no
+    session" and "the ACL now denies this principal" into one `null`, so a
+    mid-session suspension is distinguishable from unauthenticated traffic — the
+    first names a principal, the second cannot. A throwing sink costs a log line
+    and leaves the denial byte-identical, since a 500 on one branch is itself a
+    side channel. Guide §9.6.1; tests in `test/guardAudit.test.ts` in both
+    adapters, including the tutorial-06 sequence that originally produced two
+    `NAP_COMPLETE_SUCCESS` records and nothing else.
+
+    The original finding: `NapExpressGuardOptions` had no `auditLogger` field, and
+    neither did the Fastify equivalent, so every `requirePermission` / `requireRole`
+    / `requireSession` refusal was invisible: no code, no principal, no record.
+    Verified by running the whole tutorial-06 sequence — a plain-session 403, a
+    step-up completion, a success, and a cross-paired 403 — against a logging server
+    and getting exactly two records out, both `NAP_COMPLETE_SUCCESS`. The `/auth/*`
+    endpoints were well covered; the guards, which are the actual authorization
+    boundary, were not covered at all.
 
 ## Open
 
