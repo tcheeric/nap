@@ -70,6 +70,23 @@ All packages in this workspace share a single version.
 
 ### Documentation
 
+- **Integration guide §3.5 documents mint-backed authorisation.** §3.1–§3.4 answer "what may
+  this principal do?" from a stored ACL row; §3.5 covers answering it from a Cashu voucher
+  instead. Written for an operator deciding whether to adopt it, so it leads with the tradeoff
+  (no pre-registration, at the cost of the mint becoming an availability dependency of login)
+  and is explicit that a stored ACL is simpler and strictly more available when you already
+  know your users.
+
+  Covers the P2PK binding that makes a stolen voucher useless, why the mint and both
+  allowlists are mandatory, the verification order and the three ordering constraints that are
+  security properties rather than style, deny-by-default availability handling, session
+  lifecycle, the failure codes, and the body-placement rule. Ends with an honest status table
+  and the ADR 0003 blocker.
+
+  Carries a status banner: the verification primitives ship, the resolver does not, so it is
+  an evaluation document rather than a wiring guide. All three code samples were compiled and
+  executed against the real API.
+
 - **ADR 0003 records the voucher secret-modelling evidence** (`docs/adr/0003-voucher-secret-modelling.md`).
   The Imani mint does **not** enforce P2PK on a VOUCHER secret:
   `VerifyProofsTask.getSpendingCondition()` dispatches first-match on kind, so a VOUCHER

@@ -1,6 +1,7 @@
 # NAP Extension 0001 — Voucher-Bound Authorization
 
-**Status:** Draft, for review. Not implemented. Not part of the core profile.
+**Status:** Draft, for review. Partially implemented (verification primitives only). Not part of the core profile.
+**Operator-facing summary:** [integration guide §3.5](../NAP-INTEGRATION-GUIDE.md#35-mint-backed-authorisation) — this document is the design rationale; §3.5 is what an integrator reads.
 **Extends:** `docs/NAP-v2-RFC.md` §15 (ACL and Authorization), §22 (Open Extensions, items 1 and 5).
 **Depends on:** `cashu-lib` NUT-10 `VoucherSecret` / NUT-11 `P2PKSecret`, `cashu-voucher` issuer signatures, NUT-07 state check, NUT-12 DLEQ.
 **Applies to:** `nap` (TypeScript) and `nap-java` together. A protocol change in one without the other breaks interop (CLAUDE.md).

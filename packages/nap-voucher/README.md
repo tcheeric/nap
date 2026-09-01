@@ -3,6 +3,8 @@
 Verification primitives for **NAP Extension 0001 — Voucher-Bound Authorization**
 (`docs/extensions/0001-voucher-bound-authorization.md`).
 
+**Start with [integration guide §3.5](../../docs/NAP-INTEGRATION-GUIDE.md#35-mint-backed-authorisation)** for what mint-backed authorisation is, when to choose it over a stored ACL, and its operational costs. This README covers the package API.
+
 **Status: incomplete.** This package ships the two allowlists (§4.3), NUT-12
 DLEQ verification, NUT-00 `hash_to_curve`, a mint client with a keyset TTL cache
 and the NUT-07 state check, and the mint-availability policy (§7.3). The
