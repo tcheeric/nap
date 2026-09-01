@@ -79,6 +79,12 @@ export type {
   VerifyCompletionInput,
   VerifyCompletionOutcome,
 } from './types.js';
+/**
+ * Re-exported so a consumer implementing an `AclResolver` can name the type
+ * `AclResolutionContext.voucher` carries without depending on `@imani/nap-core`
+ * directly.
+ */
+export type { VoucherCredential } from '@imani/nap-core';
 export {
   isMalformedRequestFailure,
   isVerifyFailure,

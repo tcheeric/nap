@@ -893,7 +893,7 @@ carries none of it.
 
 The two core-surface changes made while building it are both **general** rather
 than voucher-specific, which is the test a core edit has to pass:
-`AclResolutionContext` (§24.4) carries whatever a caller knows about a
+`AclResolutionContext` (§25.3) carries whatever a caller knows about a
 resolution, and `maxSessionLifetimeSeconds` bounds session lifetime for any
 credential the server cannot re-read. Neither mentions vouchers, and both would
 be defensible had the extension never existed.
@@ -1107,10 +1107,57 @@ export interface AclDecision {
   allowed: boolean;
   roles: string[];
   permissions: string[];
+  /** Audit-facing explanation. Never surfaced to the client (§19). */
+  reason?: string;
+  /**
+   * Set only on a denial the resolver is certain about, which revokes every
+   * session the principal holds. Omitting it denies one request and leaves
+   * sessions intact — the safe default, since a resolver that could not *read*
+   * the ACL would otherwise log the principal out everywhere.
+   */
+  revoke_sessions?: boolean;
+  /**
+   * Latest instant this decision remains valid. The session expiry is clamped
+   * to it, so a session cannot outlive what authorised it. Only ever shortens:
+   * a resolver MUST NOT be able to issue longer sessions than the operator
+   * configured.
+   */
+  expires_at?: number;
+}
+
+/**
+ * What the caller knows about this resolution beyond the principal.
+ *
+ * Every field is optional and additive; a resolver declaring only two
+ * parameters is conformant and behaves identically.
+ */
+export interface AclResolutionContext {
+  /** The server's notion of now, passed rather than read from the wall clock. */
+  now: number;
+  /**
+   * A credential presented with this completion, when an extension defines one
+   * — extension 0001 puts a voucher here. Absent on re-resolution and refresh,
+   * which hold a session rather than a request body.
+   */
+  voucher?: VoucherCredential;
+  /**
+   * The session being re-checked, present on guard re-resolution and refresh
+   * and absent at login.
+   *
+   * It is what lets a resolver distinguish "a re-check of an established
+   * session" from "a login that presented no credential" — indistinguishable
+   * from a missing credential alone, and answering them alike denies every
+   * guarded request.
+   */
+  session?: { roles: string[]; permissions: string[] };
 }
 
 export interface AclResolver {
-  resolve(npub: string, pubkey: string): Promise<AclDecision>;
+  resolve(
+    npub: string,
+    pubkey: string,
+    context?: AclResolutionContext
+  ): Promise<AclDecision>;
 }
 
 export interface RateLimiter {

@@ -173,6 +173,23 @@ All packages in this workspace share a single version.
   declared `<scope>test</scope>` in `cashu-mint-rest` while the voucher ledger needs it at
   runtime.
 
+### Fixed
+
+- **RFC §25.3's interface listing had drifted from the implementation, and nothing checked it.**
+  `AclDecision` documented three of its five fields — `reason` and `revoke_sessions` had been
+  missing for some time, and `expires_at` was added this cycle without being mirrored.
+  `AclResolver.resolve` was shown with two parameters after gaining an optional third, and
+  `AclResolutionContext` was absent entirely. An implementer building against the RFC would have
+  produced a resolver that cannot revoke sessions, bound one, or see a credential.
+
+  Now covered by `rfcParity.test.ts`, which extracts the RFC's own blocks and compares them to
+  the real types. It compares **key sets**, not assignability: an interface missing an optional
+  field is still assignable in both directions, so the obvious version passed against a
+  deliberately drifted RFC. Each of the three drifts is mutation-checked.
+
+  Also re-exports `VoucherCredential` from `@imani/nap-server`, which the parity check surfaced:
+  `AclResolutionContext.voucher` is public API naming a type consumers could not import.
+
 ### Documentation
 
 - **Extension 0001 §7.4 records the accepted risk of cross-server double-use** (#28). Settled as
