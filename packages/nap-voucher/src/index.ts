@@ -28,3 +28,14 @@ export type {
   MintAvailabilityPolicy,
   MintAvailabilityPolicyOptions,
 } from './availability.js';
+export { createVoucherAclResolver, VOUCHER_DENIAL_CODES } from './resolver.js';
+export type {
+  AclResolverLike,
+  VerifiedVoucher,
+  VoucherAclResolverOptions,
+  VoucherAuditLogger,
+  VoucherDenialCode,
+  VoucherGrant,
+} from './resolver.js';
+export { parseVoucherSecret, voucherCanonicalBytes, VOUCHER_TAGS } from './secret.js';
+export type { ParsedVoucherSecret, VoucherKind } from './secret.js';

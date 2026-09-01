@@ -11,6 +11,30 @@ All packages in this workspace share a single version.
 
 ### Added
 
+- **`createVoucherAclResolver`** (#23): the §6 step-13 verification procedure, composing the
+  allowlists, the mint client, DLEQ verification, and the availability policy.
+
+  The order of steps (a)–(i) is the security property, so each is pinned by a negative test
+  asserting its audit code — the codes are the only place the distinctions survive, since the
+  client sees an identical 401 either way. `mint_url` is allowlisted before anything reaches the
+  network (SSRF), and the binding check runs before the mint round trip, so a stolen credential
+  is refused without telling the mint that someone is probing a proof.
+
+  **`/auth/complete` is not a mint oracle.** Verified by driving the real Express endpoint and
+  asserting the mint client is untouched for unauthenticated, unknown-challenge, and
+  bad-signature completions, with a counterweight proving it *is* reached once key control is
+  proven. The credential used is deliberately valid — allowlisted, signed, correctly bound —
+  because a prober would use one that passes every local check.
+
+- **`parseVoucherSecret` and `voucherCanonicalBytes`**: NUT-10 `P2PK_VOUCHER` parsing and the
+  bytes an issuer signs.
+
+  Byte-parity with `cashu-voucher`'s Java renderer is pinned by a golden vector generated from
+  the Java implementation, asserted on both sides. A disagreement between the two is not a
+  failed test but a signature that verifies over different content than the issuer meant, which
+  inspection cannot catch.
+
+
 - **`VoucherCredential` and the additive `voucher` field on the completion body** (#22), plus
   the `AclResolver` widening that carries it (#14).
 
