@@ -1,10 +1,16 @@
 /**
- * Type-checks the TypeScript blocks in the `@imani/nap-voucher` README.
+ * Type-checks every documented TypeScript block for this package, read from the
+ * documents themselves.
  *
- * `readmeExample.test.ts` runs the wiring, but it is a *hand-copy* of the
- * README: if the README drifts, that test keeps passing and the documentation
- * silently rots. This test reads the README itself, so drift is caught
- * mechanically rather than by remembering to update two places.
+ * `readmeExample.test.ts` runs the wiring, but it is a *hand-copy*: if a
+ * document drifts, that test keeps passing and the documentation silently rots.
+ * Verifying a snippet by copying it into a test proves the copy compiles, not
+ * the document. These read the source files, so drift is caught mechanically.
+ *
+ * Covers the package README **and integration guide §3.5**, which is the
+ * operator-facing account of mint-backed authorisation. That section is the one
+ * an integrator actually follows, so a stale call signature there is worse than
+ * a stale one in the README.
  *
  * The blocks are illustrative fragments — they reference a `credential`, a
  * `secret`, and so on that a real caller would have in scope — so they are
@@ -20,7 +26,22 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const readmePath = resolve(here, '../README.md');
+
+/**
+ * Every document carrying runnable examples of this package's API, with the
+ * minimum number of blocks each must contain. A document that quietly loses its
+ * examples would otherwise start passing by checking nothing.
+ */
+const DOCUMENTED = [
+  { label: 'package README', path: resolve(here, '../README.md'), minBlocks: 3 },
+  {
+    label: 'integration guide §3.5',
+    path: resolve(here, '../../../docs/NAP-INTEGRATION-GUIDE.md'),
+    minBlocks: 3,
+    // The guide documents the whole of NAP; only §3.5 is about this package.
+    section: { from: '### 3.5 Mint-backed authorisation', to: '## 4. TypeScript package map' },
+  },
+] as const;
 
 /** The ambient values the README's fragments assume a caller already has. */
 const PREAMBLE = `
@@ -35,6 +56,27 @@ declare const secret: string;
 declare const C: string;
 declare const dleq: DleqProof & { r: string };
 `;
+
+/** Narrow a document to one section, when only part of it concerns this package. */
+function sliceSection(
+  markdown: string,
+  section?: { from: string; to: string }
+): string {
+  if (!section) {
+    return markdown;
+  }
+
+  const start = markdown.indexOf(section.from);
+  const end = markdown.indexOf(section.to, start + 1);
+
+  if (start < 0 || end < 0) {
+    // The headings moved or were renamed. Failing loudly beats silently
+    // checking an empty string.
+    throw new Error(`section '${section.from}' .. '${section.to}' not found`);
+  }
+
+  return markdown.slice(start, end);
+}
 
 function extractTsBlocks(markdown: string): string[] {
   const blocks: string[] = [];
@@ -94,13 +136,15 @@ function typeCheck(source: string): ts.Diagnostic[] {
   ];
 }
 
-describe('README code blocks type-check against the real source', () => {
-  const blocks = extractTsBlocks(readFileSync(readmePath, 'utf8'));
+describe.each(DOCUMENTED)('$label code blocks type-check against the real source', (doc) => {
+  const blocks = extractTsBlocks(
+    sliceSection(readFileSync(doc.path, 'utf8'), 'section' in doc ? doc.section : undefined)
+  );
 
   it('finds the documented blocks', () => {
-    // If the README stops having runnable examples, that is itself a
+    // If a document stops having runnable examples, that is itself a
     // regression worth failing on rather than silently checking nothing.
-    expect(blocks.length).toBeGreaterThanOrEqual(3);
+    expect(blocks.length).toBeGreaterThanOrEqual(doc.minBlocks);
   });
 
   it.each(blocks.map((block, index) => [index + 1, block] as const))(

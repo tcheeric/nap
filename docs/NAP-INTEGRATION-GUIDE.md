@@ -750,6 +750,11 @@ something. RFC §7.1 and §10.3 spell this out.
 > Read this to evaluate the approach; do not read it as a wiring guide for
 > production. The full design is
 > [extension 0001](./extensions/0001-voucher-bound-authorization.md).
+>
+> The code blocks below are extracted from this file and type-checked against
+> the real API by `packages/nap-voucher/test/docsTypecheck.test.ts`, so a
+> renamed export or a changed option name fails the suite rather than rotting
+> here.
 
 Everything in §3.1–§3.4 answers "what may this principal do?" from a **stored ACL
 row**, provisioned in advance against a pubkey you already know. Mint-backed

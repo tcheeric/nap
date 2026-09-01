@@ -84,8 +84,15 @@ All packages in this workspace share a single version.
   and the ADR 0003 blocker.
 
   Carries a status banner: the verification primitives ship, the resolver does not, so it is
-  an evaluation document rather than a wiring guide. All three code samples were compiled and
-  executed against the real API.
+  an evaluation document rather than a wiring guide.
+
+  Its code blocks are extracted from the guide itself and type-checked against the real API by
+  `docsTypecheck.test.ts` (renamed from `readmeTypecheck.test.ts`, now covering both
+  documents). Verifying a snippet by copying it into a test proves the copy compiles, not the
+  document — and §3.5 is the section an integrator actually follows, so a stale call signature
+  there matters more than one in a README. Mutation-checked in three directions: the guide
+  renaming a function, the *source* renaming an option while the guide goes stale, and the
+  §3.5 headings moving so the extractor silently checks nothing.
 
 - **ADR 0003 records the voucher secret-modelling evidence** (`docs/adr/0003-voucher-secret-modelling.md`).
   The Imani mint does **not** enforce P2PK on a VOUCHER secret:
