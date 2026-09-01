@@ -117,9 +117,19 @@ Unlike the issuer keys beside it, it carries no `${...}` placeholder, and a YAML
 list cannot be replaced from outside: an indexed override adds to the list, and
 `SPRING_APPLICATION_JSON`, an external `application.properties`, a
 profile-specific external file and a `--voucher.nostr.relays[0]` argument were
-all tried and all lost to the hardcoded value. So a mint cannot be pointed at a
-private relay, and issuance fails with `VoucherNostrException: Not connected to
-any relay`.
+all tried and all lost to the hardcoded value.
+
+Chasing that turned out to be the wrong diagnosis, and the real one is worse:
+**`application-voucher.yml` is not read at all.** Editing `publishTimeoutMs` in
+the file directly and rebuilding changed nothing, and the logged
+`queryTimeout=5000` matches neither the file (`10000`) nor the Java default
+(`10000`). `VoucherConfiguration` constructs the ledger repository with a
+two-argument constructor that hardcodes both timeouts, so the configured values
+are read and then discarded. Filed as
+[398ja/cashu-mint#407](https://github.com/398ja/cashu-mint/issues/407).
+
+The practical consequence is that a mint cannot be pointed at a private relay,
+so issuance fails with `VoucherNostrException: Not connected to any relay`.
 
 **This does not block NAP's coverage**, which is why it is recorded rather than
 worked around. NAP never calls `POST /v1/vouchers` — a holder obtains a voucher
