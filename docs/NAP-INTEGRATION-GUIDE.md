@@ -1050,9 +1050,17 @@ once, so verify it before rollout rather than after.
 
 A Cashu proof carries exactly one NUT-10 kind, so the voucher metadata and the
 P2PK lock must share one secret. Settled 2026-09-01
-([ADR 0003](./adr/0003-voucher-secret-modelling.md)): **a new composite kind**
-carrying both, enforced by the mint as a single spending condition. The kind
-name and the exact placement of `K` are being settled in `cashu-lib`.
+([ADR 0003](./adr/0003-voucher-secret-modelling.md)): **a new composite kind,
+`P2PK_VOUCHER`**, carrying both and enforced by the mint as a single spending
+condition. The exact placement of `K` is being settled in `cashu-lib`.
+
+The name follows the convention `P2PK` and `HTLC` already set — naming the
+spending *mechanism*, not the use case — so a mint implementer reading it knows
+a witness is required. That is precisely what a bare `VOUCHER` kind failed to
+convey. `BEARER` was considered and rejected: a bearer instrument is one where
+possession alone authorises, and here possession is useless without the key for
+`K`. The credential is bearer-*issued*, not bearer-*redeemable*, and the kind
+string is a permanent wire format that would carry the wrong claim forever.
 
 The two alternatives were rejected, and why is worth knowing because the naive
 reading favours both:

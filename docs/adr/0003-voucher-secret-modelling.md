@@ -111,10 +111,35 @@ authorization semantics an issuer signed.
 **Option 3: a new composite NUT-10 kind**, carrying both the voucher metadata and the P2PK
 lock as first-class parts of one secret, enforced by the mint as a single spending condition.
 
-The kind name, the placement of `K` (a `data` field versus a dedicated tag), and the
-canonical-bytes form are implementation details to settle in the `cashu-lib` change, not
-here. What this ADR fixes is that the two concerns stay **distinct and both enforced**,
-rather than one being smuggled into the other's tags.
+**The kind is named `P2PK_VOUCHER`.** The placement of `K` (a `data` field versus a dedicated
+tag) and the canonical-bytes form remain implementation details for the `cashu-lib` change.
+What this ADR fixes is the name, and that the two concerns stay **distinct and both
+enforced** rather than one being smuggled into the other's tags.
+
+### On the name
+
+The enum name *is* the wire string — `WellKnownSecretSerializer` writes `getKind().name()`
+and the deserializer reads `Kind.valueOf(...)` — so this names a permanent public format, not
+just a Java identifier. Worth getting right once.
+
+`P2PK_VOUCHER` follows the convention the existing kinds already set: `P2PK` and `HTLC` name
+the **spending mechanism**, not the use case. (`VOUCHER` breaks that pattern by naming the
+payload, which is arguably part of how the enforcement gap arose — nothing in the name
+suggests a witness is involved.) A mint implementer reading `P2PK_VOUCHER` knows immediately
+that a witness is required, which is exactly the property option 1 failed to convey.
+
+It also degrades correctly: an unaware mint hits `Kind.valueOf("P2PK_VOUCHER")` and throws,
+rather than parsing it and falling through to NUT-10's "may be treated as regular
+anyone-can-spend tokens".
+
+**`BEARER` was considered and rejected.** It reads as the opposite of what this is. A bearer
+instrument is one where possession alone authorises; here possession is useless without the
+private key for `K`, which is the whole §3.1 binding. Extension 0001 uses "bearer" twice to
+describe what the design *rejects* — "bearer over the wire… anything that sees the request
+can reuse it" and "a bearer token yields nothing to key on". The accurate sense is its third
+use, "the credential is bearer-**issued**", meaning no pre-registration; but "bearer-issued"
+and "bearer-redeemable" are different claims and `BEARER` collapses them into the wrong one.
+Since the name is the permanent wire string, that misreading would ship forever.
 
 ### Why
 
@@ -134,15 +159,18 @@ error in the earlier analysis. Given that, pay for the honest model.
 
 ### Work this implies, outside NAP
 
-- **`cashu-lib`**: a new `Kind` enum member; `WellKnownSecretDeserializer` handling for it
-  (three call sites: spec, flattened, and object forms); a secret class exposing both the
-  voucher accessors and the P2PK lock.
+- **`cashu-lib`**: `Kind.P2PK_VOUCHER`; `WellKnownSecretDeserializer` handling for it (three
+  call sites: spec, flattened, and object forms); a secret class exposing both the voucher
+  accessors and the P2PK lock. Note that `Kind.valueOf()` means the enum name is the wire
+  string, so the member name is a public format decision.
 - **`cashu-voucher`**: `VoucherCanonicalBytes` must emit the new kind, and
   `VoucherSignatureService` must sign and verify over it. **This invalidates issuer
   signatures produced under the old form**, so it needs either a migration window or a
   version tag in the canonical bytes.
-- **`cashu-mint`**: `VerifyProofsTask.getSpendingCondition()` must dispatch the new kind to a
-  condition that runs *both* the voucher checks and `P2PKSpendingCondition`. `MeltTask`'s
+- **`cashu-mint`**: `VerifyProofsTask.getSpendingCondition()` must dispatch `P2PK_VOUCHER` to
+  a condition that runs *both* the voucher checks and `P2PKSpendingCondition`. Ordering
+  matters: it must be matched before the existing `isVoucherSecret` branch, or a
+  `P2PK_VOUCHER` secret could fall into the voucher-only path that has no witness check. `MeltTask`'s
   Model B rejection needs the same treatment. `/v1/info` should advertise the new kind so a
   wallet can tell whether the lock is real.
 

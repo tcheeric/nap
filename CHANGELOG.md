@@ -94,8 +94,13 @@ All packages in this workspace share a single version.
   renaming a function, the *source* renaming an option while the guide goes stale, and the
   §3.5 headings moving so the extractor silently checks nothing.
 
-- **ADR 0003 is accepted: the voucher secret is a new composite NUT-10 kind** carrying both
-  the voucher metadata and the P2PK lock, enforced by the mint as one spending condition.
+- **ADR 0003 is accepted: the voucher secret is a new composite NUT-10 kind, `P2PK_VOUCHER`**,
+  carrying both the voucher metadata and the P2PK lock and enforced by the mint as one
+  spending condition. The name follows the convention `P2PK` and `HTLC` set — naming the
+  spending mechanism rather than the use case — so a mint implementer can see a witness is
+  required, which a bare `VOUCHER` kind did not convey. `BEARER` was rejected as saying the
+  opposite of the truth: possession alone does not authorise, and since `Kind.valueOf()` makes
+  the enum name the wire string, that misreading would be permanent.
 
   An option-2 decision (a NUT-11 `P2PK` secret carrying voucher metadata as tags) was taken
   and reverted the same day. It was chosen for appearing to need no upstream change, but

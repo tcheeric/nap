@@ -279,8 +279,8 @@ nothing — the same property tutorial 03 establishes for the registry.
    exist. **Chosen** — see ADR 0003. Every option turned out to need an upstream change, so
    the deciding factor became which model is honest rather than which is cheapest.
 
-**Review question B: SETTLED — option 3**, a new composite kind, accepted 2026-09-01. See
-[ADR 0003](../adr/0003-voucher-secret-modelling.md).
+**Review question B: SETTLED — option 3**, a new composite kind named `P2PK_VOUCHER`,
+accepted 2026-09-01. See [ADR 0003](../adr/0003-voucher-secret-modelling.md).
 
 Option 1 leaves the lock unenforced: the Imani mint dispatches first-match on kind, so a
 VOUCHER secret never reaches `P2PKSpendingCondition`, and `VoucherSpendingCondition` has no
