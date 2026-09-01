@@ -9,6 +9,29 @@ All packages in this workspace share a single version.
 
 ## [Unreleased]
 
+### Added
+
+- **`VoucherCredential` and the additive `voucher` field on the completion body** (#22), plus
+  the `AclResolver` widening that carries it (#14).
+
+  The credential goes in the body rather than the NIP-98 event, and that placement is
+  load-bearing: the `payload` tag is `sha256(rawBody)`, so the signature covers it and a
+  credential swapped in transit fails with `NAP_COMPLETE_PAYLOAD_MISMATCH` — the same mechanism
+  that already protects `step_up`.
+
+  A present-but-malformed credential is **rejected** rather than dropped. Dropping it would turn
+  a client bug into a fall-through to the stored ACL, which for a burner key is a generic denial
+  that looks nothing like the real cause. The credential is rebuilt from known keys rather than
+  passed through, so a body carrying extra fields cannot smuggle them to a resolver.
+
+  `AclResolver.resolve()` gains an optional third `AclResolutionContext` carrying the voucher and
+  the server's `now`. Optional and additive: existing two-parameter resolvers keep compiling and
+  behaving identically. `now` is passed rather than read because a component reading the wall
+  clock while the server ran on an injected one has been a real bug here twice.
+
+  `buildAuthCompleteRequest` accepts a `voucher`, so a client can actually present one. The event
+  must be signed by the key the voucher is P2PK-locked to.
+
 ### Fixed
 
 - **Guards now honour an injected `clock`.** `NapExpressGuardOptions.clock` and its Fastify
