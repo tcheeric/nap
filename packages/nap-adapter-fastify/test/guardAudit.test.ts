@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import { getPublicKey, nip19 } from 'nostr-tools';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { hexToBytes } from '@imani/nap-core';
+import { hexToBytes, type SessionRecord } from '@imani/nap-core';
 import {
   GUARD_DENIAL_CODES,
   InMemorySessionStore,
@@ -15,6 +15,7 @@ import {
   requireSession,
   requireStepUp,
   resetPermissionValidationState,
+  type NapFastifyGuardOptions,
 } from '../src/index.js';
 
 const PRIVATE_KEY_HEX = '1111111111111111111111111111111111111111111111111111111111111111';
@@ -271,5 +272,75 @@ describe('fastify guard audit logging (CONTEXT.md finding 12)', () => {
     // A 500 on exactly one branch is a side channel; a broken sink costs a log
     // line and nothing else.
     expect(response.statusCode).toBe(403);
+  });
+});
+
+/**
+ * Parity with the Express adapter on the re-resolution context (#24).
+ *
+ * The session snapshot that stops a voucher resolver denying every guarded
+ * request is added in `resolveEffectiveAcl`, which both adapters call. That
+ * makes parity likely rather than certain, and "both call the same function" is
+ * an argument, not evidence — an adapter could route one guard differently.
+ *
+ * `requireStepUp` is deliberately absent: it checks the token and never
+ * re-resolves the ACL, in either adapter. Asserting a context there would be
+ * asserting a behaviour neither has.
+ */
+describe('guards pass the session to the resolver', () => {
+  const NOW = 1_710_000_000;
+
+  const seed = async () => {
+    const sessionStore = new InMemorySessionStore();
+    await sessionStore.createForChallenge({
+      challenge_id: 'c1',
+      session_id: 's1',
+      access_token: 'tok',
+      principal_npub: 'npub1x',
+      principal_pubkey: 'ff'.repeat(32),
+      app_id: 'app',
+      roles: ['holder'],
+      permissions: ['thing:read'],
+      issued_at: NOW,
+      expires_at: NOW + 900,
+    } as SessionRecord);
+
+    return sessionStore;
+  };
+
+  const run = async (guard: (options: NapFastifyGuardOptions) => never) => {
+    let seen: { session?: { roles: string[]; permissions: string[] } } | undefined;
+    const options = {
+      sessionStore: await seed(),
+      clock: { nowUnix: () => NOW },
+      aclResolver: {
+        async resolve(_npub: string, _pubkey: string, context?: typeof seen) {
+          seen = context;
+          return { allowed: true, roles: ['holder'], permissions: ['thing:read'] };
+        },
+      },
+    } as unknown as NapFastifyGuardOptions;
+
+    const app = Fastify();
+    app.get('/x', { preHandler: guard(options) }, async () => ({ ok: true }));
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/x',
+      headers: { authorization: 'Bearer tok' },
+    });
+
+    return { status: response.statusCode, seen };
+  };
+
+  it.each([
+    ['requirePermission', (o: NapFastifyGuardOptions) => requirePermission('thing:read', o)],
+    ['requireRole', (o: NapFastifyGuardOptions) => requireRole(['holder'], o)],
+    ['requireSession', (o: NapFastifyGuardOptions) => requireSession(o)],
+  ])('%s carries the session snapshot', async (_label, guard) => {
+    const { status, seen } = await run(guard as never);
+
+    expect(status).toBe(200);
+    expect(seen?.session).toEqual({ roles: ['holder'], permissions: ['thing:read'] });
   });
 });
