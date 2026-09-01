@@ -15,5 +15,15 @@
   "dependencies": {
     "@noble/curves": "^2.0.1",
     "@noble/hashes": "^2.0.1"
+  },
+  "devDependencies": {
+    "@imani/nap-adapter-express": "0.10.1",
+    "@imani/nap-client-http": "0.10.1",
+    "@imani/nap-core": "0.10.1",
+    "@imani/nap-server": "0.10.1",
+    "express": "^4.21.2",
+    "supertest": "^7.1.0",
+    "@types/supertest": "^6.0.3",
+    "nostr-tools": "^2.23.0"
   }
 }

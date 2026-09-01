@@ -12,6 +12,14 @@ import type {
   VerifyCompleteResult,
 } from '@imani/nap-core';
 
+/**
+ * Re-exported because `AclResolver.resolve()` returns it: a consumer
+ * implementing that interface needs the type, and importing `@imani/nap-core`
+ * for one type this package's own contract names is a seam that reads as a
+ * mistake.
+ */
+export type { AclDecision } from '@imani/nap-core';
+
 export interface PermissionDefinition {
   key: string;
   description: string;

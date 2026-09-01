@@ -224,6 +224,56 @@ describe('guard audit logging (CONTEXT.md finding 12)', () => {
     expect(events[0]?.code).toBe(GUARD_DENIAL_CODES.NO_SESSION);
   });
 
+  it('honours an injected clock for session expiry', async () => {
+    // Regression: NapExpressGuardOptions.clock was passed to resolveEffectiveAcl
+    // but session expiry read the wall clock directly. A guard sharing the
+    // server's injected clock therefore agreed about the ACL and disagreed about
+    // time, so a session minted at the injected `now` was rejected by the very
+    // next guarded request. Found by the extension-0001 end-to-end test, where
+    // the server clock is pinned to a fixed timestamp.
+    const now = 1_710_000_000;
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore, { issued_at: now, expires_at: now + 900 });
+    const { logger, events } = recordingAuditLogger();
+    const app = express();
+    app.get(
+      '/protected',
+      requirePermission('voucher:issue', {
+        sessionStore,
+        auditLogger: logger,
+        clock: { nowUnix: () => now },
+      }),
+      (_req, res) => res.status(200).json({ status: 'ok' })
+    );
+
+    const response = await request(app).get('/protected').set('cookie', 'session=token-1');
+
+    expect(response.status).toBe(200);
+    expect(events).toEqual([]);
+  });
+
+  it('treats a session as expired when the injected clock has moved past it', async () => {
+    const now = 1_710_000_000;
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore, { issued_at: now, expires_at: now + 900 });
+    const { logger, events } = recordingAuditLogger();
+    const app = express();
+    app.get(
+      '/protected',
+      requirePermission('voucher:issue', {
+        sessionStore,
+        auditLogger: logger,
+        clock: { nowUnix: () => now + 901 },
+      }),
+      (_req, res) => res.status(200).json({ status: 'ok' })
+    );
+
+    const response = await request(app).get('/protected').set('cookie', 'session=token-1');
+
+    expect(response.status).toBe(401);
+    expect(events[0]?.code).toBe(GUARD_DENIAL_CODES.NO_SESSION);
+  });
+
   it('logs nothing when the guard allows the request', async () => {
     const sessionStore = new InMemorySessionStore();
     await seedSession(sessionStore);

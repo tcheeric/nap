@@ -41,6 +41,7 @@ export type {
   ResolveEffectiveAclOptions,
 } from './server.js';
 export type {
+  AclDecision,
   AclRecord,
   AclStore,
   AclResolver,

@@ -206,6 +206,50 @@ describe('fastify guard audit logging (CONTEXT.md finding 12)', () => {
     expect(events.map((event) => event.code)).toEqual([GUARD_DENIAL_CODES.NO_SESSION]);
   });
 
+  it('honours an injected clock for session expiry', async () => {
+    // Same regression as the Express adapter: `clock` reached
+    // resolveEffectiveAcl but session expiry read the wall clock.
+    const now = 1_710_000_000;
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore, { issued_at: now, expires_at: now + 900 });
+    const { logger, events } = recordingAuditLogger();
+    const app = Fastify();
+    app.get('/protected', {
+      preHandler: requirePermission('voucher:issue', {
+        sessionStore,
+        auditLogger: logger,
+        clock: { nowUnix: () => now },
+      }),
+      handler: async () => ({ status: 'ok' }),
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/protected', headers: HEADERS });
+
+    expect(response.statusCode).toBe(200);
+    expect(events).toEqual([]);
+  });
+
+  it('treats a session as expired when the injected clock has moved past it', async () => {
+    const now = 1_710_000_000;
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore, { issued_at: now, expires_at: now + 900 });
+    const { logger, events } = recordingAuditLogger();
+    const app = Fastify();
+    app.get('/protected', {
+      preHandler: requirePermission('voucher:issue', {
+        sessionStore,
+        auditLogger: logger,
+        clock: { nowUnix: () => now + 901 },
+      }),
+      handler: async () => ({ status: 'ok' }),
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/protected', headers: HEADERS });
+
+    expect(response.statusCode).toBe(401);
+    expect(events[0]?.code).toBe(GUARD_DENIAL_CODES.NO_SESSION);
+  });
+
   it('still denies when the audit sink throws', async () => {
     const sessionStore = new InMemorySessionStore();
     await seedSession(sessionStore);

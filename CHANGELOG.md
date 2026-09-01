@@ -86,6 +86,10 @@ All packages in this workspace share a single version.
   Nothing consumes this yet. The keyset cache, DLEQ, and NUT-07 check are #20; the
   resolver is #23, blocked on the secret-modelling decision in #13.
 
+- **`AclDecision` is re-exported from `@imani/nap-server`.** `AclResolver.resolve()` returns
+  it, so implementing that interface previously meant importing one type from
+  `@imani/nap-core` — a seam that reads as a mistake.
+
 - **Guard denials now reach the `AuditLogger`.** `requirePermission()`,
   `requireRole()`, `requireStepUp()`, and `requireSession()` in both adapters accept an
   `auditLogger` (and an optional `metrics`) and emit one `NAP_GUARD_*` code per refusal:

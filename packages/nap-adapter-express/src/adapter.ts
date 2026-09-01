@@ -37,6 +37,20 @@ function currentEpochSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
 
+/**
+ * The guard's notion of now.
+ *
+ * `NapExpressGuardOptions.clock` was previously honoured only by
+ * `resolveEffectiveAcl`, while session expiry and step-up expiry read the wall
+ * clock directly. A guard configured with an injected clock therefore agreed
+ * with the server about the ACL and disagreed about time, which is the kind of
+ * split that shows up as a session that logs in successfully and is then
+ * rejected by the very next guarded request.
+ */
+function guardNow(options: { clock?: Clock }): number {
+  return options.clock ? options.clock.nowUnix() : currentEpochSeconds();
+}
+
 export interface NapExpressOptions {
   server: NapServerOptions;
   /**
@@ -231,7 +245,11 @@ function rateLimited(res: Response, retryAfterSeconds?: number): void {
   });
 }
 
-function hasValidStepUpToken(req: Request, session: SessionRecord): boolean {
+function hasValidStepUpToken(
+  req: Request,
+  session: SessionRecord,
+  options: NapExpressGuardOptions
+): boolean {
   const providedToken = req.header('x-step-up-token');
 
   return Boolean(
@@ -239,7 +257,7 @@ function hasValidStepUpToken(req: Request, session: SessionRecord): boolean {
       session.step_up_token &&
       constantTimeEquals(session.step_up_token, providedToken) &&
       session.step_up_expires_at &&
-      session.step_up_expires_at > currentEpochSeconds()
+      session.step_up_expires_at > guardNow(options)
   );
 }
 
@@ -316,7 +334,7 @@ async function loadSession(
     return null;
   }
 
-  if (session.revoked_at || session.expires_at <= currentEpochSeconds()) {
+  if (session.revoked_at || session.expires_at <= guardNow(options)) {
     return null;
   }
 
@@ -740,7 +758,7 @@ export function requirePermission(
       // is silent.
       if (
         requiresStepUp(permission, options.registry) &&
-        !hasValidStepUpToken(req, context.session)
+        !hasValidStepUpToken(req, context.session, options)
       ) {
         await denyGuard(
           res,
@@ -835,7 +853,7 @@ export function requireStepUp(options: NapExpressGuardOptions): RequestHandler {
         return;
       }
 
-      if (!hasValidStepUpToken(req, session)) {
+      if (!hasValidStepUpToken(req, session, options)) {
         await denyGuard(res, options, GUARD_DENIAL_CODES.STEP_UP_REQUIRED, session, () =>
           forbidden(res, 'step-up required')
         );
