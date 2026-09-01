@@ -77,44 +77,64 @@ With those, the mint starts in about 3.5 seconds and serves `/v1/keys`.
 
 ## Known limits
 
-Two things could not be exercised, both upstream rather than in NAP.
+One thing still cannot be exercised here, and one that could not be has since
+been fixed.
 
-### `POST /v1/checkstate` needs a database
+### `POST /v1/checkstate` needs a vault service
 
-The NUT-07 endpoint answers `500` on a mint with no datastore, so the liveness
-check is covered by `mintClient.test.ts` (unit) and `endToEnd.test.ts` (against
-a mint that answers from live state) rather than here. Wiring the real vault
-database would mean adding Postgres, Flyway migrations, and the vault service —
-a fair amount of stack for one endpoint whose contract is three enum values.
-
-### Voucher issuance is blocked by a packaging bug in the mint
-
-`POST /v1/vouchers` cannot be reached in the published image. Enabling the
-voucher profile fails at startup:
+The NUT-07 endpoint answers `500` because the mint calls a separate vault
+service on port 3333 (`KeySetVaultClient`, `VaultClient`), which is not running:
 
 ```
-Failed to instantiate [xyz.tcheeric.cashu.voucher.app.ports.VoucherLedgerPort]:
-  Factory method 'voucherLedgerPort' threw exception with message:
-  org/apache/commons/lang3/StringUtils
-Caused by: java.lang.NoClassDefFoundError: org/apache/commons/lang3/StringUtils
+Caused by: java.net.ConnectException: Connection refused
 ```
 
-`cashu-mint-rest/pom.xml` declares `commons-lang3` with `<scope>test</scope>`,
-so it is absent from the runtime image while the voucher ledger path needs it.
-Reaching that error also requires `SPRING_PROFILES_ACTIVE` to include `voucher`
-(the issuer key properties are only bound in `application-voucher.yml`),
-`MINT_VOUCHER_ISSUER_PRIVKEY` / `_PUBKEY`, a reachable relay, and HTTP Basic
-credentials, since `/v1/vouchers/**` is `hasRole("ADMIN")`.
+Standing it up means Postgres, Flyway migrations, HashiCorp Vault and the vault
+service itself, per `docker-compose.dev.yml` — a large stack for one endpoint
+whose contract is three enum values. The liveness check stays covered by
+`mintClient.test.ts` (unit, including the `SPENT`/`PENDING`/`UNSPENT` mapping)
+and by the resolver tests. The real-mint login block stubs **only** `checkState`
+and takes every key from the live mint, so the substitution is visible and
+narrow.
 
-Filed upstream as [398ja/cashu-mint#405](https://github.com/398ja/cashu-mint/issues/405).
-Until it is fixed an issued voucher cannot be obtained from the real mint, so
-the voucher lifecycle stays covered by `endToEnd.test.ts`, which mints its own
-with genuine BDHKE and a genuine DLEQ.
+### Voucher issuance: the packaging bug is fixed, the relay config is not
 
-Two adjacent gotchas, also recorded on that issue: the issuer key properties
-only bind under the `voucher` profile (they live in `application-voucher.yml`,
-so setting them with `dev` alone silently fails), and `/v1/vouchers/**` is
-`hasRole("ADMIN")`, so it needs HTTP Basic plus a configured admin password.
+[398ja/cashu-mint#405](https://github.com/398ja/cashu-mint/issues/405) is fixed:
+`commons-lang3` is no longer stripped from the runtime image, the voucher
+profile starts, and `POST /v1/vouchers` reaches the ledger publish step instead
+of 404ing.
+
+Issuance still cannot complete in a container, for a different reason. The relay
+list in `application-voucher.yml` is hardcoded:
+
+```yaml
+relays:
+  - wss://relay.damus.io
+  - wss://relay.cashu.xyz
+```
+
+Unlike the issuer keys beside it, it carries no `${...}` placeholder, and a YAML
+list cannot be replaced from outside: an indexed override adds to the list, and
+`SPRING_APPLICATION_JSON`, an external `application.properties`, a
+profile-specific external file and a `--voucher.nostr.relays[0]` argument were
+all tried and all lost to the hardcoded value. So a mint cannot be pointed at a
+private relay, and issuance fails with `VoucherNostrException: Not connected to
+any relay`.
+
+**This does not block NAP's coverage**, which is why it is recorded rather than
+worked around. NAP never calls `POST /v1/vouchers` — a holder obtains a voucher
+out of band and presents it. What NAP consumes is `GET /v1/keys`, and that is
+now exercised end to end: `integration.test.ts` builds a proof against the
+mint's *own* published key and drives a complete voucher-bound login through it.
+
+Three configuration gotchas, all recorded on that issue and all costly to
+rediscover. The issuer key properties only bind under the `voucher` profile
+(they live in `application-voucher.yml`, so setting them with `dev` alone
+silently fails). `/v1/vouchers/**` is `hasRole("ADMIN")`, so it needs HTTP Basic
+plus a configured admin password. And the webhook secret is
+`cashu.mint.webhook.shared-secret`, required in non-local profiles — a missing
+one fails startup before the voucher beans are reached, which looks like a
+voucher problem and is not.
 
 ## Adding to CI
 

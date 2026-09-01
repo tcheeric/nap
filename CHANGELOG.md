@@ -114,6 +114,29 @@ All packages in this workspace share a single version.
   `buildAuthCompleteRequest` accepts a `voucher`, so a client can actually present one. The event
   must be signed by the key the voucher is P2PK-locked to.
 
+### Testing
+
+- **Integration coverage extended to a full voucher-bound login against the real mint** (16
+  cases, up from 8). The new block builds a BDHKE proof against the keyset the container
+  *actually publishes*, then drives a complete NAP login through it — so a disagreement between
+  the mint's key encoding and this package's parsing surfaces as a failed login rather than as a
+  passing test built on a shared assumption. `acceptance.test.ts` proves the same outcome, but
+  every byte in it is one I chose.
+
+  Also covers the forged-proof case (a DLEQ from a different mint key), the stolen-credential
+  case and an expired voucher, all against real mint keys; that the mint advertises NUT-07, 10,
+  11 and 12; that it deliberately does *not* advertise `P2PK_VOUCHER` (ADR 0003); that every
+  advertised keyset serves keys through the shipped client; and that a non-power-of-two amount
+  and an unallowlisted mint URL are both refused.
+
+  Mutation-checked: disabling DLEQ verification fails the forged-proof case.
+
+  `docs/INTEGRATION-TESTS.md` updated — cashu-mint#405 is fixed, so the voucher profile now
+  starts; what remains blocked is `POST /v1/checkstate` (needs the vault service) and mint-side
+  issuance (the relay list in `application-voucher.yml` is hardcoded with no placeholder, so a
+  container cannot be pointed at a private relay). Neither blocks NAP, which consumes
+  `GET /v1/keys` and never issues.
+
 ### Fixed
 
 - **`maxSessionLifetimeSeconds` now clamps the tokens it issues**, so the ceiling is a wall
