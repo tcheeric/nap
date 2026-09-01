@@ -53,6 +53,20 @@ export interface MintAvailabilityPolicyOptions {
    * would catch it. Overlap throws at wiring time.
    */
   destructivePermissions?: readonly string[];
+  /**
+   * Roles that must never appear in `degradedGrant`.
+   *
+   * Checking `permissions` alone is not enough. Roles expand into permissions
+   * downstream — `createRegistryAclResolver` returns `role.permissions`
+   * (`packages/nap-server/src/acl.ts`) — so a `degradedGrant` listing only
+   * `voucher:view` but carrying `roles: ['admin']` can still hand a degraded
+   * session everything that role grants. The permission check would pass and
+   * the guarantee would be void.
+   *
+   * Supply the roles that carry anything destructive, alongside
+   * `destructivePermissions`.
+   */
+  destructiveRoles?: readonly string[];
 }
 
 export interface MintAvailabilityPolicy {
@@ -106,6 +120,19 @@ export function createMintAvailabilityPolicy(
   if (overlap.length > 0) {
     throw new Error(
       `NAP voucher degradedGrant includes destructive permissions: ${overlap.join(', ')}. Degraded mode runs without a liveness check, so an already-spent voucher would carry them.`
+    );
+  }
+
+  // Roles are checked too, because they expand into permissions downstream: a
+  // grant listing only harmless permissions but carrying a privileged role
+  // hands that role's permissions to a degraded session, and the permission
+  // check above would not see it.
+  const destructiveRoles = new Set(options.destructiveRoles ?? []);
+  const roleOverlap = grant.roles.filter((role) => destructiveRoles.has(role));
+
+  if (roleOverlap.length > 0) {
+    throw new Error(
+      `NAP voucher degradedGrant includes destructive roles: ${roleOverlap.join(', ')}. Roles expand into permissions, so a degraded session would carry whatever they grant.`
     );
   }
 

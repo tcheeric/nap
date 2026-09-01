@@ -31,6 +31,12 @@ All packages in this workspace share a single version.
   years away from every other timestamp in the store. Both now share
   `NapServerOptions.clock`.
 
+- **`createMintAvailabilityPolicy` also rejects destructive *roles* in a degraded grant.**
+  Checking permissions alone left a hole: roles expand into permissions downstream
+  (`createRegistryAclResolver` returns `role.permissions`), so a `degradedGrant` listing only
+  `voucher:view` while carrying `roles: ['admin']` passed the check and would still hand a
+  degraded session everything that role grants. `destructiveRoles` closes it.
+
 - **The mint client no longer treats a 4xx as "the mint is unavailable".** Every non-2xx was
   reported as `unavailable`, which is the one reason `onMintUnavailable: 'degrade'` (§7.3) is
   allowed to act on — so a mint answering `400`, `403`, `404`, or `429` could trigger degraded

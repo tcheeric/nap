@@ -78,6 +78,33 @@ describe('degrade requires an explicit grant', () => {
     ).toThrow(/destructive permissions: voucher:redeem/);
   });
 
+  it('rejects a grant carrying a destructive role', () => {
+    // Found by auditing the module's own claims: checking `permissions` alone
+    // is not enough, because roles expand into permissions downstream
+    // (createRegistryAclResolver returns role.permissions). A grant listing
+    // only voucher:view but carrying roles: ['admin'] would pass the permission
+    // check and still hand a degraded session everything admin grants.
+    expect(() =>
+      createMintAvailabilityPolicy({
+        onMintUnavailable: 'degrade',
+        degradedGrant: { roles: ['admin'], permissions: ['voucher:view'] },
+        destructivePermissions: ['voucher:redeem'],
+        destructiveRoles: ['admin', 'merchant'],
+      })
+    ).toThrow(/destructive roles: admin/);
+  });
+
+  it('accepts a reduced grant whose role is not destructive', () => {
+    expect(() =>
+      createMintAvailabilityPolicy({
+        onMintUnavailable: 'degrade',
+        degradedGrant: REDUCED,
+        destructivePermissions: ['voucher:redeem'],
+        destructiveRoles: ['admin'],
+      })
+    ).not.toThrow();
+  });
+
   it('accepts a genuinely reduced grant', () => {
     expect(() =>
       createMintAvailabilityPolicy({

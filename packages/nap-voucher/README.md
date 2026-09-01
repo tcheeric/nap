@@ -144,6 +144,7 @@ const lenient = createMintAvailabilityPolicy({
   onMintUnavailable: 'degrade',
   degradedGrant: { roles: ['voucher-holder'], permissions: ['voucher:view'] },
   destructivePermissions: ['voucher:redeem'],
+  destructiveRoles: ['admin', 'merchant'],
 });
 ```
 
@@ -157,10 +158,13 @@ Three consequences:
 - **`degrade` has no default grant.** "The full grant" is the vulnerability;
   "nothing" is a session that silently does nothing while reading as though it
   works. The operator must state the reduced set.
-- **`destructivePermissions` is the only mechanical check that the grant really
-  is reduced.** Overlap throws at wiring time. Without it, "reduced" is a
-  promise in a comment and a degraded session quietly carrying `voucher:redeem`
-  would go unnoticed.
+- **`destructivePermissions` and `destructiveRoles` are the only mechanical
+  checks that the grant really is reduced.** Overlap throws at wiring time.
+  Without them, "reduced" is a promise in a comment and a degraded session
+  quietly carrying `voucher:redeem` would go unnoticed. **Both lists matter**:
+  roles expand into permissions downstream, so a grant naming only harmless
+  permissions but carrying a privileged role still hands that role's
+  permissions to a degraded session.
 - **Only `unavailable` degrades.** `mint_not_allowed`, `unknown_keyset`, and
   `malformed_response` are a mint that answered clearly, and degrading on those
   would treat a definite refusal as a network blip.
