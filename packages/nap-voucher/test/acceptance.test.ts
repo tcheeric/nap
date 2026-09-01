@@ -422,3 +422,101 @@ describe('the wiring example in guide §3.5.11', () => {
     expect(login.body.permissions).toEqual(['voucher:view:sat']);
   });
 });
+
+/**
+ * §7.4, the accepted risk (#28): one voucher, several servers.
+ *
+ * Recorded as a test rather than only as prose, because it is a deliberate
+ * property and not an oversight. If a future change makes the second login
+ * fail, that is a behaviour change worth noticing — and if someone later adds
+ * a `Y`-keyed record believing it delivers cross-server single-use, this states
+ * plainly what it would and would not do.
+ */
+describe('one live voucher authenticates at several servers', () => {
+  const buildServer = (host: string, minted: ReturnType<typeof mintProof>) => {
+    const options: NapServerOptions = {
+      challengeStore: new InMemoryChallengeStore(),
+      sessionStore: new InMemorySessionStore(),
+      aclResolver: createVoucherAclResolver({
+        mintAllowlist: createMintAllowlist([MINT]),
+        issuerAllowlist: createIssuerAllowlist(
+          [{ mint: MINT, issuerPubkey: ISSUER_PUBKEY }],
+          createMintAllowlist([MINT])
+        ),
+        mintClient: {
+          getKey: async () => minted.A,
+          checkState: async () => 'UNSPENT' as const,
+          clearCache: () => {},
+        } as MintClient,
+        availability: createMintAvailabilityPolicy(),
+        grant: () => ({ roles: ['voucher-holder'], permissions: ['voucher:view'] }),
+      }),
+      minAuthResponseMillis: 0,
+      clock: { nowUnix: () => NOW },
+    };
+
+    const app = express();
+    app.set('trust proxy', true);
+    app.use(
+      '/auth',
+      createNapExpressRouter({
+        server: options,
+        getExternalBaseUrl: createRequestDerivedBaseUrlResolver([host]),
+      })
+    );
+
+    return { app, host };
+  };
+
+  const loginWith = async (
+    server: { app: express.Express; host: string },
+    privateKey: string,
+    voucher: Record<string, unknown>
+  ) => {
+    const post = (path: string) =>
+      request(server.app).post(path).set('host', server.host).set('x-forwarded-proto', 'https');
+
+    const init = await post('/auth/init').send({
+      npub: nip19.npubEncode(getPublicKey(hexToBytes(privateKey))),
+    });
+    const built = await buildAuthCompleteRequest({
+      challenge: init.body,
+      signer: createPrivateKeySigner(privateKey),
+      createdAt: NOW,
+      voucher: voucher as never,
+    });
+
+    return post('/auth/complete')
+      .set('authorization', built.authorization)
+      .set('content-type', 'application/json')
+      .send(new TextDecoder().decode(built.rawBody));
+  };
+
+  it('succeeds at two independent servers, but only for the bound key', async () => {
+    const secret = issueVoucher(HOLDER);
+    const minted = mintProof(secret);
+    const voucher = {
+      mint_url: MINT,
+      keyset_id: '00882760bfa2eb41',
+      secret,
+      signature: minted.C,
+      amount: 8,
+      dleq: minted.dleq,
+    };
+
+    // Two servers with entirely separate stores: nothing is shared, which is
+    // exactly why a per-server record could not bound this.
+    const first = await loginWith(buildServer('a.example.com', minted), PK, voucher);
+    const second = await loginWith(buildServer('b.example.com', minted), PK, voucher);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+
+    // The line that makes this acceptable rather than a vulnerability: the
+    // holder of K can do this, and nobody else can. "Double-use" here means one
+    // legitimate holder opening several sessions, not a replayed credential.
+    const thief = await loginWith(buildServer('c.example.com', minted), '7'.repeat(64), voucher);
+
+    expect(thief.status).toBe(401);
+  });
+});

@@ -883,6 +883,36 @@ the challenge-bound NIP-98 authentication of §11 and §12 is untouched, byte fo
 byte — and it remains an extension permanently rather than folding into the core
 profile.
 
+**Confirmed 2026-09-01**, after implementation rather than before it, which is
+what makes it worth stating: nothing in the core profile changed to accommodate
+extension 0001. Authentication is byte-identical, and the extension's demands —
+a mint, two allowlists, a Cashu dependency, an availability policy — are exactly
+the kind of thing §22 exists to keep out of a profile whose whole claim is that
+it is small enough to implement correctly. A deployment that never uses vouchers
+carries none of it.
+
+The two core-surface changes made while building it are both **general** rather
+than voucher-specific, which is the test a core edit has to pass:
+`AclResolutionContext` (§24.4) carries whatever a caller knows about a
+resolution, and `maxSessionLifetimeSeconds` bounds session lifetime for any
+credential the server cannot re-read. Neither mentions vouchers, and both would
+be defensible had the extension never existed.
+
+### 22.2 Extension capability advertisement
+
+A server MAY advertise the extensions it understands in `supported_extensions`
+on `AuthInitResponse` (§24.3), using the extension's registered name — extension
+0001 is `voucher-acl/1`.
+
+The field describes the **server**, not the principal, and is sent before the
+client has signed anything: it names a publicly documented feature and reveals
+nothing about any principal or credential. It therefore does not weaken the
+uniform-failure rule of §19, which governs what a *failure* may disclose.
+
+A client MUST treat an absent field as **"makes no claim"** rather than as a
+denial. Every server predating this field omits it, including servers that
+support an extension, so treating absence as refusal would lock those out.
+
 ---
 
 ## 23. Final Recommendations
@@ -930,6 +960,8 @@ export interface AuthInitResponse {
   auth_method: 'POST';
   issued_at: number;
   expires_at: number;
+  /** Optional; see §22.2. */
+  supported_extensions?: string[];
 }
 ```
 

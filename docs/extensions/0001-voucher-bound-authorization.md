@@ -45,6 +45,10 @@ an ACL row.
 3. **Not anonymous credentials.** The mint learns that the voucher was state-checked. Blind
    presentation is out of scope.
 4. **No change to the session body contract.** `principal.pubkey` remains present and required.
+5. **Not a single-use credential.** One live voucher may open sessions at several servers at
+   once. Only the holder of `K` can do so (§3.1), but nothing bounds how many. Cross-server
+   single-use needs shared state that does not exist — see §7.4 for why the obvious fix does not
+   work.
 
 ---
 
@@ -461,10 +465,46 @@ MUST be `deny`, because degraded mode accepts an already-spent voucher.
 
 ### 7.4 Double-use across servers
 
-Nothing stops one live voucher authenticating at several servers at once. For an authorization
-credential that is often fine; for a single-use one it is not. Single-use requires either a
-server-side "voucher already used here" record keyed on the proof's `Y`, or actual spending —
-and §6.1 forbids the latter at login.
+Nothing stops one live voucher authenticating at several servers at once:
+
+```
+holder at server A            : 200
+same voucher at server B      : 200
+THIEF with the same voucher   : 401
+```
+
+**SETTLED 2026-09-01: out of scope for v1, and the accepted risk is recorded here** (#28).
+
+The third line is why. Because §3.1 binds the voucher to `K` and login requires a NIP-98
+signature by `K`, only the holder of `K` can present it anywhere. "Double-use across servers" is
+therefore **one legitimate holder logging in at several servers** — not a stolen credential
+being replayed. That is ordinary behaviour for an authorization credential, and it is what
+holding a key already means everywhere else in NAP.
+
+The `Y`-keyed record this section previously proposed does not solve the stated problem. It is
+per-server state: server A recording `Y` prevents a second login *at A*, and does nothing about
+server B, which never sees A's record. It delivers **per-server** single-use while the heading
+says cross-server. Shipping it would leave the impression the problem was handled.
+
+Genuine cross-server single-use needs shared state, and there are only two kinds:
+
+- **Mint-side** — actually spending the proof, which §6.1 forbids at login and which would burn
+  a voucher on every login and make the retry-safe completion path destructive.
+- **A ledger shared between servers** — a trust federation that does not exist, and a much
+  larger design than this extension.
+
+So the honest position is that this extension issues **multi-use authorization credentials**,
+and an operator who needs single-use should not model it as a voucher presented at login.
+
+Two things bound the risk in practice. `maxSessionLifetimeSeconds` (§7.1) caps how long any one
+of those sessions can live, and the NUT-07 state check (§6.h) means that once a voucher *is*
+redeemed through a real business action, no further logins succeed anywhere. What is unbounded
+is only the number of concurrent sessions a holder may open with a live voucher, using a key
+they control.
+
+**If single-use later becomes a requirement**, the per-server `Y` record is still worth having
+as a partial measure — but it must be described as what it is, and it needs a defined retention
+period, since the record has to outlive the voucher to mean anything.
 
 ---
 
@@ -564,8 +604,11 @@ allowlists.
   **SETTLED 2026-09-01: at grant time, not wiring time** —
   [ADR 0004](../adr/0004-voucher-grant-registry-validation.md). Wiring-time validation is not
   possible for a callback whose output depends on the voucher it is given.
-- **F.** Does anything here belong in the core RFC, or does it stay an extension permanently?
-  Current position: permanently an extension, per RFC §22.
+- **F.** ~~Does anything here belong in the core RFC?~~ **CONFIRMED 2026-09-01: permanently an
+  extension** (RFC §22.1). Confirmed after implementation rather than before, which is what
+  gives it weight: nothing in the core profile changed to accommodate this, and the two core
+  edits made along the way (`AclResolutionContext`, `maxSessionLifetimeSeconds`) are general
+  enough to defend had this extension never existed.
 
 ---
 

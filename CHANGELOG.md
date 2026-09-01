@@ -166,6 +166,20 @@ All packages in this workspace share a single version.
 
 ### Documentation
 
+- **Extension 0001 §7.4 records the accepted risk of cross-server double-use** (#28). Settled as
+  out of scope for v1, with the reasoning that the `Y`-keyed record the section proposed does not
+  solve the stated problem: it is per-server state, so it delivers per-server single-use while
+  the heading says cross-server. Observed and pinned by a test — the same voucher logs in at two
+  independent servers (200, 200) while a thief holding it is refused (401), because §3.1 binds it
+  to a key. So "double-use" here is one legitimate holder opening several sessions, and the
+  extension is documented as issuing multi-use credentials (§1.2 non-goal 5).
+
+- **RFC §22.1 confirms extension 0001 stays an extension permanently** (#18), and §22.2 documents
+  capability advertisement. Confirmed after implementation rather than before: nothing in the
+  core profile changed to accommodate it, and the two core edits made along the way
+  (`AclResolutionContext`, `maxSessionLifetimeSeconds`) are general rather than voucher-specific,
+  which is the test a core edit has to pass.
+
 - **Integration guide §3.5.11, the voucher resolver wiring** (#30): the documented example is
   type-checked against the real API *and* executed by a test that drives a real login through
   it. Type-checking alone catches a renamed option but not a wrong one — an example that
