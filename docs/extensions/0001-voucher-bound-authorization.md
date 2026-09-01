@@ -385,9 +385,24 @@ rule 2 says removal SHOULD revoke active sessions. Options:
 - **Re-check on `/auth/session`**, honouring RFC §15 rule 1 properly. One mint round trip per
   session read: expensive, and it makes the mint a hard dependency of every authenticated
   request, not just login.
-- **Subscribe to the Nostr ledger.** `cashu-voucher` already publishes status to a NIP-33
-  ledger. A watcher calling `revokeByPrincipal(pubkey)` on a terminal transition is the right
-  shape and adds no per-request cost.
+- **Subscribe to the Nostr ledger.** `cashu-voucher` publishes status to a NIP-33 ledger
+  (kind 30078). A watcher calling `revokeByPrincipal(pubkey)` on a terminal transition is the
+  right shape and adds no per-request cost.
+
+  **Blocked upstream, on two counts found while scoping it** (#27 phase 2). The watcher needs
+  to map a ledger event to a principal, and today it cannot:
+
+  1. `SignedVoucher` holds a `VoucherSecret`, while `P2PKVoucherSecret` extends `P2PKSecret` —
+     a different branch of the hierarchy. The compiler is explicit: *"incompatible types:
+     P2PKVoucherSecret cannot be converted to VoucherSecret"*. **The ledger cannot represent a
+     P2PK-locked voucher at all**, which is precisely the kind this extension uses.
+  2. The event's tags are `status`, `amount`, `unit`, `expiry`, and a `d` tag of
+     `voucher:<id>`. None carries the lock key `K` — and `K` *is* the principal pubkey. So even
+     with (1) fixed, a watcher could not tell whose sessions to revoke without parsing it out
+     of the embedded secret, or without `K` being added to the event.
+
+  Neither is fixable in NAP. Both belong to `cashu-voucher`, alongside the `P2PK_VOUCHER`
+  support that is already pending release there.
 
 **Recommendation:** short TTL now, ledger watcher later. Per-request state checks are a trap.
 
