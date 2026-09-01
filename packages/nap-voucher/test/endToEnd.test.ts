@@ -23,7 +23,12 @@ import express from 'express';
 import request from 'supertest';
 import { getPublicKey, nip19 } from 'nostr-tools';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server } from 'node:https';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Agent, fetch as undiciFetch } from 'undici';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { hexToBytes } from '@imani/nap-core';
@@ -246,6 +251,8 @@ function createVoucherResolver(options: {
 describe('extension 0001 end to end: a voucher authorizes a real NAP login', () => {
   let mintServer: Server;
   let mintUrl: string;
+  let mintFetch: typeof fetch;
+  let certDir: string;
   let spent: Set<string>;
   let mintDown: boolean;
   let keyCalls: number;
@@ -256,8 +263,31 @@ describe('extension 0001 end to end: a voucher authorizes a real NAP login', () 
     mintDown = false;
     keyCalls = 0;
 
-    // A real mint: publishes a keyset and answers NUT-07 from live state.
-    mintServer = createServer((req, res) => {
+    // A real HTTPS mint. The shipped allowlist is https-only with no opt-out
+    // (§4.3), and pinning a plaintext loopback origin would mean testing a
+    // relaxed copy of the allowlist rather than the one that ships. So: a real
+    // self-signed cert for mint.example.com, real TLS, and DNS resolved
+    // in-process to loopback. The allowlist below is the shipped code,
+    // unmodified, and the scheme pin is genuinely exercised.
+    certDir = mkdtempSync(join(tmpdir(), 'nap-voucher-e2e-'));
+    const keyPath = join(certDir, 'key.pem');
+    const certPath = join(certDir, 'cert.pem');
+    execFileSync(
+      'openssl',
+      [
+        'req', '-x509', '-newkey', 'rsa:2048',
+        '-keyout', keyPath, '-out', certPath,
+        '-days', '1', '-nodes',
+        '-subj', '/CN=mint.example.com',
+        '-addext', 'subjectAltName=DNS:mint.example.com',
+      ],
+      { stdio: 'ignore' }
+    );
+    const ca = readFileSync(certPath);
+
+    mintServer = createServer(
+      { key: readFileSync(keyPath), cert: ca },
+      (req, res) => {
       let body = '';
       req.on('data', (chunk) => (body += chunk));
       req.on('end', () => {
@@ -292,14 +322,32 @@ describe('extension 0001 end to end: a voucher authorizes a real NAP login', () 
         res.statusCode = 404;
         res.end('{}');
       });
-    });
+    }
+    );
 
-    await new Promise<void>((resolve) => mintServer.listen(0, resolve));
-    mintUrl = `http://127.0.0.1:${(mintServer.address() as { port: number }).port}`;
+    await new Promise<void>((resolve) => mintServer.listen(0, '127.0.0.1', resolve));
+    const port = (mintServer.address() as { port: number }).port;
+    mintUrl = `https://mint.example.com:${port}`;
+
+    // Trusts the generated CA and resolves mint.example.com to loopback, so the
+    // certificate is genuinely validated against the hostname in the URL.
+    const agent = new Agent({
+      connect: {
+        ca,
+        lookup: (
+          _hostname: string,
+          _options: unknown,
+          callback: (error: null, addresses: Array<{ address: string; family: number }>) => void
+        ) => callback(null, [{ address: '127.0.0.1', family: 4 }]),
+      },
+    });
+    mintFetch = ((input: unknown, init?: RequestInit) =>
+      undiciFetch(input as string, { ...(init as object), dispatcher: agent })) as unknown as typeof fetch;
   });
 
   afterAll(async () => {
     await new Promise<void>((resolve) => mintServer.close(() => resolve()));
+    rmSync(certDir, { recursive: true, force: true });
   });
 
   /**
@@ -319,27 +367,20 @@ describe('extension 0001 end to end: a voucher authorizes a real NAP login', () 
       },
     };
 
-    const httpsMints = createMintAllowlist(['https://mint.example.com']);
-    const mints = {
-      origins: [mintUrl] as readonly string[],
-      resolve: (url: string) => (url === mintUrl ? mintUrl : httpsMints.resolve(url)),
-    };
-    const issuers = createIssuerAllowlist(
-      [{ mint: 'https://mint.example.com', issuerPubkey: ISSUER_PUBKEY }],
-      httpsMints
-    );
+    // The shipped allowlists, unmodified. `mintUrl` is a real https origin, so
+    // nothing here is a relaxed stand-in.
+    const mints = createMintAllowlist([mintUrl]);
+    const issuers = createIssuerAllowlist([{ mint: mintUrl, issuerPubkey: ISSUER_PUBKEY }], mints);
 
-    const mintClient = createMintClient({ allowlist: mints, keysetCacheTtlSeconds: 3600 });
+    const mintClient = createMintClient({
+      allowlist: mints,
+      keysetCacheTtlSeconds: 3600,
+      fetch: mintFetch,
+    });
     const aclResolver = createVoucherResolver({
       mintClient,
       mints,
-      // The pair is registered against the https origin, so allow the loopback
-      // origin to satisfy the same pair for this harness.
-      issuers: {
-        entries: issuers.entries,
-        allows: (mint: string, issuer: string) =>
-          issuers.allows(mint === mintUrl ? 'https://mint.example.com' : mint, issuer),
-      },
+      issuers,
       availability: options.degrade
         ? createMintAvailabilityPolicy({
             onMintUnavailable: 'degrade',

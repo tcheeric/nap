@@ -24,6 +24,7 @@
     "express": "^4.21.2",
     "supertest": "^7.1.0",
     "@types/supertest": "^6.0.3",
-    "nostr-tools": "^2.23.0"
+    "nostr-tools": "^2.23.0",
+    "undici": "^6.21.0"
   }
 }
