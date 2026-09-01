@@ -46,6 +46,11 @@ if (!mint) {
 }
 ```
 
+Every snippet on this page is executed by `test/readmeExample.test.ts`, which
+also pins the construction-time error messages quoted below. A documented
+snippet that has never run is the first thing an integrator copies, and the
+failure lands on them rather than on us.
+
 ## Properties worth knowing
 
 - **No default and no empty-list escape hatch.** An allowlist that allows every

@@ -871,6 +871,18 @@ The following are intentionally left out of the core RFC:
 
 Each of those should be specified as an extension, not implied by the core profile.
 
+### 22.1 Drafted extensions
+
+| Extension | Status | Relates to |
+| --- | --- | --- |
+| [0001 — Voucher-Bound Authorization](./extensions/0001-voucher-bound-authorization.md) | Draft, partially implemented | §15, and items 1 and 5 above |
+
+Extension 0001 lets an Imani-issued Cashu voucher supply a session's roles and
+permissions in place of a stored ACL row. It changes **authorization only** —
+the challenge-bound NIP-98 authentication of §11 and §12 is untouched, byte for
+byte — and it remains an extension permanently rather than folding into the core
+profile.
+
 ---
 
 ## 23. Final Recommendations
