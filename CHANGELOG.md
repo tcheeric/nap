@@ -32,6 +32,15 @@ All packages in this workspace share a single version.
   proven. The credential used is deliberately valid — allowlisted, signed, correctly bound —
   because a prober would use one that passes every local check.
 
+- **`AclResolutionContext.session` and `onMissingCredential`** (#24): a voucher resolver wired
+  as a guard's `aclResolver` denied **every guarded request** — login succeeded, then the
+  session could do nothing, and nothing was logged. Re-resolution holds a session, never the
+  credential, and the credential's absence alone cannot distinguish that from a credential-free
+  login, which must still be denied. The context now carries `session` on re-resolution and
+  refresh, and `onMissingCredential: 'trust-session'` honours it while keeping login strict.
+  Verified end to end through a re-resolving guard: `login 200 -> guarded request 401` before,
+  `200` after.
+
 - **`permissionRegistry` on the voucher resolver** (#17): `grant()` output is checked against
   the registry, and an undeclared role or permission denies the login with
   `NAP_VOUCHER_GRANT_NOT_IN_REGISTRY` rather than issuing a session carrying a key no guard will

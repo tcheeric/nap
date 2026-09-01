@@ -224,6 +224,22 @@ export interface AclResolutionContext {
    * while the server ran on an injected one has been a real bug here twice.
    */
   now: number;
+  /**
+   * The session being re-checked, on guard re-resolution and refresh.
+   *
+   * Present exactly when `voucher` is absent, and for the same reason: those
+   * callers hold a session rather than a request body. It is what lets a
+   * resolver tell "this is a re-check of an established session" from "this is
+   * a login that presented no credential" -- two situations that are identical
+   * from the credential's absence alone, and that must not be answered the same
+   * way. Extension 0001's voucher resolver denies the second and, when
+   * configured to, honours the first; without this it would deny every guarded
+   * request while login appeared to work.
+   */
+  session?: {
+    roles: string[];
+    permissions: string[];
+  };
 }
 
 export interface AclResolver {

@@ -391,9 +391,31 @@ rule 2 says removal SHOULD revoke active sessions. Options:
 
 ### 7.2 Re-resolution at the guards
 
-`resolveEffectiveAcl` (`server.ts:901`) re-resolves per guarded request. A voucher resolver
-called there does a mint round trip per request unless results are cached. Cache TTL is then a
-security parameter: it is the maximum staleness of an authorization decision.
+`resolveEffectiveAcl` re-resolves per guarded request. A voucher resolver called there does a
+mint round trip per request unless results are cached. Cache TTL is then a security parameter:
+it is the maximum staleness of an authorization decision.
+
+**There is a sharper problem than caching, found while implementing #24.** Re-resolution holds
+a *session*, never the credential — that lived in the login body and is gone. A voucher
+resolver whose answer depends on a credential therefore denies **every guarded request**, and
+the operator sees a login that succeeds followed by a session that can do nothing:
+
+```
+re-resolving guard, default      : login 200 -> guarded request 401
+```
+
+The credential's absence alone cannot distinguish this from a credential-free login, which must
+still be denied. So `AclResolutionContext` carries `session` on re-resolution and refresh,
+present exactly when `voucher` is absent, and `createVoucherAclResolver` takes
+`onMissingCredential`:
+
+- `'deny'` (default) — strict, and audits `NAP_VOUCHER_ABSENT` with a note naming the cause
+  rather than leaving an operator to infer it from identical denials.
+- `'trust-session'` — honours the session's snapshot on re-resolution, while a credential-free
+  *login* is still denied.
+
+`'trust-session'` means a session's authorization is only as fresh as its TTL, which is §7.1's
+staleness question. That is why it is an explicit choice rather than a default.
 
 ### 7.3 The mint becomes an availability dependency of login
 

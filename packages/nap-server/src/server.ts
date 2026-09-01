@@ -986,7 +986,7 @@ async function refreshSessionUnpadded(
   const aclDecision = await options.aclResolver.resolve(
     session.principal_npub,
     session.principal_pubkey,
-    { now }
+    { now, session: { roles: session.roles, permissions: session.permissions } }
   );
 
   if (!aclDecision.allowed) {
@@ -1124,7 +1124,13 @@ export async function resolveEffectiveAcl(
   const decision = await options.aclResolver.resolve(
     session.principal_npub,
     session.principal_pubkey,
-    { now: clock.nowUnix() }
+    {
+      now: clock.nowUnix(),
+      // Marks this as a re-check rather than a credential-free login. A
+      // resolver cannot tell the two apart from the missing voucher alone, and
+      // answering them the same way denies every guarded request.
+      session: { roles: session.roles, permissions: session.permissions },
+    }
   );
 
   if (!decision.allowed) {

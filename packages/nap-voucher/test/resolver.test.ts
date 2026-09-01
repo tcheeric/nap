@@ -568,3 +568,75 @@ describe('grant() is checked against the registry', () => {
     expect(decision.allowed).toBe(true);
   });
 });
+
+/**
+ * #24, third acceptance criterion: the codes must be visible from guard
+ * re-resolution too.
+ *
+ * Checking that surfaced a footgun rather than a missing log line.
+ * `resolveEffectiveAcl` re-resolves per guarded request but holds only a
+ * session -- the credential lived in the login body and is gone. So a voucher
+ * resolver wired as a guard's `aclResolver` denied *every* guarded request, and
+ * logged nothing at all: login succeeded, then the session could do nothing,
+ * with no record of why.
+ */
+describe('guard re-resolution, which never carries a credential', () => {
+  const session = { roles: ['voucher-holder'], permissions: ['voucher:view'] };
+
+  const build = (onMissingCredential?: 'deny' | 'trust-session') => {
+    const logged: Array<{ code: string; details?: Record<string, unknown> }> = [];
+    const resolver = createVoucherAclResolver({
+      mintAllowlist: createMintAllowlist([MINT]),
+      issuerAllowlist: createIssuerAllowlist(
+        [{ mint: MINT, issuerPubkey: ISSUER_PUBKEY }],
+        createMintAllowlist([MINT])
+      ),
+      mintClient: {
+        getKey: async () => '02'.padEnd(66, 'b'),
+        checkState: async () => 'UNSPENT' as const,
+        clearCache: () => {},
+      } as MintClient,
+      availability: createMintAvailabilityPolicy(),
+      grant: () => ({ roles: ['r'], permissions: ['p'] }),
+      ...(onMissingCredential ? { onMissingCredential } : {}),
+      auditLogger: {
+        log: (event) => void logged.push({ code: event.code, details: event.details }),
+      },
+    });
+
+    return { resolver, logged };
+  };
+
+  it('audits the denial instead of failing silently', async () => {
+    const { resolver, logged } = build();
+
+    const decision = await resolver.resolve(NPUB, HOLDER_PUBKEY, { now: NOW, session });
+
+    expect(decision.allowed).toBe(false);
+    // The note names the footgun. Without it an operator sees a wall of
+    // identical denials and has to infer the cause.
+    expect(logged[0]).toMatchObject({
+      code: VOUCHER_DENIAL_CODES.ABSENT,
+      details: { note: expect.stringContaining('onMissingCredential') },
+    });
+  });
+
+  it("honours the session's snapshot under 'trust-session'", async () => {
+    const { resolver } = build('trust-session');
+
+    const decision = await resolver.resolve(NPUB, HOLDER_PUBKEY, { now: NOW, session });
+
+    expect(decision).toMatchObject({ allowed: true, ...session });
+  });
+
+  it("still denies a credential-free LOGIN under 'trust-session'", async () => {
+    // The load-bearing half. `trust-session` must not weaken login: a login
+    // carries no `session`, so the two cases stay distinguishable and the
+    // credential remains mandatory to obtain a session in the first place.
+    const { resolver } = build('trust-session');
+
+    const decision = await resolver.resolve(NPUB, HOLDER_PUBKEY, { now: NOW });
+
+    expect(decision.allowed).toBe(false);
+  });
+});

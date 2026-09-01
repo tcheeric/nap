@@ -62,6 +62,16 @@ export const VOUCHER_DENIAL_CODES = {
   /** The mint could not be reached and the mode is `deny`. */
   MINT_UNAVAILABLE: 'NAP_VOUCHER_MINT_UNAVAILABLE',
   /**
+   * No credential was presented, and no `fallback` was wired.
+   *
+   * On login this is a client that simply did not send one. On *guard
+   * re-resolution* it is something else entirely: `resolveEffectiveAcl` never
+   * has the credential — it holds a session, not a request body — so a voucher
+   * resolver wired as a guard's `aclResolver` sees this on every guarded
+   * request. See `onMissingCredential`.
+   */
+  ABSENT: 'NAP_VOUCHER_ABSENT',
+  /**
    * `grant()` returned a role or permission the registry does not declare
    * (#17).
    *
@@ -148,6 +158,28 @@ export interface VoucherAclResolverOptions {
    * through to a stored ACL instead.
    */
   fallback?: AclResolverLike;
+  /**
+   * What a *guarded request* means when there is no credential to re-check.
+   *
+   * This exists because the two callers are not alike, and treating them alike
+   * breaks one of them. `resolveEffectiveAcl` re-resolves per guarded request
+   * (§7.2) but holds only a session — the credential lived in the login body
+   * and is gone. So a resolver that denies whenever a credential is missing
+   * denies **every guarded request**, and the operator sees a login that
+   * succeeds followed by a session that can do nothing.
+   *
+   * - `'deny'` (default) keeps login strict: no credential, no session.
+   * - `'trust-session'` additionally accepts a request that already carries a
+   *   session's snapshot, which is what re-resolution is.
+   *
+   * `'trust-session'` is not a weakening of login. `AclResolutionContext` marks
+   * re-resolution explicitly rather than inferring it from the credential's
+   * absence, so a credential-free *login* is still denied under either
+   * setting. What it does mean is that a session's authorization is only as
+   * fresh as its TTL, which is §7.1's staleness question and is why this is an
+   * explicit choice rather than a default.
+   */
+  onMissingCredential?: 'deny' | 'trust-session';
 }
 
 /**
@@ -167,7 +199,12 @@ export interface AclResolverLike {
   resolve(
     npub: string,
     pubkey: string,
-    context?: { voucher?: unknown; now: number }
+    context?: {
+      voucher?: unknown;
+      now: number;
+      /** Present on re-resolution and refresh, never on login. */
+      session?: { roles: string[]; permissions: string[] };
+    }
   ): Promise<{
     allowed: boolean;
     roles: string[];
@@ -302,7 +339,25 @@ export function createVoucherAclResolver(options: VoucherAclResolverOptions): Ac
         if (options.fallback) {
           return options.fallback.resolve(npub, pubkey, context);
         }
-        return DENY('NAP_VOUCHER_ABSENT');
+
+        // Re-resolution never carries a credential, so denying here would deny
+        // every guarded request. Trusting the session's snapshot is the only
+        // other honest answer; which one applies is the operator's call.
+        const session = context?.session;
+
+        if (options.onMissingCredential === 'trust-session' && session) {
+          return {
+            allowed: true,
+            roles: [...(session.roles ?? [])],
+            permissions: [...(session.permissions ?? [])],
+          };
+        }
+
+        return deny(VOUCHER_DENIAL_CODES.ABSENT, npub, pubkey, {
+          // Names the footgun in the audit log rather than leaving an operator
+          // to infer it from a wall of identical denials.
+          ...(session ? { note: 'guard re-resolution has no credential; see onMissingCredential' } : {}),
+        });
       }
 
       const now = context?.now ?? options.clock?.nowUnix() ?? Math.floor(Date.now() / 1000);
