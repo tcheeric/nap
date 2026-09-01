@@ -21,3 +21,10 @@ export type {
   MintFailureReason,
   ProofState,
 } from './mintClient.js';
+export { createMintAvailabilityPolicy } from './availability.js';
+export type {
+  AvailabilityDecision,
+  DegradedGrant,
+  MintAvailabilityPolicy,
+  MintAvailabilityPolicyOptions,
+} from './availability.js';

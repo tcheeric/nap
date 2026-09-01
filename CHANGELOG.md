@@ -11,6 +11,28 @@ All packages in this workspace share a single version.
 
 ### Added
 
+- **Mint-availability policy for `@imani/nap-voucher` (§7.3).**
+  `createMintAvailabilityPolicy()` decides what a mint failure means, and **defaults to
+  `deny`**, including when the option is omitted entirely.
+
+  That default is a security property, not a preference. Degraded mode accepts an
+  already-spent voucher: DLEQ proves the mint signed the proof but cannot tell a live one
+  from a burned one, and the NUT-07 check that could is exactly what is unavailable.
+
+  `degrade` therefore requires an explicit `degradedGrant`. There is no sensible default —
+  "the full grant" is the vulnerability, and "nothing" is a session that silently does
+  nothing while reading as though it works. The optional `destructivePermissions` list is
+  the only mechanical check that the grant is genuinely reduced, and overlap throws at
+  wiring time; without it "reduced" is a promise in a comment, and a degraded session
+  quietly carrying `voucher:redeem` is the outcome §7.3 forbids.
+
+  Only `unavailable` degrades. `mint_not_allowed`, `unknown_keyset`, and
+  `malformed_response` are a mint that answered clearly, and degrading on those would
+  treat a definite refusal as a network blip. Supplying a `degradedGrant` under `deny`
+  throws too: it means the operator believes degraded mode is on when it is not, and an
+  outage is the worst moment to discover that. The emitted grant is frozen, so a caller
+  cannot widen every subsequent degraded session.
+
 - **`@imani/nap-voucher` gains the Cashu verification client**: NUT-12 DLEQ, NUT-00
   `hash_to_curve`, and a mint client with a keyset TTL cache and the NUT-07 state check.
   Verified against the official NUT-12 and NUT-00 test vectors, including both DLEQ forms

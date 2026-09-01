@@ -4,9 +4,9 @@ Verification primitives for **NAP Extension 0001 — Voucher-Bound Authorization
 (`docs/extensions/0001-voucher-bound-authorization.md`).
 
 **Status: incomplete.** This package ships the two allowlists (§4.3), NUT-12
-DLEQ verification, NUT-00 `hash_to_curve`, and a mint client with a keyset TTL
-cache and the NUT-07 state check. The resolver that consumes them (#23) is
-blocked on decision #13.
+DLEQ verification, NUT-00 `hash_to_curve`, a mint client with a keyset TTL cache
+and the NUT-07 state check, and the mint-availability policy (§7.3). The
+resolver that consumes them (#23) is blocked on decision #13.
 
 Deliberately dependency-free apart from `@noble/curves` and `@noble/hashes`, per
 the extension's build order: the verification client is built standalone and
@@ -117,3 +117,46 @@ third party into resource exhaustion. An unknown keyset triggers exactly one
 refetch, so an attacker supplying random keyset ids cannot drive one mint request
 per attempt. The state check matches on `Y` rather than trusting response order.
 An unrecognised state is refused rather than assumed `UNSPENT`.
+
+## Mint availability (§7.3)
+
+Making the mint mandatory makes it an availability dependency of *login*. If the
+mint is down, nobody logs in — a real regression against today's behaviour,
+where login depends only on the app's own store.
+
+```ts
+import { createMintAvailabilityPolicy } from '@imani/nap-voucher';
+
+// The default. Omitting the option entirely is also `deny`.
+const strict = createMintAvailabilityPolicy();
+
+// Opting into degraded mode requires saying what a login is worth without a
+// liveness check, and listing what it must never carry.
+const lenient = createMintAvailabilityPolicy({
+  onMintUnavailable: 'degrade',
+  degradedGrant: { roles: ['voucher-holder'], permissions: ['voucher:view'] },
+  destructivePermissions: ['voucher:redeem'],
+});
+```
+
+**The default is `deny`, and that is a security property rather than a
+preference.** Degraded mode accepts an already-spent voucher: DLEQ proves the
+mint signed the proof but cannot distinguish a live one from a burned one, and
+the NUT-07 check that could is exactly what is unavailable.
+
+Three consequences:
+
+- **`degrade` has no default grant.** "The full grant" is the vulnerability;
+  "nothing" is a session that silently does nothing while reading as though it
+  works. The operator must state the reduced set.
+- **`destructivePermissions` is the only mechanical check that the grant really
+  is reduced.** Overlap throws at wiring time. Without it, "reduced" is a
+  promise in a comment and a degraded session quietly carrying `voucher:redeem`
+  would go unnoticed.
+- **Only `unavailable` degrades.** `mint_not_allowed`, `unknown_keyset`, and
+  `malformed_response` are a mint that answered clearly, and degrading on those
+  would treat a definite refusal as a network blip.
+
+Supplying a `degradedGrant` while in `deny` mode also throws: it means the
+operator believes degraded mode is on when it is not, and finding that out
+during an outage is worse than finding it out at startup.
