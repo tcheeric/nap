@@ -94,6 +94,19 @@ All packages in this workspace share a single version.
   renaming a function, the *source* renaming an option while the guide goes stale, and the
   §3.5 headings moving so the extractor silently checks nothing.
 
+- **ADR 0003 is accepted: the voucher secret is a NUT-11 `P2PK` secret** carrying voucher
+  metadata as NUT-10 tags, with `data` holding the P2PK lock key. This unblocks the
+  `VoucherCredential` type, the resolver, the audit codes, and the `nap-java` mirror.
+
+  Two facts decided it against the alternative (an Imani `VOUCHER` kind carrying P2PK-shaped
+  tags, which would have kept `VoucherSecret`'s typed accessors). The Imani mint does not
+  enforce P2PK on a `VOUCHER` secret — dispatch is first-match on kind, and the voucher
+  validator has no witness check. And `VOUCHER` is not a registered NUT kind, so NUT-10's
+  caution applies: a mint not supporting a kind "may treat proofs as regular anyone-can-spend
+  tokens". The lock would have been a property of one mint's configuration rather than of the
+  credential, whereas a `P2PK` secret with extra tags is enforced by every conformant mint
+  today.
+
 - **ADR 0003 records the voucher secret-modelling evidence** (`docs/adr/0003-voucher-secret-modelling.md`).
   The Imani mint does **not** enforce P2PK on a VOUCHER secret:
   `VerifyProofsTask.getSpendingCondition()` dispatches first-match on kind, so a VOUCHER

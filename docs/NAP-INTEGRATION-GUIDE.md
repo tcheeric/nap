@@ -1041,25 +1041,48 @@ once, so verify it before rollout rather than after.
 | Keyset cache, NUT-07 state check | **Shipped** |
 | Mint availability policy | **Shipped** |
 | Guard-level audit logging | **Shipped** (§9.6.1) |
-| `VoucherCredential` type and body field | **Blocked** on ADR 0003 |
-| The resolver and its call site | **Blocked** on ADR 0003 |
+| `VoucherCredential` type and body field | Not started — unblocked by ADR 0003 |
+| The resolver and its call site | Not started — unblocked by ADR 0003 |
 | Session lifecycle / ledger watcher | Not started |
 | `nap-java` mirror | Not started — and it must ship *with* the TypeScript side, never after |
 
-The blocker is a question of fact about the deployed mint, not a matter of taste.
-A Cashu proof has one NUT-10 kind, so the voucher metadata and the P2PK lock must
-share one secret, and the Imani mint **does not enforce P2PK on a `VOUCHER`
-secret** — its spending-condition dispatch is first-match on kind, so a voucher
-secret never reaches the P2PK validator. Under the option that keeps the voucher
-domain model intact, the §3.5.2 binding would be checkable by the NAP server but
-invisible to the mint, and a thief could still swap the proof. See
-[ADR 0003](./adr/0003-voucher-secret-modelling.md) for the evidence and the two
-remaining paths.
+#### 3.5.10 The secret is a NUT-11 `P2PK` secret
 
-Reversing that choice later is expensive: the options differ in wire form, so
-vouchers issued under one shape are not verifiable under the other, and there is
-no in-place migration for a bearer credential already in circulation. **Settle it
-before anything issues a voucher.**
+A Cashu proof carries exactly one NUT-10 kind, so the voucher metadata and the
+P2PK lock must share one secret. Settled 2026-09-01
+([ADR 0003](./adr/0003-voucher-secret-modelling.md)): the secret is a **NUT-11
+`P2PK` secret whose `data` field is the lock key `K`**, with voucher metadata
+carried in NUT-10 tags.
+
+```
+["P2PK", {
+  "nonce": "...",
+  "data":  "<K — the key the completion must be signed by>",
+  "tags": [["issuer", "acme"], ["expires_at", "..."], ["issuer_sig", "..."], ...]
+}]
+```
+
+The alternative — an Imani-specific `VOUCHER` kind carrying P2PK-shaped tags —
+keeps `VoucherSecret`'s typed accessors, and was rejected for two reasons:
+
+1. **The Imani mint does not enforce P2PK on a `VOUCHER` secret.** Its
+   spending-condition dispatch is first-match on kind, so a voucher secret never
+   reaches the P2PK validator, and the voucher validator has no witness check at
+   all. The §3.5.2 binding would be checkable by the NAP server but invisible to
+   the mint, and a thief could still swap the proof.
+2. **`VOUCHER` is not a registered NUT kind.** NUT-10 cautions that a mint not
+   supporting a `kind` "may treat proofs as regular anyone-can-spend tokens", so
+   the lock would be a property of one mint's configuration rather than of the
+   credential. A `P2PK` secret with extra tags is enforced by every conformant
+   mint today, and unknown tags are ignored exactly as NUT-10 intends.
+
+The cost accepted is that `VoucherSecret`'s accessors do not apply: the resolver
+reads voucher metadata from tags directly.
+
+This choice is expensive to reverse — the two shapes differ on the wire, so
+vouchers issued under one are not verifiable under the other, and there is no
+in-place migration for a bearer credential already in circulation. It is settled
+now precisely because nothing has issued a voucher yet.
 
 
 ---

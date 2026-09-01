@@ -277,9 +277,19 @@ nothing — the same property tutorial 03 establishes for the registry.
    metadata becomes tag payload, and `VoucherSecret`'s accessors no longer apply.
 3. **A composite kind.** Cleanest model, largest change, needs mint support that does not exist.
 
-**Review question B:** this is the highest-risk open item. Option 2 is the only one that works
-against an unmodified mint. Option 1 is the only one that keeps `cashu-voucher`'s domain model
-intact. Which cost do we pay?
+**Review question B: SETTLED — option 2** (P2PK kind carrying voucher tags), accepted
+2026-09-01. See [ADR 0003](../adr/0003-voucher-secret-modelling.md).
+
+Two facts decided it. The Imani mint **does not** enforce P2PK on a VOUCHER secret:
+`VerifyProofsTask.getSpendingCondition()` dispatches first-match on kind, so a VOUCHER secret
+never reaches `P2PKSpendingCondition`, and `VoucherSpendingCondition` has no witness check at
+all. And `VOUCHER` is not a registered NUT kind, so NUT-10's caution applies — "proofs may be
+treated as regular anyone-can-spend tokens" — meaning option 1 would make the §3.1 binding a
+property of one mint's configuration rather than of the credential. Option 2 is enforced by
+every conformant mint today.
+
+Cost accepted: `VoucherSecret`'s typed accessors no longer apply, so the resolver reads
+voucher metadata from NUT-10 tags directly.
 
 > **Investigated.** The Imani mint **does not** enforce P2PK on a VOUCHER secret:
 > `VerifyProofsTask.getSpendingCondition()` dispatches first-match on kind, so a VOUCHER
@@ -445,11 +455,11 @@ allowlists.
 
 - **A.** Widen `AclResolver` with an optional context parameter, or add a distinct interface
   and call site? (§5.1)
-- **B.** VOUCHER-with-P2PK-tags, P2PK-with-voucher-tags, or a composite kind — and does the
-  Imani mint enforce the lock in the chosen shape? **This one is load-bearing.** (§5.3)
-  Answered on the factual half — it does not — in
-  [ADR 0003](../adr/0003-voucher-secret-modelling.md); the remaining choice is whether to
-  adopt option 2 now or upgrade the mint first.
+- **B.** ~~VOUCHER-with-P2PK-tags, P2PK-with-voucher-tags, or a composite kind?~~
+  **Settled: option 2**, P2PK kind carrying voucher tags
+  ([ADR 0003](../adr/0003-voucher-secret-modelling.md)). The mint does not enforce P2PK on a
+  VOUCHER secret, and `VOUCHER` is not a registered NUT kind, so option 1 would leave the
+  binding unenforced by any conformant mint.
 - **C.** Acceptable staleness between voucher death and session death. (§7.1)
 - **D.** Capability advertisement on `/auth/init`, or fail-closed? (§8)
 - **E.** Should `grant()` be validated against the `PermissionRegistry` at wiring time?
@@ -466,9 +476,8 @@ Worth building, in this order:
 1. **Settle question B first.** Everything downstream is contingent on how the P2PK lock and
    the voucher metadata coexist, and on whether the mint enforces it. If the mint does not
    enforce the lock in the chosen shape, stop: the security argument in §3.1 does not hold.
-   *(Status: the mint does not enforce it on a VOUCHER secret —
-   [ADR 0003](../adr/0003-voucher-secret-modelling.md). Awaiting a decision between adopting
-   option 2 and upgrading the mint.)*
+   *(Settled 2026-09-01: option 2, P2PK kind carrying voucher tags —
+   [ADR 0003](../adr/0003-voucher-secret-modelling.md).)*
 2. Build the verification client (allowlist, keyset cache, DLEQ, NUT-07) standalone and
    testable, with no NAP dependency.
 3. Fix CONTEXT.md finding 12 (guard audit logging), so §6.2 is observable.
