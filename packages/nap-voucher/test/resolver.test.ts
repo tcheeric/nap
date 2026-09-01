@@ -127,6 +127,42 @@ vi.mock('../src/dleq.js', async (importOriginal) => {
 
 const { verifyProofDleq } = await import('../src/dleq.js');
 
+describe('wiring mistakes fail at construction', () => {
+  const valid = () => ({
+    mintAllowlist: createMintAllowlist([MINT]),
+    issuerAllowlist: createIssuerAllowlist(
+      [{ mint: MINT, issuerPubkey: ISSUER_PUBKEY }],
+      createMintAllowlist([MINT])
+    ),
+    mintClient: {
+      getKey: async () => '02'.padEnd(66, 'b'),
+      checkState: async () => 'UNSPENT' as const,
+      clearCache: () => {},
+    } as MintClient,
+    availability: createMintAvailabilityPolicy(),
+    grant: () => ({ roles: [], permissions: [] }),
+  });
+
+  it.each(['mintAllowlist', 'issuerAllowlist', 'mintClient', 'availability', 'grant'])(
+    'rejects a missing %s',
+    (key) => {
+      const options = { ...valid(), [key]: undefined };
+
+      expect(() => createVoucherAclResolver(options as never)).toThrow(key);
+    }
+  );
+
+  it('rejects a grant that is present but not callable', () => {
+    // Found in review: presence was checked, callability was not, so this
+    // constructed happily and threw on the first login presenting a voucher.
+    // Every other wiring mistake here fails at construction; this one waited
+    // for a user.
+    const options = { ...valid(), grant: 'not a function' };
+
+    expect(() => createVoucherAclResolver(options as never)).toThrow(/must be a function/);
+  });
+});
+
 describe('the happy path', () => {
   it('accepts a bound, signed, unspent voucher and grants what the policy says', async () => {
     const { resolver, logged } = harness();
@@ -385,6 +421,78 @@ describe('mint availability', () => {
     });
 
     expect(decision).toMatchObject({ allowed: true, roles: [], permissions: ['voucher:view'] });
+  });
+
+  it('applies the registry check to the degraded grant too', async () => {
+    // Found in review: the degraded path returned early, before the check ADR
+    // 0004 added. A typo here is likelier than in `grant()`, not less --
+    // degraded mode is the branch an operator writes once and exercises only
+    // during an outage, which is the worst moment to find the session grants
+    // nothing.
+    const logged: Array<{ code: string; details?: Record<string, unknown> }> = [];
+    const resolver = createVoucherAclResolver({
+      mintAllowlist: createMintAllowlist([MINT]),
+      issuerAllowlist: createIssuerAllowlist(
+        [{ mint: MINT, issuerPubkey: ISSUER_PUBKEY }],
+        createMintAllowlist([MINT])
+      ),
+      mintClient: {
+        getKey: async () => {
+          throw new MintUnavailableError('unavailable', 'timeout');
+        },
+        checkState: async () => 'UNSPENT' as const,
+        clearCache: () => {},
+      } as MintClient,
+      availability: createMintAvailabilityPolicy({
+        onMintUnavailable: 'degrade',
+        degradedGrant: { roles: [], permissions: ['voucher:veiw'] },
+      }),
+      permissionRegistry: { permissions: [{ key: 'voucher:view' }], roles: [] },
+      grant: () => ({ roles: [], permissions: ['voucher:view'] }),
+      auditLogger: {
+        log: (event) => void logged.push({ code: event.code, details: event.details }),
+      },
+    });
+
+    const decision = await resolver.resolve(NPUB, HOLDER_PUBKEY, {
+      voucher: credential(),
+      now: NOW,
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(logged[0]).toMatchObject({
+      code: VOUCHER_DENIAL_CODES.GRANT_NOT_IN_REGISTRY,
+      details: { unknown: ['voucher:veiw'], degraded: true },
+    });
+    // And no success line ahead of the denial: an audit trail reading
+    // "degraded, succeeded" followed by a denial describes a sequence that
+    // never happened.
+    expect(logged.map((entry) => entry.code)).not.toContain(
+      VOUCHER_DENIAL_CODES.MINT_UNAVAILABLE
+    );
+  });
+
+  it('still bounds a degraded session by the voucher expiry', async () => {
+    // Liveness being unknown is a reason to grant less, not to grant it for
+    // longer than the credential itself lasts.
+    const { resolver } = harness({
+      mintClient: {
+        checkState: async () => {
+          throw new MintUnavailableError('unavailable', 'timeout');
+        },
+      },
+      availability: createMintAvailabilityPolicy({
+        onMintUnavailable: 'degrade',
+        degradedGrant: { roles: [], permissions: ['voucher:view'] },
+      }),
+    });
+
+    const decision = await resolver.resolve(NPUB, HOLDER_PUBKEY, {
+      voucher: credential({ secret: signedSecret({ expiresAt: NOW + 60 }) }),
+      now: NOW,
+    });
+
+    expect(decision).toMatchObject({ allowed: true, expires_at: NOW + 60 });
   });
 
   it('does not degrade on a definite refusal from a reachable mint', async () => {

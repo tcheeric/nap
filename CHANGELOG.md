@@ -116,6 +116,27 @@ All packages in this workspace share a single version.
 
 ### Fixed
 
+- **Self-review of the extension 0001 work found four defects** (`CODE-REVIEW-EXT-0001.md`),
+  all now closed and mutation-verified:
+
+  - **Duplicate tags were accepted** where `cashu-lib` rejects them. The issuer signature covers
+    both copies, so a doctored secret verified here while being unspendable at the mint — NAP
+    would have granted a session from a document with two answers, with `grant()` reading
+    whichever copy the parser reached first. Now rejected, matching NUT-11 and
+    `requireEachTagAtMostOnce`.
+  - **The degraded path skipped the registry check and the expiry clamp**, so a typo'd
+    `degradedGrant` sailed through the check ADR 0004 exists to enforce, and a degraded session
+    could outlive its voucher. Both now apply, and the degraded-success line is logged *after*
+    the check rather than before, so a denial no longer trails a success record for a sequence
+    that never happened.
+  - **`grant` was checked for presence but not callability**, turning a wiring mistake into a
+    runtime failure for the first user to present a voucher.
+  - **Extension spec §5.2 documented an interface that does not exist** — every field name in
+    it was wrong, since it was written before implementation and never revisited. Replaced with
+    the real one, with a note on why the shape changed, and now guarded by a test.
+
+### Fixed
+
 - **Guards now honour an injected `clock`.** `NapExpressGuardOptions.clock` and its Fastify
   equivalent were passed to `resolveEffectiveAcl` but ignored by session-expiry and
   step-up-expiry checks, which read `Date.now()` directly. A guard configured with the same

@@ -307,8 +307,49 @@ export function createVoucherAclResolver(options: VoucherAclResolverOptions): Ac
     }
   }
 
+  // Presence is not enough for the callables. A `grant` that is present but not
+  // a function passed the check above and then threw on the first login that
+  // presented a voucher -- turning a wiring mistake into a runtime failure for a
+  // user, when every other mistake in this package fails at construction.
+  for (const key of ['grant'] as const) {
+    if (typeof options[key] !== 'function') {
+      throw new Error(
+        `NAP voucher resolver option '${key}' must be a function, got ${typeof options[key]}.`
+      );
+    }
+  }
+
   const { mintAllowlist, issuerAllowlist, mintClient, availability, grant } = options;
   const audit = options.auditLogger;
+
+  /**
+   * Roles and permissions the registry does not declare, or `[]` when there is
+   * no registry.
+   *
+   * Extracted so the degraded path uses the same check as the normal one. It
+   * did not, and a typo'd `degradedGrant` sailed through — the exact mistake
+   * ADR 0004 exists to catch, on the configuration an operator exercises least
+   * and can least afford to get wrong.
+   *
+   * Roles are checked alongside permissions because a role expands into
+   * permissions downstream, so an undeclared role is an empty grant wearing the
+   * name of a real one.
+   */
+  const undeclaredKeys = (granted: VoucherGrant | null | undefined): string[] => {
+    const registry = options.permissionRegistry;
+
+    if (!registry) {
+      return [];
+    }
+
+    const declaredPermissions = new Set(registry.permissions.map((entry) => entry.key));
+    const declaredRoles = new Set(registry.roles.map((entry) => entry.key));
+
+    return [
+      ...(granted?.permissions ?? []).filter((key) => !declaredPermissions.has(key)),
+      ...(granted?.roles ?? []).filter((key) => !declaredRoles.has(key)),
+    ];
+  };
 
   const deny = async (
     code: VoucherDenialCode,
@@ -462,6 +503,27 @@ export function createVoucherAclResolver(options: VoucherAclResolverOptions): Ac
           return deny(VOUCHER_DENIAL_CODES.MINT_UNAVAILABLE, npub, pubkey, { reason: error.reason });
         }
 
+        // The degraded grant, not `grant()`. The voucher's liveness is unknown,
+        // so the operator's reduced set is what a login is worth.
+        //
+        // It goes through the same registry check as a normal grant. A typo here
+        // is likelier than in `grant()`, not less: degraded mode is the branch an
+        // operator writes once and exercises only during an outage, which is the
+        // worst moment to discover the session grants nothing.
+        //
+        // Checked *before* the degraded-success line is logged, so a login that
+        // ends in a denial does not leave a success record ahead of it. An audit
+        // trail reading "degraded, succeeded" followed by a denial describes a
+        // sequence that never happened.
+        const degradedUnknown = undeclaredKeys(decision.grant);
+
+        if (degradedUnknown.length > 0) {
+          return deny(VOUCHER_DENIAL_CODES.GRANT_NOT_IN_REGISTRY, npub, pubkey, {
+            unknown: degradedUnknown,
+            degraded: true,
+          });
+        }
+
         await audit?.log({
           code: VOUCHER_DENIAL_CODES.MINT_UNAVAILABLE,
           npub,
@@ -470,13 +532,15 @@ export function createVoucherAclResolver(options: VoucherAclResolverOptions): Ac
           details: { reason: error.reason, degraded: true },
         });
 
-        // The degraded grant, not `grant()`. The voucher's liveness is unknown,
-        // so the operator's reduced set is what a login is worth.
         return {
           allowed: true,
           roles: [...decision.grant.roles],
           permissions: [...decision.grant.permissions],
           reason: 'NAP_VOUCHER_DEGRADED',
+          // The voucher's own expiry still bounds the session. Liveness being
+          // unknown is a reason to grant less, not a reason to grant it for
+          // longer than the credential itself lasts.
+          ...(secret.expiresAt !== null ? { expires_at: secret.expiresAt } : {}),
         };
       }
 
@@ -495,22 +559,11 @@ export function createVoucherAclResolver(options: VoucherAclResolverOptions): Ac
 
       const granted = grant(verified);
 
-      // (i continued) The registry check, when one is wired. Roles are checked
-      // as well as permissions: a role expands into permissions downstream, so
-      // an undeclared role is an empty grant wearing the name of a real one.
-      const registry = options.permissionRegistry;
+      // (i continued) The registry check, when one is wired.
+      const unknown = undeclaredKeys(granted);
 
-      if (registry) {
-        const declaredPermissions = new Set(registry.permissions.map((entry) => entry.key));
-        const declaredRoles = new Set(registry.roles.map((entry) => entry.key));
-        const unknown = [
-          ...(granted?.permissions ?? []).filter((key) => !declaredPermissions.has(key)),
-          ...(granted?.roles ?? []).filter((key) => !declaredRoles.has(key)),
-        ];
-
-        if (unknown.length > 0) {
-          return deny(VOUCHER_DENIAL_CODES.GRANT_NOT_IN_REGISTRY, npub, pubkey, { unknown });
-        }
+      if (unknown.length > 0) {
+        return deny(VOUCHER_DENIAL_CODES.GRANT_NOT_IN_REGISTRY, npub, pubkey, { unknown });
       }
 
       await audit?.log({

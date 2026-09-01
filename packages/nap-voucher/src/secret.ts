@@ -170,6 +170,7 @@ export function parseVoucherSecret(secret: string): ParsedVoucherSecret | null {
   }
 
   const tags: string[][] = [];
+  const seenKeys = new Set<string>();
 
   if (rawTags !== undefined && rawTags !== null) {
     if (!Array.isArray(rawTags)) {
@@ -179,6 +180,21 @@ export function parseVoucherSecret(secret: string): ParsedVoucherSecret | null {
       if (!Array.isArray(tag) || tag.length === 0) {
         return null;
       }
+
+      // NUT-11: a repeated tag makes the secret malformed. Rejecting matters
+      // beyond conformance, because `cashu-lib` rejects it too
+      // (`requireEachTagAtMostOnce`) -- and reading the first occurrence instead
+      // would leave NAP granting a session from a document the mint refuses to
+      // spend at all. The issuer signature covers *both* copies, so a doctored
+      // secret verifies here while being dead at the mint, and `grant()` would
+      // derive roles from whichever copy this parser happened to reach first.
+      const key = typeof tag[0] === 'string' ? tag[0] : String(tag[0]);
+
+      if (seenKeys.has(key)) {
+        return null;
+      }
+
+      seenKeys.add(key);
       const values: string[] = [];
       for (const value of tag) {
         // Numbers are accepted and stringified because a sender may write a

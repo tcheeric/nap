@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { parseVoucherSecret, voucherCanonicalBytes, VOUCHER_TAGS } from '../src/secret.js';
 
@@ -120,6 +123,47 @@ describe('parsing a hostile secret', () => {
     expect(parseVoucherSecret(input)).toBeNull();
   });
 
+  it('rejects a secret carrying the same tag twice, as cashu-lib does', () => {
+    // NUT-11 calls a repeated tag malformed, and `cashu-lib` enforces that
+    // (`requireEachTagAtMostOnce`). Reading the first occurrence instead -- the
+    // original behaviour here -- would let a doctored secret verify on this
+    // side while the mint refuses it outright, since the issuer signature
+    // covers both copies. NAP would grant a session from a document with two
+    // answers.
+    const doctored = JSON.stringify([
+      'P2PK_VOUCHER',
+      {
+        nonce: 'n',
+        data: '02ab',
+        tags: [
+          [VOUCHER_TAGS.EXPIRES_AT, '2000000000'],
+          [VOUCHER_TAGS.EXPIRES_AT, '1'],
+        ],
+      },
+    ]);
+
+    expect(parseVoucherSecret(doctored)).toBeNull();
+  });
+
+  it('still accepts a tag key that merely repeats a *value*', () => {
+    // The rule is one occurrence per key, not per value. Without this, the
+    // check could be written as a value-set and would reject legitimate
+    // secrets whose distinct tags happen to share a value.
+    const fine = JSON.stringify([
+      'P2PK_VOUCHER',
+      {
+        nonce: 'n',
+        data: '02ab',
+        tags: [
+          [VOUCHER_TAGS.ISSUER, 'imani'],
+          [VOUCHER_TAGS.UNIT, 'imani'],
+        ],
+      },
+    ]);
+
+    expect(parseVoucherSecret(fine)).not.toBeNull();
+  });
+
   it('accepts a numeric tag written as a bare JSON number', () => {
     const parsed = parseVoucherSecret(
       JSON.stringify(['P2PK_VOUCHER', { nonce: 'n', data: '02ab', tags: [[VOUCHER_TAGS.EXPIRES_AT, 2_000_000_000]] }])
@@ -129,5 +173,59 @@ describe('parsing a hostile secret', () => {
     // And it renders identically to the string form, so a sender's choice of
     // JSON type cannot change what the signature covers.
     expect(new TextDecoder().decode(voucherCanonicalBytes(parsed!))).toContain('["expires_at",2000000000]');
+  });
+});
+
+/**
+ * The extension spec's §5.2 options block, checked against the real interface.
+ *
+ * §5.2 is the normative description of how a server wires this resolver, and it
+ * had drifted completely: every field name in it named something that does not
+ * exist, because it was written before the implementation and never revisited.
+ * Nothing caught that — `docsTypecheck` covers the README and integration
+ * guide, not the extension spec.
+ *
+ * Compared on key sets rather than by type-checking the block, because the
+ * block is documentation prose with `REQUIRED` comments and illustrative
+ * shapes; the property that has to hold is that it names the options that
+ * actually exist, and all of them.
+ */
+describe('extension spec §5.2 matches VoucherAclResolverOptions', () => {
+  const SPEC = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../../docs/extensions/0001-voucher-bound-authorization.md'
+  );
+
+  /** Option names the spec's `VoucherAclResolverOptions` block declares. */
+  function documentedOptions(): string[] {
+    const doc = readFileSync(SPEC, 'utf8');
+    const start = doc.indexOf('export interface VoucherAclResolverOptions {');
+
+    expect(start, '§5.2 should declare VoucherAclResolverOptions').toBeGreaterThan(-1);
+
+    const block = doc.slice(start, doc.indexOf('\n}', start));
+
+    // `name:` for fields and `name(` for the method form `grant()`.
+    return [...block.matchAll(/^ {2}([a-zA-Z]+)\??[:(]/gm)].map((match) => match[1]!);
+  }
+
+  it('documents every option the implementation accepts, and no others', () => {
+    // Kept as a literal list rather than derived from the type: a type-level
+    // comparison would need the options interface at runtime, and this is the
+    // one place where writing the names out is the point.
+    const actual = [
+      'mintAllowlist',
+      'issuerAllowlist',
+      'mintClient',
+      'availability',
+      'grant',
+      'permissionRegistry',
+      'onMissingCredential',
+      'fallback',
+      'clock',
+      'auditLogger',
+    ];
+
+    expect(new Set(documentedOptions())).toEqual(new Set(actual));
   });
 });

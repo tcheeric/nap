@@ -245,22 +245,44 @@ more code. Which?
 
 ### 5.2 The resolver
 
+As shipped:
+
 ```ts
 export interface VoucherAclResolverOptions {
-  /** REQUIRED, non-empty, scheme-pinned origins. Throws at construction otherwise (§4.3). */
-  allowedMints: string[];
-  /** REQUIRED. (mint_url, issuer_pubkey) pairs this server honours. */
-  allowedIssuers: Array<{ mint: string; issuerPubkey: string }>;
-  /** Maps verified voucher metadata to roles/permissions. */
-  grant(voucher: VerifiedVoucher): { roles: string[]; permissions: string[] };
-  /** Keyset cache TTL. */
-  keysetCacheTtlSeconds?: number;
-  /** Behaviour when the mint is unreachable (§7.3). Default: 'deny'. */
-  onMintUnavailable?: 'deny' | 'degrade';
+  /** REQUIRED. Built by `createMintAllowlist`, which throws on an empty list (§4.3). */
+  mintAllowlist: MintAllowlist;
+  /** REQUIRED. Built by `createIssuerAllowlist`, keyed on the (mint, issuer) pair. */
+  issuerAllowlist: IssuerAllowlist;
+  /** REQUIRED. Owns the keyset cache TTL and the NUT-07 state check. */
+  mintClient: MintClient;
+  /** REQUIRED. Owns the §7.3 deny/degrade decision. Default is deny. */
+  availability: MintAvailabilityPolicy;
+  /** REQUIRED. Maps verified voucher metadata to roles/permissions. */
+  grant(voucher: VerifiedVoucher): VoucherGrant;
+  /** Checks `grant()` output at grant time (ADR 0004). */
+  permissionRegistry?: PermissionRegistryLike;
+  /** What a *guarded request* means when there is no credential (§7.2). */
+  onMissingCredential?: 'deny' | 'trust-session';
+  /** Delegate for logins that present no voucher. Absent means deny. */
+  fallback?: AclResolverLike;
   clock?: Clock;
-  auditLogger?: AuditLogger;
+  auditLogger?: VoucherAuditLogger;
 }
 ```
+
+**This differs from the sketch this section carried before implementation**, and the difference
+is worth stating rather than quietly replacing. The original took `allowedMints: string[]`,
+`keysetCacheTtlSeconds` and `onMintUnavailable` directly, which folded four separate concerns
+into one options bag. What shipped takes the *constructed* collaborators instead, because each
+one has wiring-time failure modes of its own: an empty allowlist, a mint URL with a path, a
+`degradedGrant` overlapping a destructive permission. Passing them pre-built means those
+failures surface where the operator wires them, with an error naming the specific mistake,
+rather than inside this constructor as a second-hand complaint.
+
+The three options the sketch never anticipated — `permissionRegistry`, `onMissingCredential`,
+`fallback` — each exist because implementation found a problem the design had not:
+respectively [ADR 0004](../adr/0004-voucher-grant-registry-validation.md), the §7.2 guard trap,
+and credential-free logins.
 
 `grant` is the application's policy and stays outside the library.
 
