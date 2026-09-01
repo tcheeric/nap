@@ -94,18 +94,24 @@ All packages in this workspace share a single version.
   renaming a function, the *source* renaming an option while the guide goes stale, and the
   §3.5 headings moving so the extractor silently checks nothing.
 
-- **ADR 0003 is accepted: the voucher secret is a NUT-11 `P2PK` secret** carrying voucher
-  metadata as NUT-10 tags, with `data` holding the P2PK lock key. This unblocks the
-  `VoucherCredential` type, the resolver, the audit codes, and the `nap-java` mirror.
+- **ADR 0003 is accepted: the voucher secret is a new composite NUT-10 kind** carrying both
+  the voucher metadata and the P2PK lock, enforced by the mint as one spending condition.
 
-  Two facts decided it against the alternative (an Imani `VOUCHER` kind carrying P2PK-shaped
-  tags, which would have kept `VoucherSecret`'s typed accessors). The Imani mint does not
-  enforce P2PK on a `VOUCHER` secret — dispatch is first-match on kind, and the voucher
-  validator has no witness check. And `VOUCHER` is not a registered NUT kind, so NUT-10's
-  caution applies: a mint not supporting a kind "may treat proofs as regular anyone-can-spend
-  tokens". The lock would have been a property of one mint's configuration rather than of the
-  credential, whereas a `P2PK` secret with extra tags is enforced by every conformant mint
-  today.
+  An option-2 decision (a NUT-11 `P2PK` secret carrying voucher metadata as tags) was taken
+  and reverted the same day. It was chosen for appearing to need no upstream change, but
+  `VoucherCanonicalBytes` hardcodes the `VOUCHER` kind and the voucher id into the bytes the
+  issuer signs — so under a P2PK-kind secret the issuer signature would cover a document that
+  never exists on the wire. It also collapsed two distinct meanings: `VOUCHER` says what a
+  credential is worth, `P2PK` says who may spend it.
+
+  The remaining option (an Imani `VOUCHER` kind with P2PK-shaped tags) leaves the lock
+  unenforced, since the mint dispatches first-match on kind and the voucher validator has no
+  witness check. Every option needs an upstream change, so the deciding factor became which
+  model is honest rather than which is cheapest.
+
+  Cost: `cashu-lib`, `cashu-voucher` (invalidating issuer signatures made under the old
+  canonical form), and `cashu-mint`. **NAP must not ship ahead of the mint** — until the mint
+  enforces the kind, the binding holds only as far as NAP checks it.
 
 - **ADR 0003 records the voucher secret-modelling evidence** (`docs/adr/0003-voucher-secret-modelling.md`).
   The Imani mint does **not** enforce P2PK on a VOUCHER secret:

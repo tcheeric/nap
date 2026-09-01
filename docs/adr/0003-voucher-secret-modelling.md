@@ -1,9 +1,9 @@
 # ADR 0003 — Secret modelling for voucher-bound authorization
 
-- **Status:** accepted — **Path A / option 2**: P2PK kind carrying voucher tags
-- **Date:** 2026-09-01
+- **Status:** accepted — **option 3**: a new composite NUT-10 kind
+- **Date:** 2026-09-01 (superseding an option 2 decision taken earlier the same day, see [Superseded decision](#superseded-decision))
 - **Related:** `../extensions/0001-voucher-bound-authorization.md` §5.3, review question B; GitHub issue #13
-- **Blocks:** issues #22, #23, #24, #27, #29, and the remaining half of #30
+- **Unblocks:** issues #22, #23, #24, #29
 
 ## Context
 
@@ -13,18 +13,18 @@ Extension 0001 §3.1 states the whole design in one line:
 voucher proof --P2PK--> K <--signs-- NIP-98 completion event
 ```
 
-The voucher proof carries a NUT-11 P2PK lock naming a public key `K`, and the completion's
-NIP-98 event must be signed by `K`. That equality is what makes a stolen voucher useless:
-holding the proof without the key proves nothing, because the completion cannot be signed.
+The voucher proof carries a P2PK lock naming a public key `K`, and the completion's NIP-98
+event must be signed by `K`. That equality is what makes a stolen voucher useless: holding
+the proof without the key proves nothing, because the completion cannot be signed.
 
 A Cashu proof has exactly one NUT-10 kind, so the voucher metadata and the P2PK lock must
-somehow share one secret. §5.3 gives three options and calls this "the one genuinely
-unresolved modelling question" and "the highest-risk open item":
+share one secret. §5.3 gives three options and calls this "the one genuinely unresolved
+modelling question" and "the highest-risk open item":
 
-1. **VOUCHER kind carrying P2PK tags** — keeps `cashu-voucher`'s domain model intact, but
-   the mint must be taught to enforce P2PK on a VOUCHER secret.
-2. **P2PK kind carrying voucher tags** — the mint enforces the lock natively today; voucher
-   metadata becomes untyped tag payload and `VoucherSecret`'s accessors no longer apply.
+1. **`VOUCHER` kind carrying P2PK tags** — keeps `cashu-voucher`'s domain model intact, but
+   the mint must be taught to enforce P2PK on a `VOUCHER` secret.
+2. **`P2PK` kind carrying voucher tags** — the mint enforces the lock natively today;
+   voucher metadata becomes untyped tag payload.
 3. **A composite kind** — cleanest model, largest change, needs mint support that does not
    exist.
 
@@ -32,14 +32,11 @@ The spec is explicit about the stakes: "**If the mint does not enforce it, this 
 security collapses** — the binding in §3.1 would be checkable by the NAP server but not by
 the mint, so a thief could still swap the proof."
 
-So the question is not which option is most elegant. It is a question of fact about the
-deployed mint, and it was answered by reading the mint rather than by argument.
-
 ## Evidence
 
 Verified against `cashu-mint`, `cashu-lib`, and `cashu-voucher` as they stand.
 
-### The mint does not enforce P2PK on a VOUCHER secret
+### The mint does not enforce P2PK on a `VOUCHER` secret
 
 `cashu-mint-protocol/.../tasks/VerifyProofsTask.java`, `getSpendingCondition()` dispatches
 **first-match on secret kind**:
@@ -53,122 +50,134 @@ if (secret instanceof P2PKSecret) {
 }
 ```
 
-A VOUCHER secret takes the first branch and never reaches `P2PKSpendingCondition`.
-
-`VoucherSpendingCondition.verify()` checks exactly five things: voucher expiry, the issuer's
-Schnorr signature, double-spend state, keyset id, and BDHKE. Searching that class for
-`witness`, `Witness`, or `p2pk` returns nothing, and its test class
-(`VoucherSpendingConditionTest`) has no P2PK or witness case.
-
-Melt does not help. `MeltTask` rejects voucher secrets outright under Model B
-(`voucher_not_accepted`, "Please redeem with issuing merchant") and applies
+A `VOUCHER` secret takes the first branch and never reaches `P2PKSpendingCondition`.
+`VoucherSpendingCondition.verify()` checks expiry, the issuer signature, double-spend state,
+keyset id, and BDHKE — searching it for `witness` or `p2pk` returns nothing, and its test
+class has no P2PK case. `MeltTask` rejects voucher secrets outright under Model B and applies
 `P2PKSpendingCondition` only `if (proof.getSecret() instanceof P2PKSecret)`.
 
-**Consequence:** under option 1 as the mint stands, the P2PK lock is advisory only —
-checkable by the NAP server, invisible to the mint. A thief who steals the proof can still
-swap it. That is precisely the collapse §5.3 warns about.
+**So under option 1 as things stand, the P2PK lock is advisory only** — checkable by the NAP
+server, invisible to the mint. A thief who steals the proof can still swap it.
 
-### Option 2 works against the mint as deployed
+### `VOUCHER` is not a registered NUT kind
 
-- `P2PKSecret extends WellKnownSecret` with `Kind.P2PK`, so it reaches
-  `P2PKSpendingCondition`, which enforces the n-of-m multisig, locktime, and refund pathway
-  natively today.
-- `WellKnownSecret.addTag(String key, List<Object> values)` is public and unrestricted, so
-  voucher metadata (`issuer`, `expires_at`, `issuer_sig`, `issuer_pubkey`, …) can ride as
-  tags on a P2PK secret with no mint change.
-- The cost is exactly what §5.3 predicted: `VoucherSecret`'s typed accessors no longer
-  apply, and the NAP resolver reads tags directly.
+Only `P2PK` (NUT-11) and `HTLC` (NUT-14) are specified. `Kind.VOUCHER` is an Imani extension
+in `cashu-lib`. Both NUT-10 and NUT-11 carry the same caution:
 
-### On the existing analysis document
+> If the mint does not support spending conditions or a specific `kind`, **proofs may be
+> treated as regular anyone-can-spend tokens.**
 
-`cashu-voucher/project/VOUCHER-SPENDING-CONDITIONS-ANALYSIS.md` recommends option 1. That
-recommendation is not wrong on its own terms — it weighs flexibility, type safety, and code
-size for *voucher features generally*. It is not answering this question. Its own comparison
-matrix rates option 1 "Mint Enforcement: Strong" only on the assumption that the mint is
-taught to enforce it, and its "Implementation Steps" section is a sketch of that change.
-That change has not been made.
+NUT-10 itself is permissive about extension — it defines only the envelope
+`[kind, {nonce, data, tags}]`, says "the specific type of spending condition is not part of
+this document", and offers tags for "feature extensions". So a custom kind is **spec-legal**.
+What it is not is *interoperable*: any mint that does not know the kind treats the proof as
+anyone-can-spend, and the mint's `/v1/info` cannot honestly advertise the lock without a
+number to advertise it under.
+
+### Option 2 breaks issuer signing
+
+The finding that overturned the earlier decision. `VoucherCanonicalBytes` — what
+`VoucherSignatureService` signs and verifies — hardcodes the kind:
+
+```java
+sb.append("[\"").append(WellKnownSecret.Kind.VOUCHER.name()).append("\",\"");
+sb.append(Hex.toHexString(secret.getData()));      // the voucher UUID
+```
+
+Under option 2 the on-wire secret is `["P2PK", K, nonce, tags]`. The issuer signature would
+therefore cover a document **that never exists on the wire**: the kind differs, and `data`
+differs (voucher UUID versus the lock key `K`). The signature would no longer commit to what
+the mint verifies, which is the property §4.3's issuer allowlist depends on.
+
+Option 2 was chosen on the belief that it required no changes outside NAP. It requires
+changes to `cashu-voucher`'s canonical-bytes form, which is the one place a change is most
+expensive: it invalidates every issuer signature already produced.
+
+### The two kinds mean different things
+
+The distinction that motivates option 3, and the reason collapsing them reads badly:
+
+| | Purpose | `data` field |
+| --- | --- | --- |
+| `VOUCHER` | what this credential *is worth* — issuer, expiry, face value | voucher UUID |
+| `P2PK` | who may *spend* it | the lock key |
+
+Option 2 collapses these and makes `data` mean "lock key", demoting the voucher id to a tag.
+Anyone reading a proof would see a P2PK secret and have no signal that its tags carry
+authorization semantics an issuer signed.
 
 ## Decision
 
-**Option 2: a `P2PK` kind secret carrying the voucher metadata as NUT-10 tags.** No mint
-change; NAP ships against the mint as deployed. Voucher metadata becomes tag payload, and
-`VoucherSecret`'s typed accessors do not apply.
+**Option 3: a new composite NUT-10 kind**, carrying both the voucher metadata and the P2PK
+lock as first-class parts of one secret, enforced by the mint as a single spending condition.
 
-Decided 2026-09-01. The spec review below is what settled it: option 1 is legal but makes
-the binding a property of *one mint's configuration* rather than of the credential, and
-option 2 is the only shape any conformant mint enforces.
+The kind name, the placement of `K` (a `data` field versus a dedicated tag), and the
+canonical-bytes form are implementation details to settle in the `cashu-lib` change, not
+here. What this ADR fixes is that the two concerns stay **distinct and both enforced**,
+rather than one being smuggled into the other's tags.
 
-### What the NUTs say
+### Why
 
-Checked directly rather than assumed, because "would this break spec compliance?" turned
-out to be the question that decides it.
+- **Option 1** leaves the lock unenforced by the mint. Its only advantage is that
+  `cashu-voucher` needs no change, and the enforcement gap is exactly what extension 0001
+  §5.3 warns collapses the security argument.
+- **Option 2** requires changing `VoucherCanonicalBytes`, invalidating existing issuer
+  signatures, *and* conflates two distinct meanings. It buys nothing that option 3 does not,
+  once its true cost is counted.
+- **Option 3** is the only shape where the mint enforces both the lock and the voucher
+  conditions, and where a reader can tell what a proof is by its kind.
 
-- **NUT-10 defines only the envelope** — `[kind, {nonce, data, tags}]` — and says "the
-  specific type of spending condition is not part of this document", with tags explicitly
-  available for "feature extensions". So a `VOUCHER` kind carrying P2PK-shaped tags is a
-  well-formed NUT-10 secret, and teaching the mint to enforce them would break no rule.
-  **Option 1 is spec-legal.**
-- **But `VOUCHER` is not a registered kind.** Only `P2PK` (NUT-11) and `HTLC` (NUT-14)
-  exist. `Kind.VOUCHER` is an Imani extension in `cashu-lib`, and the mint's `/v1/info`
-  advertises `"11": {"supported": true}` — a claim about P2PK *secrets*, not about voucher
-  secrets that happen to carry P2PK tags.
-- **Both NUT-10 and NUT-11 carry the same caution:** "If the mint does not support
-  spending conditions or a specific `kind`, proofs may be treated as regular
-  anyone-can-spend tokens." That is exactly today's behaviour for a `VOUCHER` secret, and
-  it is what *any other* mint would do with one, since nothing signals the lock is real.
+Every option needs a mint change except option 2, and option 2's apparent cheapness was an
+error in the earlier analysis. Given that, pay for the honest model.
 
-Option 2 inherits none of this. A `P2PK` secret with extra tags is unambiguously a P2PK
-secret: every conformant mint enforces the lock, and unknown tags are ignored as NUT-10
-intends.
+## Consequences
 
-| | Option 1 | Option 2 |
-| --- | --- | --- |
-| Spec-legal | Yes | Yes |
-| Enforced by the Imani mint | Only after a mint change | **Today** |
-| Enforced by *other* mints | Never | **Yes** |
-| Advertisable via `/v1/info` | Needs a new kind number | `"11": true` already true |
+### Work this implies, outside NAP
 
-### Cost accepted
+- **`cashu-lib`**: a new `Kind` enum member; `WellKnownSecretDeserializer` handling for it
+  (three call sites: spec, flattened, and object forms); a secret class exposing both the
+  voucher accessors and the P2PK lock.
+- **`cashu-voucher`**: `VoucherCanonicalBytes` must emit the new kind, and
+  `VoucherSignatureService` must sign and verify over it. **This invalidates issuer
+  signatures produced under the old form**, so it needs either a migration window or a
+  version tag in the canonical bytes.
+- **`cashu-mint`**: `VerifyProofsTask.getSpendingCondition()` must dispatch the new kind to a
+  condition that runs *both* the voucher checks and `P2PKSpendingCondition`. `MeltTask`'s
+  Model B rejection needs the same treatment. `/v1/info` should advertise the new kind so a
+  wallet can tell whether the lock is real.
 
-`VoucherSecret`'s accessors do not apply, so the NAP resolver reads voucher metadata from
-tags directly. That is a real loss of type safety on the Java side and the reason option 1
-was attractive. It is outweighed by the binding being enforced by the mint rather than by
-configuration.
+### For NAP
 
-### The paths as they were framed
+- **#22 is unblocked**: `VoucherCredential.secret` carries the new composite kind, and the
+  resolver reads the lock key and the voucher metadata through its accessors rather than
+  through untyped tags.
+- **The §6 step-13 procedure is unchanged in shape.** Step (d) — extract `K` and compare it
+  to the completion pubkey — differs only in where `K` is read from, and it stays before the
+  mint round trip.
+- **NAP must not ship ahead of the mint.** Until the mint enforces the new kind, the §3.1
+  binding holds only as far as NAP checks it, which is the same position option 1 was
+  rejected for. Extension 0001 §11 already couples the TypeScript and Java releases; this
+  adds the mint to that set.
 
-Retained because the reasoning is the record:
+### Reversing it
 
-**Path A — adopt option 2 now.** No mint change. NAP ships against the mint as deployed.
-Voucher metadata becomes untyped tag payload on a P2PK secret.
+Expensive, and the reason it is settled now. The options differ in wire form, so vouchers
+issued under one shape are not verifiable under another, and there is no in-place migration
+for a bearer credential already in circulation — the practical path would be letting
+outstanding vouchers expire, making `expires_at` the migration window. Nothing has issued a
+voucher yet, which is what makes this cheap today and not tomorrow.
 
-**Path B — teach the mint, then adopt option 1.** Have `VoucherSpendingCondition` delegate
-to `P2PKSpendingCondition` when P2PK tags are present, exactly as the analysis document
-sketches. Cost: a mint release, and **every deployed mint must be upgraded before the §3.1
-binding can be relied on**. Until then the extension's security argument does not hold.
+## Superseded decision
 
-**Path A was chosen.** The mint is a separately deployed artifact, and extension 0001 §11
-already insists the TypeScript and Java sides ship together; adding "and every mint must be
-upgraded first" widens a release that is already coupled across two repositories. The spec
-review above then made it decisive rather than merely cheaper.
+Option 2 was accepted earlier on 2026-09-01 and reverted the same day. It was chosen because
+it appeared to need no changes outside NAP, and because a `P2PK` secret with extra tags is
+enforced by every conformant mint today.
 
-## Consequences either way
+That reasoning was sound as far as it went and is retained above under
+[option 2 breaks issuer signing](#option-2-breaks-issuer-signing) — but the analysis had not
+checked `VoucherCanonicalBytes`, which hardcodes `"VOUCHER"` into the signed form. Once that
+surfaced, option 2's distinguishing advantage disappeared: it needs an upstream change like
+the others, and unlike the others it also conflates two meanings.
 
-- **Option 3 is out.** It needs mint support that does not exist, and would incur Path B's
-  upgrade cost with strictly more work.
-- **`VoucherCredential.secret` (#22) is unblocked.** It carries a NUT-11 `P2PK` secret whose
-  `data` field is the lock key `K`, with voucher metadata in `tags`.
-- **The verification client is unaffected.** DLEQ, the keyset cache, and the NUT-07 state
-  check (#20) operate on the proof, not on the secret's kind, and are already built and
-  verified end to end. Whichever path is chosen, that work stands.
-- **Step (d) of the §6 procedure changes shape, not position.** Extracting `K` differs
-  between the options, but it stays before the mint round trip either way.
-
-## Reversing it
-
-Moderate. Switching between options 1 and 2 later changes the secret's wire form, so
-vouchers issued under one shape are not verifiable under the other. There is no in-place
-migration for a bearer credential already in circulation: the practical path is to let
-outstanding vouchers expire, which makes `expires_at` the effective migration window.
-
-This is the strongest reason to settle it before shipping anything that issues vouchers.
+Recorded rather than rewritten, because "the cheap option was not cheap" is the kind of thing
+worth being able to find later.

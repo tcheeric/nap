@@ -1046,44 +1046,46 @@ once, so verify it before rollout rather than after.
 | Session lifecycle / ledger watcher | Not started |
 | `nap-java` mirror | Not started — and it must ship *with* the TypeScript side, never after |
 
-#### 3.5.10 The secret is a NUT-11 `P2PK` secret
+#### 3.5.10 The secret is a new composite NUT-10 kind
 
 A Cashu proof carries exactly one NUT-10 kind, so the voucher metadata and the
 P2PK lock must share one secret. Settled 2026-09-01
-([ADR 0003](./adr/0003-voucher-secret-modelling.md)): the secret is a **NUT-11
-`P2PK` secret whose `data` field is the lock key `K`**, with voucher metadata
-carried in NUT-10 tags.
+([ADR 0003](./adr/0003-voucher-secret-modelling.md)): **a new composite kind**
+carrying both, enforced by the mint as a single spending condition. The kind
+name and the exact placement of `K` are being settled in `cashu-lib`.
 
-```
-["P2PK", {
-  "nonce": "...",
-  "data":  "<K — the key the completion must be signed by>",
-  "tags": [["issuer", "acme"], ["expires_at", "..."], ["issuer_sig", "..."], ...]
-}]
-```
+The two alternatives were rejected, and why is worth knowing because the naive
+reading favours both:
 
-The alternative — an Imani-specific `VOUCHER` kind carrying P2PK-shaped tags —
-keeps `VoucherSecret`'s typed accessors, and was rejected for two reasons:
+- **An Imani `VOUCHER` kind carrying P2PK-shaped tags.** The Imani mint's
+  spending-condition dispatch is first-match on kind, so a voucher secret never
+  reaches the P2PK validator, and the voucher validator has no witness check at
+  all. The §3.5.2 binding would be checkable by NAP but invisible to the mint,
+  and a thief could still swap the proof.
+- **A NUT-11 `P2PK` secret carrying voucher metadata as tags.** Superficially
+  free — every conformant mint enforces P2PK today. But the issuer signature is
+  computed over canonical bytes that hardcode the `VOUCHER` kind and the voucher
+  id, so under this shape the signature would cover a document that never exists
+  on the wire. It also collapses two distinct meanings: `data` would become "the
+  lock key", demoting the voucher id to a tag, and a reader would see a plain
+  P2PK secret with no signal that its tags carry issuer-signed authorisation.
 
-1. **The Imani mint does not enforce P2PK on a `VOUCHER` secret.** Its
-   spending-condition dispatch is first-match on kind, so a voucher secret never
-   reaches the P2PK validator, and the voucher validator has no witness check at
-   all. The §3.5.2 binding would be checkable by the NAP server but invisible to
-   the mint, and a thief could still swap the proof.
-2. **`VOUCHER` is not a registered NUT kind.** NUT-10 cautions that a mint not
-   supporting a `kind` "may treat proofs as regular anyone-can-spend tokens", so
-   the lock would be a property of one mint's configuration rather than of the
-   credential. A `P2PK` secret with extra tags is enforced by every conformant
-   mint today, and unknown tags are ignored exactly as NUT-10 intends.
+The kinds answer different questions — `VOUCHER` says what a credential *is
+worth*, `P2PK` says who may *spend* it — and a composite kind is the only shape
+that keeps both first-class and both enforced.
 
-The cost accepted is that `VoucherSecret`'s accessors do not apply: the resolver
-reads voucher metadata from tags directly.
+**The cost is real and it is upstream.** A new kind needs `cashu-lib`
+(deserialiser and secret class), `cashu-voucher` (canonical bytes and issuer
+signing, which invalidates signatures produced under the old form), and
+`cashu-mint` (dispatch, plus `/v1/info` advertising the kind so a wallet can
+tell the lock is enforced). **NAP must not ship ahead of the mint**: until the
+mint enforces the new kind, the binding holds only as far as NAP checks it,
+which is the position the first option was rejected for.
 
-This choice is expensive to reverse — the two shapes differ on the wire, so
-vouchers issued under one are not verifiable under the other, and there is no
-in-place migration for a bearer credential already in circulation. It is settled
-now precisely because nothing has issued a voucher yet.
-
+This choice is expensive to reverse — the shapes differ on the wire, so vouchers
+issued under one are not verifiable under another, and there is no in-place
+migration for a bearer credential already in circulation. It is settled now
+precisely because nothing has issued a voucher yet.
 
 ---
 

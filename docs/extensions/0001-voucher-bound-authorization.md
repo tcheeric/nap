@@ -275,28 +275,28 @@ nothing — the same property tutorial 03 establishes for the registry.
    checkable by the NAP server but not by the mint, so a thief could still swap the proof.
 2. **P2PK kind carrying voucher tags.** The mint enforces the lock natively today. Voucher
    metadata becomes tag payload, and `VoucherSecret`'s accessors no longer apply.
-3. **A composite kind.** Cleanest model, largest change, needs mint support that does not exist.
+3. **A composite kind.** Cleanest model, largest change, needs mint support that does not
+   exist. **Chosen** — see ADR 0003. Every option turned out to need an upstream change, so
+   the deciding factor became which model is honest rather than which is cheapest.
 
-**Review question B: SETTLED — option 2** (P2PK kind carrying voucher tags), accepted
-2026-09-01. See [ADR 0003](../adr/0003-voucher-secret-modelling.md).
+**Review question B: SETTLED — option 3**, a new composite kind, accepted 2026-09-01. See
+[ADR 0003](../adr/0003-voucher-secret-modelling.md).
 
-Two facts decided it. The Imani mint **does not** enforce P2PK on a VOUCHER secret:
-`VerifyProofsTask.getSpendingCondition()` dispatches first-match on kind, so a VOUCHER secret
-never reaches `P2PKSpendingCondition`, and `VoucherSpendingCondition` has no witness check at
-all. And `VOUCHER` is not a registered NUT kind, so NUT-10's caution applies — "proofs may be
-treated as regular anyone-can-spend tokens" — meaning option 1 would make the §3.1 binding a
-property of one mint's configuration rather than of the credential. Option 2 is enforced by
-every conformant mint today.
+Option 1 leaves the lock unenforced: the Imani mint dispatches first-match on kind, so a
+VOUCHER secret never reaches `P2PKSpendingCondition`, and `VoucherSpendingCondition` has no
+witness check. Option 2 looked free but is not — `VoucherCanonicalBytes` hardcodes the
+`VOUCHER` kind and the voucher id into the bytes the issuer signs, so a P2PK-kind secret
+would carry a signature over a document that never exists on the wire. It also collapses two
+distinct meanings, since `data` would become the lock key and the voucher id would demote to
+a tag.
 
-Cost accepted: `VoucherSecret`'s typed accessors no longer apply, so the resolver reads
-voucher metadata from NUT-10 tags directly.
+Every option needs an upstream change; option 2's apparent cheapness was an error in the
+earlier analysis. So pay for the model where both concerns stay first-class and both are
+enforced.
 
-> **Investigated.** The Imani mint **does not** enforce P2PK on a VOUCHER secret:
-> `VerifyProofsTask.getSpendingCondition()` dispatches first-match on kind, so a VOUCHER
-> secret never reaches `P2PKSpendingCondition`, and `VoucherSpendingCondition` contains no
-> witness check at all. Under option 1 as things stand, the §3.1 binding would be advisory
-> only. See [ADR 0003](../adr/0003-voucher-secret-modelling.md) for the evidence and the
-> two remaining paths.
+Cost: `cashu-lib` (deserialiser, secret class), `cashu-voucher` (canonical bytes and issuer
+signing — this invalidates signatures produced under the old form), and `cashu-mint`
+(dispatch, and `/v1/info` advertising the kind). **NAP must not ship ahead of the mint.**
 
 ---
 
@@ -456,10 +456,10 @@ allowlists.
 - **A.** Widen `AclResolver` with an optional context parameter, or add a distinct interface
   and call site? (§5.1)
 - **B.** ~~VOUCHER-with-P2PK-tags, P2PK-with-voucher-tags, or a composite kind?~~
-  **Settled: option 2**, P2PK kind carrying voucher tags
-  ([ADR 0003](../adr/0003-voucher-secret-modelling.md)). The mint does not enforce P2PK on a
-  VOUCHER secret, and `VOUCHER` is not a registered NUT kind, so option 1 would leave the
-  binding unenforced by any conformant mint.
+  **Settled: option 3**, a new composite kind
+  ([ADR 0003](../adr/0003-voucher-secret-modelling.md)). Option 1 leaves the lock unenforced
+  by the mint; option 2 breaks issuer signing, because the canonical bytes hardcode the
+  VOUCHER kind.
 - **C.** Acceptable staleness between voucher death and session death. (§7.1)
 - **D.** Capability advertisement on `/auth/init`, or fail-closed? (§8)
 - **E.** Should `grant()` be validated against the `PermissionRegistry` at wiring time?
@@ -476,8 +476,9 @@ Worth building, in this order:
 1. **Settle question B first.** Everything downstream is contingent on how the P2PK lock and
    the voucher metadata coexist, and on whether the mint enforces it. If the mint does not
    enforce the lock in the chosen shape, stop: the security argument in §3.1 does not hold.
-   *(Settled 2026-09-01: option 2, P2PK kind carrying voucher tags —
-   [ADR 0003](../adr/0003-voucher-secret-modelling.md).)*
+   *(Settled 2026-09-01: option 3, a new composite kind —
+   [ADR 0003](../adr/0003-voucher-secret-modelling.md). The mint must enforce it before NAP
+   ships, so §11 step 5's coupling now includes the mint.)*
 2. Build the verification client (allowlist, keyset cache, DLEQ, NUT-07) standalone and
    testable, with no NAP dependency.
 3. Fix CONTEXT.md finding 12 (guard audit logging), so §6.2 is observable.
