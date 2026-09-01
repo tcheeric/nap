@@ -168,6 +168,15 @@ export interface NapExpressGuardOptions {
   auditLogger?: AuditLogger;
   /** Pass the same recorder as `NapServerOptions.metrics` to count guard denials. */
   metrics?: MetricsRecorder;
+  /**
+   * The guard's notion of "now", for session expiry, step-up expiry, and ACL
+   * re-resolution.
+   *
+   * Defaults to the wall clock. **Pass the same clock you gave
+   * `NapServerOptions`** if you inject one: a guard on a different clock from
+   * the server disagrees about when a session ends, and the symptom is a login
+   * that succeeds and is then refused by the very next guarded request.
+   */
   clock?: Clock;
 }
 

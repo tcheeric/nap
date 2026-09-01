@@ -2870,6 +2870,13 @@ Two properties worth knowing:
   changed underneath a live session. Collapsing them makes "was this user
   suspended mid-session?" unanswerable from the log.
 
+If you inject a `clock` into `NapServerOptions`, **pass the same one to the
+guards**. They use it for session expiry, step-up expiry, and ACL
+re-resolution, and a guard on a different clock from the server disagrees about
+when a session ends — the symptom is a login that succeeds and is then refused
+by the very next guarded request with `NAP_GUARD_NO_SESSION`. The default is
+the wall clock, so this only matters if you inject one.
+
 A logger that throws costs a log line and nothing else; the denial still goes
 out unchanged. A 500 on exactly one branch would tell an attacker which branch
 they hit, and the guards run outside the auth endpoints' `minAuthResponseMillis`
