@@ -78,6 +78,21 @@ export interface MintClientOptions {
 interface CacheEntry {
   keysets: Map<string, Keyset>;
   expiresAt: number;
+  /**
+   * Whether this entry is already the result of a miss-triggered refetch.
+   *
+   * A keyset miss may mean the mint rotated, so it is worth one refetch. But
+   * the bound has to be per *cache entry*, not per request and not per keyset
+   * id: an attacker sending N unknown ids would otherwise drive N mint fetches,
+   * because each miss clears the cache the next miss would have hit. Keying it
+   * on the id does not help, since every fresh random id is unseen by
+   * construction.
+   *
+   * So: the first miss against a given entry refreshes it, and every later miss
+   * is answered from that refreshed copy until the TTL expires normally. A
+   * genuine rotation is picked up within one request; a flood costs one fetch.
+   */
+  refreshed: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -191,8 +206,14 @@ export function createMintClient(options: MintClientOptions): MintClient {
       });
 
       if (!response.ok) {
+        // 4xx is the mint answering clearly: the request was malformed, the
+        // endpoint is gone, we are rate limited or unauthorized. Reporting that
+        // as `unavailable` would let `onMintUnavailable: 'degrade'` (§7.3) fire
+        // on a definite refusal, which is exactly the confusion the reason codes
+        // exist to prevent. Only 5xx and transport failures are "the mint did
+        // not answer".
         throw new MintUnavailableError(
-          'unavailable',
+          response.status >= 400 && response.status < 500 ? 'malformed_response' : 'unavailable',
           `mint responded ${response.status} for ${url}`
         );
       }
@@ -211,7 +232,7 @@ export function createMintClient(options: MintClientOptions): MintClient {
     }
   }
 
-  async function loadKeysets(origin: string): Promise<Map<string, Keyset>> {
+  async function loadKeysets(origin: string, refreshed = false): Promise<Map<string, Keyset>> {
     const cached = cache.get(origin);
 
     if (cached && cached.expiresAt > clock.nowUnix()) {
@@ -219,7 +240,7 @@ export function createMintClient(options: MintClientOptions): MintClient {
     }
 
     const keysets = parseKeysets(await request(`${origin}/v1/keys`));
-    cache.set(origin, { keysets, expiresAt: clock.nowUnix() + ttl });
+    cache.set(origin, { keysets, expiresAt: clock.nowUnix() + ttl, refreshed });
 
     return keysets;
   }
@@ -230,13 +251,13 @@ export function createMintClient(options: MintClientOptions): MintClient {
       let keysets = await loadKeysets(origin);
       let keyset = keysets.get(keysetId);
 
-      // A miss may just mean the mint rotated since the cache was filled, so
-      // refetch once before concluding the keyset does not exist. Bounded to a
-      // single retry: an attacker supplying random keyset ids must not be able
-      // to drive one mint request per attempt.
-      if (!keyset && cache.has(origin)) {
+      // A miss may mean the mint rotated since the cache was filled, so refetch
+      // once per cache entry before concluding the keyset does not exist. See
+      // `CacheEntry.refreshed` for why the bound is per entry rather than per
+      // request or per id.
+      if (!keyset && cache.get(origin)?.refreshed === false) {
         cache.delete(origin);
-        keysets = await loadKeysets(origin);
+        keysets = await loadKeysets(origin, true);
         keyset = keysets.get(keysetId);
       }
 

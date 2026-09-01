@@ -28,6 +28,7 @@ import {
   type AuditLogger,
   type Clock,
   type EffectiveAcl,
+  type GuardDenialCode,
   type GuardDenialDetails,
   type IssueChallengeResult,
   type MetricsRecorder,
@@ -200,11 +201,11 @@ export interface NapFastifyGuardOptions {
  */
 type GuardContext =
   | { ok: true; session: SessionRecord; acl: EffectiveAcl }
-  | { ok: false; code: typeof GUARD_DENIAL_CODES[keyof typeof GUARD_DENIAL_CODES]; session?: SessionRecord };
+  | { ok: false; code: GuardDenialCode; session?: SessionRecord };
 
 async function denyGuard(
   options: NapFastifyGuardOptions,
-  code: typeof GUARD_DENIAL_CODES[keyof typeof GUARD_DENIAL_CODES],
+  code: GuardDenialCode,
   session: SessionRecord | undefined,
   write: () => void,
   details?: GuardDenialDetails

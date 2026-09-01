@@ -34,13 +34,19 @@ export const GUARD_DENIAL_CODES = {
 
 export type GuardDenialCode = (typeof GUARD_DENIAL_CODES)[keyof typeof GUARD_DENIAL_CODES];
 
+/**
+ * What the guard was checking when it refused.
+ *
+ * Deliberately closed rather than carrying an index signature: an open bag
+ * would silently accept a typo'd `permissions` or `role` and drop it into the
+ * audit record, which is the one place a typo must not go unnoticed. Widen it
+ * when a caller needs a field, not before.
+ */
 export interface GuardDenialDetails {
   /** The permission the guard was checking, when it was a permission guard. */
   permission?: string;
   /** The roles the guard would have accepted, when it was a role guard. */
   roles?: string[];
-  /** Anything else the caller wants on the record. */
-  [key: string]: unknown;
 }
 
 export interface LogGuardDenialOptions {
@@ -86,7 +92,9 @@ export async function logGuardDenial(
       outcome: 'failure',
       npub: options.session?.principal_npub,
       pubkey: options.session?.principal_pubkey,
-      details: options.details,
+      // Spread rather than passed through: `GuardDenialDetails` is deliberately
+      // closed (see its doc comment), and `AuditLogger` takes an open record.
+      details: options.details ? { ...options.details } : undefined,
     });
   } catch {
     // Deliberately swallowed. See the note above: a broken audit sink must cost

@@ -151,6 +151,34 @@ describe('keyset fetch and cache', () => {
     expect(stub.calls).toHaveLength(2);
   });
 
+  it('bounds miss-triggered refetches per cache entry, not per request', async () => {
+    // Found in review: the refetch deleted the cache on every miss, so N
+    // unknown keyset ids cost N mint fetches -- the exact flood the retry was
+    // supposed to prevent. The bound has to be per cache entry, because keying
+    // it on the id cannot help when every attacker id is fresh by construction.
+    const { client: mint, stub } = client();
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await expect(mint.getKey(MINT, `unknown-${attempt}`, 1)).rejects.toMatchObject({
+        reason: 'unknown_keyset',
+      });
+    }
+
+    // One initial load plus one refresh, not eleven.
+    expect(stub.calls).toHaveLength(2);
+  });
+
+  it('still resolves a real keyset after a miss has refreshed the entry', async () => {
+    const { client: mint } = client();
+
+    await expect(mint.getKey(MINT, 'unknown', 1)).rejects.toMatchObject({
+      reason: 'unknown_keyset',
+    });
+
+    // The bound must not make the cache useless: a genuine keyset still works.
+    expect(await mint.getKey(MINT, KEYSET_ID, 1)).toBe(KEY);
+  });
+
   it('fails closed for an amount the keyset does not cover', async () => {
     const { client: mint } = client();
 
@@ -186,10 +214,21 @@ describe('mint unavailability is a distinct, catchable condition (§7.3)', () =>
     await expect(mint.getKey(MINT, KEYSET_ID, 1)).rejects.toMatchObject({ reason: 'unavailable' });
   });
 
-  it('reports a non-2xx as unavailable', async () => {
+  it('reports a 5xx as unavailable', async () => {
     const { client: mint } = client({}, () => new Response('nope', { status: 503 }));
 
     await expect(mint.getKey(MINT, KEYSET_ID, 1)).rejects.toMatchObject({ reason: 'unavailable' });
+  });
+
+  it.each([400, 401, 403, 404, 429])('does not treat %i as unavailable', async (status) => {
+    // Found in review: mapping every non-2xx to `unavailable` would let
+    // `onMintUnavailable: 'degrade'` fire on a mint that answered clearly. A
+    // 4xx is a definite refusal, not silence.
+    const { client: mint } = client({}, () => new Response('no', { status }));
+
+    await expect(mint.getKey(MINT, KEYSET_ID, 1)).rejects.toMatchObject({
+      reason: 'malformed_response',
+    });
   });
 
   it('reports unparseable JSON as unavailable', async () => {

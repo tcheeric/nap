@@ -19,6 +19,7 @@ import {
   type AuditLogger,
   type Clock,
   type EffectiveAcl,
+  type GuardDenialCode,
   type GuardDenialDetails,
   type IssueChallengeResult,
   type MetricsRecorder,
@@ -190,12 +191,11 @@ export interface NapExpressGuardOptions {
  */
 type GuardContext =
   | { ok: true; session: SessionRecord; acl: EffectiveAcl }
-  | { ok: false; code: typeof GUARD_DENIAL_CODES[keyof typeof GUARD_DENIAL_CODES]; session?: SessionRecord };
+  | { ok: false; code: GuardDenialCode; session?: SessionRecord };
 
 async function denyGuard(
-  res: Response,
   options: NapExpressGuardOptions,
-  code: typeof GUARD_DENIAL_CODES[keyof typeof GUARD_DENIAL_CODES],
+  code: GuardDenialCode,
   session: SessionRecord | undefined,
   write: () => void,
   details?: GuardDenialDetails
@@ -750,7 +750,7 @@ export function requirePermission(
       const context = await loadGuardContext(req, options);
 
       if (!context.ok) {
-        await denyGuard(res, options, context.code, context.session, () => unauthorized(res), {
+        await denyGuard(options, context.code, context.session, () => unauthorized(res), {
           permission,
         });
         return;
@@ -758,7 +758,6 @@ export function requirePermission(
 
       if (!context.acl.permissions.includes(permission)) {
         await denyGuard(
-          res,
           options,
           GUARD_DENIAL_CODES.PERMISSION_DENIED,
           context.session,
@@ -776,7 +775,6 @@ export function requirePermission(
         !hasValidStepUpToken(req, context.session, options)
       ) {
         await denyGuard(
-          res,
           options,
           GUARD_DENIAL_CODES.STEP_UP_REQUIRED,
           context.session,
@@ -831,7 +829,7 @@ export function requireRole(
       const context = await loadGuardContext(req, options);
 
       if (!context.ok) {
-        await denyGuard(res, options, context.code, context.session, () => unauthorized(res), {
+        await denyGuard(options, context.code, context.session, () => unauthorized(res), {
           roles: accepted,
         });
         return;
@@ -839,7 +837,6 @@ export function requireRole(
 
       if (!accepted.some((entry) => context.acl.roles.includes(entry))) {
         await denyGuard(
-          res,
           options,
           GUARD_DENIAL_CODES.ROLE_DENIED,
           context.session,
@@ -862,14 +859,14 @@ export function requireStepUp(options: NapExpressGuardOptions): RequestHandler {
       const session = await loadSession(req, options);
 
       if (!session) {
-        await denyGuard(res, options, GUARD_DENIAL_CODES.NO_SESSION, undefined, () =>
+        await denyGuard(options, GUARD_DENIAL_CODES.NO_SESSION, undefined, () =>
           unauthorized(res)
         );
         return;
       }
 
       if (!hasValidStepUpToken(req, session, options)) {
-        await denyGuard(res, options, GUARD_DENIAL_CODES.STEP_UP_REQUIRED, session, () =>
+        await denyGuard(options, GUARD_DENIAL_CODES.STEP_UP_REQUIRED, session, () =>
           forbidden(res, 'step-up required')
         );
         return;
@@ -903,7 +900,7 @@ export function requireSession(options: NapExpressGuardOptions): RequestHandler 
       const context = await loadGuardContext(req, options);
 
       if (!context.ok) {
-        await denyGuard(res, options, context.code, context.session, () => unauthorized(res));
+        await denyGuard(options, context.code, context.session, () => unauthorized(res));
         return;
       }
 

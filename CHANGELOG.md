@@ -31,6 +31,17 @@ All packages in this workspace share a single version.
   years away from every other timestamp in the store. Both now share
   `NapServerOptions.clock`.
 
+- **The mint client no longer treats a 4xx as "the mint is unavailable".** Every non-2xx was
+  reported as `unavailable`, which is the one reason `onMintUnavailable: 'degrade'` (§7.3) is
+  allowed to act on — so a mint answering `400`, `403`, `404`, or `429` could trigger degraded
+  mode, exactly the confusion the reason codes exist to prevent. A 4xx is now
+  `malformed_response`; only 5xx and transport failures are `unavailable`.
+
+- **Keyset refetch on a miss is bounded per cache entry, not per request.** The retry deleted
+  the whole cache on every miss, so N unknown keyset ids cost N mint fetches — the flood the
+  retry was meant to prevent. Measured at 11 fetches for 10 unknown ids, now 2. A genuine
+  rotation is still picked up within one request.
+
 ### Documentation
 
 - **ADR 0003 records the voucher secret-modelling evidence** (`docs/adr/0003-voucher-secret-modelling.md`).
