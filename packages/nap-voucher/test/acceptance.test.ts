@@ -327,3 +327,98 @@ describe('a voucher-bound login, end to end', () => {
     expect(login.body.access_token).toBeUndefined();
   });
 });
+
+/**
+ * The guide's §3.5.11 wiring example, run rather than merely type-checked.
+ *
+ * `docsTypecheck.test.ts` proves the snippet compiles against the real API,
+ * which catches a renamed option but not a wrong one: an example that
+ * constructs a resolver nobody could log in through would type-check happily.
+ * So this builds the resolver exactly as the guide shows and drives a real
+ * login through it.
+ *
+ * Keep the two in step. If this needs a change the guide does not have, the
+ * guide is wrong.
+ */
+describe('the wiring example in guide §3.5.11', () => {
+  it('produces a resolver a real login succeeds through', async () => {
+    const secret = issueVoucher(HOLDER);
+    const minted = mintProof(secret);
+    const registry = {
+      permissions: [{ key: 'voucher:view:sat' }],
+      roles: [{ key: 'voucher-holder' }],
+    };
+
+    // --- exactly as documented, except the mint client, which is stubbed so
+    // the test makes no outbound request. Its construction is covered by
+    // mintClient.test.ts.
+    const mints = createMintAllowlist(['https://mint.example.com']);
+    const issuers = createIssuerAllowlist(
+      [{ mint: 'https://mint.example.com', issuerPubkey: ISSUER_PUBKEY }],
+      mints
+    );
+
+    const aclResolver = createVoucherAclResolver({
+      mintAllowlist: mints,
+      issuerAllowlist: issuers,
+      mintClient: {
+        getKey: async () => minted.A,
+        checkState: async () => 'UNSPENT' as const,
+        clearCache: () => {},
+      } as MintClient,
+      availability: createMintAvailabilityPolicy(),
+      permissionRegistry: registry,
+      grant: (voucher) => ({
+        roles: ['voucher-holder'],
+        permissions: [`voucher:view:${voucher.unit}`],
+      }),
+    });
+    // --- end of the documented snippet
+
+    const options: NapServerOptions = {
+      challengeStore: new InMemoryChallengeStore(),
+      sessionStore: new InMemorySessionStore(),
+      aclResolver,
+      minAuthResponseMillis: 0,
+      clock: { nowUnix: () => NOW },
+    };
+
+    const app = express();
+    app.set('trust proxy', true);
+    app.use(
+      '/auth',
+      createNapExpressRouter({
+        server: options,
+        getExternalBaseUrl: createRequestDerivedBaseUrlResolver(['api.example.com']),
+      })
+    );
+
+    const post = (path: string) =>
+      request(app).post(path).set('host', 'api.example.com').set('x-forwarded-proto', 'https');
+
+    const init = await post('/auth/init').send({ npub: NPUB });
+    const built = await buildAuthCompleteRequest({
+      challenge: init.body,
+      signer: createPrivateKeySigner(PK),
+      createdAt: NOW,
+      voucher: {
+        mint_url: MINT,
+        keyset_id: '00882760bfa2eb41',
+        secret,
+        signature: minted.C,
+        amount: 8,
+        dleq: minted.dleq,
+      },
+    });
+
+    const login = await post('/auth/complete')
+      .set('authorization', built.authorization)
+      .set('content-type', 'application/json')
+      .send(new TextDecoder().decode(built.rawBody));
+
+    expect(login.status).toBe(200);
+    // The permission the documented grant() derives, and which the documented
+    // registry declares. Both halves of the example have to be right for this.
+    expect(login.body.permissions).toEqual(['voucher:view:sat']);
+  });
+});

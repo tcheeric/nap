@@ -140,6 +140,15 @@ All packages in this workspace share a single version.
 
 ### Documentation
 
+- **Integration guide §3.5.11, the voucher resolver wiring** (#30): the documented example is
+  type-checked against the real API *and* executed by a test that drives a real login through
+  it. Type-checking alone catches a renamed option but not a wrong one — an example that
+  constructs a resolver nobody could log in through would compile happily. Both traps found
+  while implementing are documented: guard re-resolution holding a session rather than a
+  credential, and the credential-free login that needs a `fallback`. The §3.5 status table no
+  longer claims shipped work is unstarted.
+
+
 - **Integration guide §3.5 documents mint-backed authorisation.** §3.1–§3.4 answer "what may
   this principal do?" from a stored ACL row; §3.5 covers answering it from a Cashu voucher
   instead. Written for an operator deciding whether to adopt it, so it leads with the tradeoff

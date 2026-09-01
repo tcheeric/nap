@@ -1019,8 +1019,8 @@ re-resolution denials are invisible on exactly the surface that matters most.
 
 #### 3.5.8 Transport: the credential goes in the body
 
-When the completion-body field lands, the credential travels in the
-`/auth/complete` **request body**, not in the NIP-98 event. That placement is
+The credential travels in the `/auth/complete` **request body**, not in the
+NIP-98 event. That placement is
 load-bearing: the `payload` tag is `sha256(rawBody)` (§2), so putting the
 credential in the body means **the signature covers it**. A credential swapped in
 transit changes the hash and fails with `NAP_COMPLETE_PAYLOAD_MISMATCH` — the
@@ -1041,8 +1041,9 @@ once, so verify it before rollout rather than after.
 | Keyset cache, NUT-07 state check | **Shipped** |
 | Mint availability policy | **Shipped** |
 | Guard-level audit logging | **Shipped** (§9.6.1) |
-| `VoucherCredential` type and body field | Not started — unblocked by ADR 0003 |
-| The resolver and its call site | Not started — unblocked by ADR 0003 |
+| `VoucherCredential` type and body field | **Shipped** (§3.5.8) |
+| `createVoucherAclResolver` and its call site | **Shipped** (§3.5.11) |
+| `grant()` registry validation | **Shipped** ([ADR 0004](./adr/0004-voucher-grant-registry-validation.md)) |
 | Session lifecycle / ledger watcher | Not started |
 | `nap-java` mirror | Not started — and it must ship *with* the TypeScript side, never after |
 
@@ -1102,6 +1103,86 @@ This choice is expensive to reverse — the shapes differ on the wire, so vouche
 issued under one are not verifiable under another, and there is no in-place
 migration for a bearer credential already in circulation. It is settled now
 precisely because nothing has issued a voucher yet.
+
+#### 3.5.11 Wiring it up
+
+The resolver composes the pieces above. Everything is injected rather than
+constructed inside, because each part fails at wiring time when it is wrong, and
+that failure belongs to the operator starting the server rather than to the first
+login that happens to present a voucher.
+
+```ts
+import {
+  createIssuerAllowlist,
+  createMintAllowlist,
+  createMintAvailabilityPolicy,
+  createMintClient,
+  createVoucherAclResolver,
+} from '@imani/nap-voucher';
+import type { PermissionRegistry } from '@imani/nap-server';
+
+declare const registry: PermissionRegistry;
+declare const ISSUER_PUBKEY: string;
+
+const mints = createMintAllowlist(['https://mint.example.com']);
+const issuers = createIssuerAllowlist(
+  [{ mint: 'https://mint.example.com', issuerPubkey: ISSUER_PUBKEY }],
+  mints,
+);
+
+const aclResolver = createVoucherAclResolver({
+  mintAllowlist: mints,
+  issuerAllowlist: issuers,
+  mintClient: createMintClient({ allowlist: mints, keysetCacheTtlSeconds: 3600 }),
+  availability: createMintAvailabilityPolicy(),   // defaults to 'deny'
+  permissionRegistry: registry,                   // see below
+  grant: (voucher) => ({
+    roles: ['voucher-holder'],
+    permissions: [`voucher:view:${voucher.unit}`],
+  }),
+});
+```
+
+**`grant()` is your policy, and it stays outside the library.** What a
+`unit: 'sat'` voucher of face value 1000 is *worth* is not something a protocol
+library can know. It receives a `VerifiedVoucher` — every check in §3.5.4 has
+already passed — and returns roles and permissions.
+
+Pass `permissionRegistry` and the result is checked against it: a role or
+permission the registry does not declare denies the login with
+`NAP_VOUCHER_GRANT_NOT_IN_REGISTRY`. This is **not** the wiring-time guarantee
+`validatePermissions()` gives for guards, and cannot be: `grant()` takes a
+verified voucher, so a policy deriving keys from the voucher's own tags has no
+output until a real voucher arrives. Probing it at construction with a synthetic
+voucher would enumerate `voucher:view:PROBE` and validate a set you never grant.
+What the check does buy is turning a silent failure into an audited one — without
+it, a typo'd key issues a session that quietly matches no guard, and the denial
+surfaces later somewhere unrelated. [ADR 0004](./adr/0004-voucher-grant-registry-validation.md)
+records the reasoning.
+
+**Two traps worth knowing before you deploy.**
+
+*The guard trap.* If you also pass this resolver to a guard for per-request
+re-resolution (§9.6), be aware that re-resolution holds a **session, not the
+credential** — that lived in the login body and is gone. The default
+`onMissingCredential: 'deny'` therefore denies every guarded request, and the
+symptom is a login that succeeds followed by a session that can do nothing:
+
+```
+re-resolving guard, default      : login 200 -> guarded request 401
+re-resolving guard, trust-session: login 200 -> guarded request 200
+```
+
+Pass `onMissingCredential: 'trust-session'` to honour the session's snapshot on
+re-resolution. It does not weaken login: a credential-free *login* carries no
+session and is still refused. What it does mean is that a session's authorisation
+is only as fresh as its TTL (§3.5.6), which is why it is an explicit choice.
+
+*The fallback trap.* Without a `fallback`, this resolver denies any login that
+presents no voucher — which is usually what you want, since a resolver wired for
+voucher authorisation that quietly allowed credential-free logins would make the
+credential optional. If your app also supports stored-ACL logins, pass the
+existing resolver as `fallback` rather than wiring two servers.
 
 ---
 
