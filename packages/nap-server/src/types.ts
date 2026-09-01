@@ -389,6 +389,25 @@ export interface NapServerOptions {
    */
   refreshTtlSeconds?: number;
   /**
+   * Absolute ceiling on a session's lifetime, measured from the **original
+   * login** rather than from the last refresh.
+   *
+   * Without it, refresh slides the window forward every time, so a session can
+   * be kept alive indefinitely and the authorization decision made at login
+   * never expires. That is tolerable when the decision came from a stored ACL,
+   * because `resolveEffectiveAcl` re-reads it. It is not tolerable when the
+   * decision came from a credential the server can no longer see — a voucher
+   * that has since been redeemed, revoked, or expired leaves a live session
+   * behind it, and nothing in the refresh path would notice.
+   *
+   * So this is the bound on that staleness, and extension 0001 §7.1 requires
+   * setting it. Once reached, refresh fails and the holder must log in again,
+   * presenting the credential afresh.
+   *
+   * Unset means no ceiling, which preserves existing behaviour.
+   */
+  maxSessionLifetimeSeconds?: number;
+  /**
    * Cap on unexpired `issued` challenges per principal (RFC §17.4). Defaults to
    * 10. Requires `ChallengeStore.countOutstanding`; skipped without it.
    */

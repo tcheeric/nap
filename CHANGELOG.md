@@ -32,6 +32,21 @@ All packages in this workspace share a single version.
   proven. The credential used is deliberately valid — allowlisted, signed, correctly bound —
   because a prober would use one that passes every local check.
 
+- **`NapServerOptions.maxSessionLifetimeSeconds`** (#15): an absolute ceiling on a session's
+  life, measured from the original login rather than the last refresh.
+
+  Found while settling the staleness question: the "cap the session TTL" the spec assumed did
+  not exist. Refresh sets `refresh_expires_at` to `now + refreshTtlSeconds` on every rotation,
+  so a regularly-refreshed session never ended and the authorization decision made at login
+  never expired. Observed: `refresh 5 at t+400000 -> 200, still alive`, against
+  `refresh 2 at t+160000 -> 401` with a 24-hour ceiling.
+
+  Harmless for a stored-ACL decision, which `resolveEffectiveAcl` re-reads per guarded request.
+  Not harmless for one the server cannot re-read, which is what a voucher is after login: a
+  credential redeemed an hour later left a session that outlived it indefinitely. Anchored on
+  `issued_at`, the one timestamp rotation preserves. Unset means no ceiling, so existing
+  behaviour is unchanged.
+
 - **`AclResolutionContext.session` and `onMissingCredential`** (#24): a voucher resolver wired
   as a guard's `aclResolver` denied **every guarded request** — login succeeded, then the
   session could do nothing, and nothing was logged. Re-resolution holds a session, never the

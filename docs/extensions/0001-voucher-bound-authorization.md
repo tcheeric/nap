@@ -387,7 +387,40 @@ rule 2 says removal SHOULD revoke active sessions. Options:
 
 **Recommendation:** short TTL now, ledger watcher later. Per-request state checks are a trap.
 
-**Review question C:** what is the acceptable window between voucher death and session death?
+**Review question C: SETTLED — a 24-hour ceiling, enforced**, accepted 2026-09-01.
+
+Implementing this turned up something the section had assumed away. "Cap the session TTL" was
+not sufficient, because **the cap did not exist**. Refresh sets `refresh_expires_at` to
+`now + refreshTtlSeconds` on every rotation, so the window slides forward indefinitely:
+
+```
+no cap (today)          : refresh 5 at t+400000 -> 200, still alive
+maxSessionLifetimeSeconds 24h : refresh 2 at t+160000 -> 401 (session ended)
+```
+
+A session refreshed regularly never ended, so the staleness window was not "long", it was
+unbounded. That is tolerable for a stored-ACL decision, which `resolveEffectiveAcl` re-reads per
+guarded request. It is not tolerable for a decision the server cannot re-read, which is exactly
+what a voucher is once login is over.
+
+`NapServerOptions.maxSessionLifetimeSeconds` is the fix: an absolute ceiling measured from
+`issued_at`, which survives rotation. Once reached, refresh fails and the holder must log in
+again, presenting the credential afresh.
+
+**The agreed number is 24 hours (86400) as a maximum, and a voucher server SHOULD go lower.**
+The reasoning is that the ceiling is the worst-case interval during which a redeemed or revoked
+voucher still authorises a session, so it should be the shortest value the deployment's users
+will tolerate re-authenticating at. 24 hours matches the upper end of the RFC's refresh
+recommendation, so it costs nothing beyond what a deployment already accepts, and it converts
+"unbounded" into a number an operator can reason about.
+
+This is a ceiling, not a substitute for the ledger watcher. It bounds staleness; it does not
+detect anything. A watcher calling `revokeByPrincipal()` on a terminal transition remains the
+right shape and would reduce the window from hours to seconds.
+
+**Guard cache TTL (§7.2) must be chosen consistently**, and it is a security parameter for the
+same reason: it is the maximum staleness of a re-resolution decision. It should be well below
+the session ceiling, or the ceiling is the only thing bounding anything.
 
 ### 7.2 Re-resolution at the guards
 
@@ -491,7 +524,10 @@ allowlists.
   ([ADR 0003](../adr/0003-voucher-secret-modelling.md)). Option 1 leaves the lock unenforced
   by the mint; option 2 breaks issuer signing, because the canonical bytes hardcode the
   VOUCHER kind.
-- **C.** Acceptable staleness between voucher death and session death. (§7.1)
+- **C.** ~~Acceptable staleness between voucher death and session death.~~ **SETTLED
+  2026-09-01: a 24-hour ceiling via `maxSessionLifetimeSeconds`, and lower where tolerable**
+  (§7.1). Implementing it found that the "cap the TTL" the section assumed did not exist —
+  refresh slid the window forward indefinitely, so staleness was unbounded rather than long.
 - **D.** Capability advertisement on `/auth/init`, or fail-closed? (§8)
 - **E.** ~~Should `grant()` be validated against the `PermissionRegistry` at wiring time?~~
   **SETTLED 2026-09-01: at grant time, not wiring time** —

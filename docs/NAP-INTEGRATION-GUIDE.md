@@ -994,10 +994,40 @@ Three options, in increasing order of how well they work:
 3. **Watch the Nostr voucher ledger** and revoke by principal on a terminal
    transition. The right shape, and it adds no per-request cost.
 
-Short TTL now, ledger watcher later, is the recommended path. Note also that
-nothing stops one live voucher authenticating at several servers at once; making
-a voucher single-use requires a server-side record keyed on the proof's `Y`,
-since actually spending it is forbidden above.
+Short TTL now, ledger watcher later, is the recommended path.
+
+**Option 1 needed building first, because the cap did not exist.** Refresh sets
+`refresh_expires_at` to `now + refreshTtlSeconds` on every rotation, so a
+regularly-refreshed session never ended on its own:
+
+```
+no cap (today)                : refresh 5 at t+400000 -> 200, still alive
+maxSessionLifetimeSeconds 24h : refresh 2 at t+160000 -> 401 (session ended)
+```
+
+Staleness was therefore unbounded, not merely long. That is fine for a
+stored-ACL decision, which is re-read per guarded request; it is not fine for a
+decision the server cannot re-read, which is what a voucher becomes once login
+is over.
+
+```ts
+const server = {
+  refreshTtlSeconds: 86_400,
+  // Absolute ceiling from the original login. `issued_at` survives rotation,
+  // so this is the one clock refresh cannot push forward.
+  maxSessionLifetimeSeconds: 86_400,
+};
+```
+
+**Set it to 24 hours at most, and lower if your users will tolerate it.** The
+ceiling *is* the worst-case window in which a redeemed or revoked voucher still
+authorises a session. It bounds staleness rather than detecting anything — a
+ledger watcher would cut the window from hours to seconds — but it turns
+"unbounded" into a number you can defend.
+
+Note also that nothing stops one live voucher authenticating at several servers
+at once; making a voucher single-use requires a server-side record keyed on the
+proof's `Y`, since actually spending it is forbidden above.
 
 #### 3.5.7 Failure codes
 

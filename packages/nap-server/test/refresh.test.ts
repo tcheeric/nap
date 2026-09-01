@@ -320,3 +320,79 @@ describe('refresh tokens (RFC §14.1)', () => {
     expect(JSON.stringify(toPublicSessionView(session))).not.toContain(session.refresh_token!);
   });
 });
+
+/**
+ * The absolute ceiling (#15, extension 0001 §7.1).
+ *
+ * Each rotation slides `refresh_expires_at` forward from *now*, so a session
+ * that is refreshed regularly never ends on its own. For a stored-ACL decision
+ * that is fine — `resolveEffectiveAcl` re-reads the row on every guarded
+ * request. For a decision that came from a credential the server cannot see
+ * again, it is unbounded staleness: a voucher redeemed an hour after login
+ * leaves a session that outlives it indefinitely.
+ */
+describe('maxSessionLifetimeSeconds bounds credential staleness', () => {
+  it('lets a session live indefinitely when unset, which is the problem', async () => {
+    // Not aspirational: this is today's behaviour, and the reason the option
+    // exists. Four rotations well past the refresh TTL, still alive.
+    const harness = buildHarness();
+    let session = await login(harness.options);
+
+    for (let index = 1; index <= 4; index += 1) {
+      harness.setNow(NOW + index * (REFRESH_TTL - 100));
+      const outcome = await refreshSession({ refreshToken: session.refresh_token! }, harness.options);
+
+      expect(outcome.ok).toBe(true);
+      session = (outcome as { ok: true; session: SessionRecord }).session;
+    }
+
+    // Long past the original refresh window, and the window has moved with it.
+    expect(session.refresh_expires_at!).toBeGreaterThan(NOW + 4 * REFRESH_TTL - 500);
+  });
+
+  it('ends the session once the ceiling is reached, measured from the original login', async () => {
+    const harness = buildHarness({ maxSessionLifetimeSeconds: 2 * REFRESH_TTL });
+    let session = await login(harness.options);
+
+    // Two refreshes inside the ceiling, each before the current token expires.
+    // The second matters: it pushes the rotated token's own window out past the
+    // ceiling, which is what creates a moment where the token is still valid
+    // but the session is too old. Refreshing only once cannot produce that.
+    for (const at of [REFRESH_TTL - 100, 2 * REFRESH_TTL - 200]) {
+      harness.setNow(NOW + at);
+      const outcome = await refreshSession({ refreshToken: session.refresh_token! }, harness.options);
+
+      expect(outcome.ok).toBe(true);
+      session = (outcome as { ok: true; session: SessionRecord }).session;
+    }
+
+    // Past the ceiling, but the rotated refresh token is still young and would
+    // be accepted on its own. Without that gap the test would pass with the
+    // ceiling disabled -- the token would simply have aged out -- and would
+    // prove nothing.
+    const probeAt = NOW + 2 * REFRESH_TTL + 100;
+    harness.setNow(probeAt);
+    expect(session.refresh_expires_at!).toBeGreaterThan(probeAt);
+    const second = await refreshSession({ refreshToken: session.refresh_token! }, harness.options);
+
+    expect(second.ok).toBe(false);
+  });
+
+  it('measures from issued_at, which rotation preserves', async () => {
+    // If the ceiling were measured from anything refresh moves forward, it
+    // would never be reached and the option would silently do nothing.
+    const harness = buildHarness({ maxSessionLifetimeSeconds: REFRESH_TTL });
+    const session = await login(harness.options);
+
+    harness.setNow(NOW + REFRESH_TTL - 10);
+    const inside = await refreshSession({ refreshToken: session.refresh_token! }, harness.options);
+    expect(inside.ok).toBe(true);
+
+    const rotated = (inside as { ok: true; session: SessionRecord }).session;
+    expect(rotated.issued_at).toBe(session.issued_at);
+
+    harness.setNow(NOW + REFRESH_TTL);
+    const outside = await refreshSession({ refreshToken: rotated.refresh_token! }, harness.options);
+    expect(outside.ok).toBe(false);
+  });
+});

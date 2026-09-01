@@ -980,6 +980,26 @@ async function refreshSessionUnpadded(
     return failure('NAP_REFRESH_EXPIRED');
   }
 
+  // The absolute ceiling, measured from the original login rather than the last
+  // refresh. Each rotation slides `refresh_expires_at` forward, so without this
+  // a session never ends and an authorization decision made at login never
+  // expires -- which for a credential the server can no longer re-read (a
+  // voucher since redeemed or revoked) means unbounded staleness.
+  //
+  // `issued_at` survives rotation, which is what makes it the right anchor;
+  // anything refreshed forward would measure the wrong interval.
+  const maxLifetime = options.maxSessionLifetimeSeconds;
+
+  if (maxLifetime !== undefined && now >= session.issued_at + maxLifetime) {
+    await logFailure(auditLogger, 'NAP_REFRESH_EXPIRED', {
+      session_id: session.session_id,
+      // Distinguishes "this refresh token aged out" from "this session has run
+      // its full life", which are the same 401 but very different operationally.
+      reason: 'max_session_lifetime',
+    });
+    return failure('NAP_REFRESH_EXPIRED');
+  }
+
   // No voucher: a refresh sees a session, not the completion body that carried
   // the credential. A voucher resolver must therefore answer from cached state
   // here, and the cache TTL is what bounds how stale that answer can be.
