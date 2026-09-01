@@ -1,5 +1,9 @@
 # @imani/nap-voucher
 
+> **Why a mint is involved:**
+> [how NAP uses a Cashu mint for authorisation](../../docs/explanation/mint-backed-authorisation.md).
+> This README is the API surface.
+
 Verification primitives for **NAP Extension 0001 — Voucher-Bound Authorization**
 (`docs/extensions/0001-voucher-bound-authorization.md`).
 

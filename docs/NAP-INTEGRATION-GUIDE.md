@@ -743,6 +743,12 @@ something. RFC §7.1 and §10.3 spell this out.
 
 ### 3.5 Mint-backed authorisation
 
+> For *why* a mint is involved at all — the problem it solves, the naive design it
+> replaces, and what it costs — see
+> [how NAP uses a Cashu mint for authorisation](./explanation/mint-backed-authorisation.md).
+> This section is the operator-facing account: what to wire, in what order, and what fails.
+
+
 > **Status: partially implemented, not shippable yet.** The verification
 > primitives below are built, tested, and released in `@imani/nap-voucher`. The
 > resolver that joins them to a login is not, because it is blocked on an

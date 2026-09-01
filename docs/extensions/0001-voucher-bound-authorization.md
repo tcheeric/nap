@@ -1,5 +1,10 @@
 # NAP Extension 0001 — Voucher-Bound Authorization
 
+> **New to this?** Read
+> [how NAP uses a Cashu mint for authorisation](../explanation/mint-backed-authorisation.md)
+> first. It explains why a mint is involved and what the design costs; this document is the
+> normative specification and assumes you already know that.
+
 **Status:** Draft, for review. Partially implemented (verification primitives only). Not part of the core profile.
 **Operator-facing summary:** [integration guide §3.5](../NAP-INTEGRATION-GUIDE.md#35-mint-backed-authorisation) — this document is the design rationale; §3.5 is what an integrator reads.
 **Extends:** `docs/NAP-v2-RFC.md` §15 (ACL and Authorization), §22 (Open Extensions, items 1 and 5).
