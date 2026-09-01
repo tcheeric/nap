@@ -43,6 +43,7 @@ export type {
 export type {
   AclDecision,
   AclRecord,
+  AclResolutionContext,
   AclStore,
   AclResolver,
   AudienceResolver,

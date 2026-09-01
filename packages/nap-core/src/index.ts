@@ -32,6 +32,7 @@ export {
 export type {
   AclDecision,
   AuthCompleteRequest,
+  VoucherCredential,
   AuthFailureResponse,
   AuthInitRequest,
   AuthInitResponse,

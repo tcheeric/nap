@@ -22,6 +22,68 @@ export interface AuthCompleteRequest {
    * computes.
    */
   step_up?: boolean;
+  /**
+   * A voucher presented as the source of this session's authorization
+   * (extension 0001).
+   *
+   * In the body rather than the NIP-98 event, and that placement is
+   * load-bearing: the `payload` tag is `sha256(rawBody)`, so the signature
+   * covers the credential. A credential swapped in transit changes the hash and
+   * the completion fails with `NAP_COMPLETE_PAYLOAD_MISMATCH` — the same
+   * mechanism that already protects `step_up`.
+   *
+   * Additive and optional. A server without the extension ignores it, the
+   * payload hash still matches because it hashes whatever bytes arrived, and
+   * the ACL falls through to the store.
+   */
+  voucher?: VoucherCredential;
+}
+
+/**
+ * A Cashu voucher presented as an authorization credential (extension 0001).
+ *
+ * Carries what a server needs to verify the voucher without trusting the
+ * client: which mint signed it, the proof itself, and the DLEQ that proves the
+ * mint signed it.
+ *
+ * The secret is a `P2PK_VOUCHER` NUT-10 secret — voucher metadata in the tags,
+ * and in `data` the public key `K` that this completion's NIP-98 event must be
+ * signed by. That equality is the whole design: holding the credential without
+ * `K` proves nothing, because the completion cannot be signed.
+ */
+export interface VoucherCredential {
+  /**
+   * Absolute HTTPS URL of the mint that signed the proof. REQUIRED.
+   *
+   * A Cashu proof carries a keyset id, not a mint URL, so without this the
+   * server cannot fetch `/v1/keys` and cannot verify anything at all.
+   *
+   * **Client-supplied, and therefore matched against an allowlist rather than
+   * trusted to select one.** A request field choosing the mint a credential is
+   * verified against is the same vulnerability class as a request header
+   * choosing the NIP-98 audience.
+   */
+  mint_url: string;
+  /** Keyset id from the proof, used to resolve the mint's public key. */
+  keyset_id: string;
+  /** The NUT-10 `P2PK_VOUCHER` secret, in its canonical serialization. */
+  secret: string;
+  /** The unblinded signature `C`, hex. */
+  signature: string;
+  /** The proof's amount, which selects the key within the keyset. */
+  amount: number;
+  /**
+   * NUT-12 DLEQ proof. REQUIRED.
+   *
+   * Proves the mint signed this proof. It says nothing about whether the proof
+   * is still unspent — a burned voucher carries a perfectly valid DLEQ — so it
+   * is necessary rather than sufficient, and a NUT-07 state check still runs.
+   * Required so that a server in mint-degraded mode still has cryptographic
+   * footing.
+   */
+  dleq: { e: string; s: string; r: string };
+  /** NUT-11 P2PK witness, when the mint requires one for the state check. */
+  witness?: string;
 }
 
 export interface AuthSuccessResponse {

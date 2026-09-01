@@ -8,6 +8,7 @@ import type {
   ChallengeRecord,
   NapErrorCode,
   SessionRecord,
+  VoucherCredential,
   VerifyCompleteFailure,
   VerifyCompleteResult,
 } from '@imani/nap-core';
@@ -198,8 +199,43 @@ export interface RateLimiter {
   check(key: RateLimitKey): Promise<RateLimitDecision> | RateLimitDecision;
 }
 
+/**
+ * What the caller knows about this authorization attempt, beyond the principal.
+ *
+ * Optional at every call site, because only login has a credential to pass:
+ * guard re-resolution and refresh have a session and nothing else.
+ */
+export interface AclResolutionContext {
+  /**
+   * The voucher presented with this completion, when there was one
+   * (extension 0001).
+   *
+   * Absent on guard re-resolution and refresh, which see only a session. A
+   * resolver that needs the credential on every request cannot get it here and
+   * should cache its decision instead — see the extension's §7.2, where the
+   * cache TTL becomes the maximum staleness of an authorization decision.
+   */
+  voucher?: VoucherCredential;
+  /**
+   * The server's notion of now, in epoch seconds.
+   *
+   * Passed rather than read, so a resolver checking an expiry agrees with the
+   * clock the rest of the server is using. A component reading the wall clock
+   * while the server ran on an injected one has been a real bug here twice.
+   */
+  now: number;
+}
+
 export interface AclResolver {
-  resolve(npub: string, pubkey: string): Promise<AclDecision>;
+  /**
+   * Decide what this principal may do.
+   *
+   * The third parameter is **optional and additive**. Existing resolvers
+   * declaring only two parameters keep compiling and behaving identically —
+   * `createRegistryAclResolver` ignores it, which is correct: a registry
+   * resolver decides on the stored row regardless of what else was presented.
+   */
+  resolve(npub: string, pubkey: string, context?: AclResolutionContext): Promise<AclDecision>;
 }
 
 export interface AclStore {
