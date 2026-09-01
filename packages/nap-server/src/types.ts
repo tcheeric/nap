@@ -408,6 +408,20 @@ export interface NapServerOptions {
    */
   maxSessionLifetimeSeconds?: number;
   /**
+   * Extensions this server understands, advertised on `/auth/init`.
+   *
+   * Purely declarative: setting it enables nothing, and omitting it disables
+   * nothing. It exists so a client holding a credential can tell "this server
+   * has no such feature" from "your credential was refused" — two 401s that are
+   * deliberately identical but call for opposite actions.
+   *
+   * Because it enables nothing, a stale value is a lie the server tells about
+   * itself rather than a security hole. Set it beside the wiring it describes.
+   *
+   * Extension 0001 uses `'voucher-acl/1'`.
+   */
+  supportedExtensions?: readonly string[];
+  /**
    * Cap on unexpired `issued` challenges per principal (RFC §17.4). Defaults to
    * 10. Requires `ChallengeStore.countOutstanding`; skipped without it.
    */

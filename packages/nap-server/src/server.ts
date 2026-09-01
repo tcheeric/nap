@@ -590,6 +590,11 @@ async function issueChallengeUnpadded(
         auth_method: record.auth_method,
         issued_at: record.issued_at,
         expires_at: record.expires_at,
+        // Omitted entirely when unconfigured, rather than sent as [], so
+        // "makes no claim" stays distinguishable from "supports nothing".
+        ...(options.supportedExtensions?.length
+          ? { supported_extensions: [...options.supportedExtensions] }
+          : {}),
       },
     };
   } catch {

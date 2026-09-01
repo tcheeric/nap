@@ -9,6 +9,27 @@ export interface AuthInitResponse {
   auth_method: 'POST';
   issued_at: number;
   expires_at: number;
+  /**
+   * Optional extensions this server understands, e.g. `['voucher-acl/1']`.
+   *
+   * Exists because a 401 does not tell a client holding a credential *which*
+   * mistake it made, and the two possibilities call for opposite actions: a
+   * server without the extension should be retried without the credential,
+   * while a dead or forged credential should not be retried at all. Neither is
+   * recoverable from a response that is deliberately identical in both cases.
+   *
+   * Safe to publish, unlike the failure codes it substitutes for: this is a
+   * property of the *server*, known to anyone who reads its docs, and says
+   * nothing about any principal, credential, or mint. It is sent before the
+   * client has signed anything, and it is not attacker-useful — a server that
+   * omits it still rejects everything it would have rejected anyway.
+   *
+   * Absent means "makes no claim", which is what every existing server sends.
+   * A client MUST treat absence as unknown rather than as a denial: an older
+   * server that supports an extension but predates this field would otherwise
+   * be locked out of it.
+   */
+  supported_extensions?: string[];
 }
 
 export interface AuthCompleteRequest {

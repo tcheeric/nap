@@ -487,8 +487,36 @@ additive field on `AuthInitResponse`, which the RFC's §24.3 constraints permit 
 { supported_extensions?: string[] }   // e.g. ["voucher-acl/1"]
 ```
 
-**Review question D:** is a capability list on `/auth/init` worth the schema change, or is
-fail-closed with an audit code good enough?
+**Review question D: SETTLED — advertise it**, accepted 2026-09-01. The extension name string
+is fixed as **`voucher-acl/1`**, and `NapServerOptions.supportedExtensions` publishes it on
+`/auth/init`.
+
+Fail-closed is correct and stays correct; the problem is that it is not *actionable*. A client
+holding a credential that receives a 401 faces two possibilities calling for opposite responses:
+
+| Cause | Correct client action |
+| --- | --- |
+| Server has no voucher support | Retry **without** the credential — a stored-ACL login may well succeed |
+| Credential dead, forged, or unbound | Do **not** retry; tell the holder their voucher is bad |
+
+Guessing wrong costs either a login that could have worked or a wasted signing prompt and a
+misleading error. Nothing in the response distinguishes them, and §6.2 requires that it never
+does — so the signal has to arrive *before* the attempt, which is what makes `/auth/init` the
+right place rather than a richer error.
+
+This publishes nothing sensitive, which is why it does not undermine §6.2. The field describes
+the **server**, not a principal: it names a feature anyone can read about in the documentation,
+it is sent before the client has signed anything, and it says nothing about any credential,
+mint, or issuer. A server that omits it still refuses everything it would have refused.
+
+Two properties worth stating, both tested:
+
+- **Absence means "makes no claim", not "supports nothing".** Every server shipped so far omits
+  the field, and an older server may support an extension while predating the field entirely. A
+  client MUST treat absence as unknown and fall back to trying, rather than as a denial.
+- **The option is declarative and enables nothing.** Setting it does not turn the extension on
+  and omitting it does not turn it off. A stale value is therefore a lie the server tells about
+  itself rather than a security hole — but set it beside the wiring it describes.
 
 ---
 
@@ -528,7 +556,10 @@ allowlists.
   2026-09-01: a 24-hour ceiling via `maxSessionLifetimeSeconds`, and lower where tolerable**
   (§7.1). Implementing it found that the "cap the TTL" the section assumed did not exist —
   refresh slid the window forward indefinitely, so staleness was unbounded rather than long.
-- **D.** Capability advertisement on `/auth/init`, or fail-closed? (§8)
+- **D.** ~~Capability advertisement on `/auth/init`, or fail-closed?~~ **SETTLED 2026-09-01:
+  advertise `voucher-acl/1` via `supportedExtensions`** (§8). Fail-closed is correct but not
+  actionable — the two causes of a 401 call for opposite client actions, and §6.2 forbids the
+  response distinguishing them, so the signal must precede the attempt.
 - **E.** ~~Should `grant()` be validated against the `PermissionRegistry` at wiring time?~~
   **SETTLED 2026-09-01: at grant time, not wiring time** —
   [ADR 0004](../adr/0004-voucher-grant-registry-validation.md). Wiring-time validation is not

@@ -32,6 +32,17 @@ All packages in this workspace share a single version.
   proven. The credential used is deliberately valid — allowlisted, signed, correctly bound —
   because a prober would use one that passes every local check.
 
+- **`supported_extensions` on `/auth/init`, and `NapServerOptions.supportedExtensions`** (#16):
+  lets a client holding a credential tell "this server has no such feature" from "your
+  credential was refused" — two 401s that are deliberately identical but call for opposite
+  actions (retry without the credential, versus do not retry at all). §6.2 forbids the response
+  distinguishing them, so the signal has to precede the attempt.
+
+  Publishes nothing sensitive: it describes the server rather than a principal, names a feature
+  anyone can read about, and is sent before the client signs anything. Absence means "makes no
+  claim" rather than "supports nothing", so an older server that predates the field is not
+  locked out of an extension it supports. Extension 0001's name is `voucher-acl/1`.
+
 - **`NapServerOptions.maxSessionLifetimeSeconds`** (#15): an absolute ceiling on a session's
   life, measured from the original login rather than the last refresh.
 
