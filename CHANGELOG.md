@@ -139,6 +139,21 @@ All packages in this workspace share a single version.
 
 ### Fixed
 
+- **A malformed NIP-98 `u` tag is a mismatch, not an unhandled exception** (#33).
+  `exactUrlMatch()` called `new URL()` on the `u` tag with no guard, and that tag is
+  attacker-supplied, so a completion carrying `u: "not-a-url"` threw `TypeError` out of
+  `verifyNip98Completion()` instead of returning `NAP_COMPLETE_URL_MISMATCH`. On an
+  unauthenticated endpoint that cost three things at once: the adapter answered `500` rather
+  than the uniform `401`, the response skipped the `padAuthResponse()` floor that makes
+  failures indistinguishable (RFC §15), and the throw happened before `logFailure()` so the
+  request produced no audit record at all. A valid signature is needed to reach the check,
+  but any throwaway key will do.
+
+  Half the added tests exist to stop the fix going the other way: this is the audience
+  binding, so making the function total by loosening the comparison would be an
+  authentication bypass. A trailing slash, a different path, host, scheme or port, and
+  userinfo must all still fail. `nap-java` was unaffected, having always caught here.
+
 - **`writeNapCookieSuccess` now defaults to a protected cookie, and merges caller options
   over those defaults** (#34). The default path emitted `session=TOKEN; Path=/`, with no
   `HttpOnly`, `Secure` or `SameSite`, so the access token was readable by any script on the
@@ -154,6 +169,43 @@ All packages in this workspace share a single version.
   explicit `httpOnly: false` winning for local development. `nap-java` already defaulted
   this way, so the divergence where one deployment was safe on the JVM and not on Node is
   closed. Both adapters fixed, with the partial-options case covered as a regression test.
+
+- **The in-memory stores evict** (#35). `InMemoryChallengeStore` and `InMemorySessionStore`
+  never removed a record: challenges were marked expired and sessions stamped `revoked_at`,
+  and both stayed resident for the life of the process. Both maps are filled by
+  unauthenticated traffic, and the outstanding-challenge caps do not help because they count
+  only records still in `issued`, so they bound concurrency rather than memory.
+
+  The retention bounds are deliberate rather than plain expiry. A challenge is kept until
+  `result_cache_until` when it was redeemed, because that window is what makes a client
+  retry idempotent under RFC §13.3. A session is kept until `expires_at` or
+  `refresh_expires_at`, whichever is later, because `getByRefreshToken()` answers for
+  revoked sessions so a replay stays recognisable, and evicting at the access window would
+  turn a detected reuse into a merely unknown token. Both sweep on the write path as well as
+  the read path: sweeping only on reads left a server that takes logins and serves no
+  guarded requests growing without bound, which is the shape of the attack rather than an
+  edge case.
+
+- **`/auth/session` reads expiry from the server's clock** (#38). Both adapters built the
+  handler's guard options without `clock`, so a deployment on an injected clock judged
+  expiry by the wall clock on exactly that one endpoint, while `/auth/logout` two functions
+  away passed it correctly. A session live on the injected clock answered `401`. The route
+  options now come from one builder, so the call sites cannot drift apart again.
+
+### Security
+
+- **Production dependency advisories cleared, and scanning added to CI** (#36). `npm audit
+  --omit=dev` went from four high-severity findings to none. Two of them bore directly on
+  controls this repository implements: Fastify's `request.protocol` and `request.host`
+  spoofing sits underneath `createRequestDerivedBaseUrlResolver()`, and `body-parser`
+  silently disabling size enforcement on an invalid limit sits underneath the 1 kB cap
+  `createNapExpressJsonParser()` applies to an unauthenticated endpoint.
+
+  `vitest` moved 2 to 4 and `testcontainers` 10 to 12, both semver-major, clearing the
+  critical advisory on the test runner. CI now audits the production tree as a gate and the
+  full tree advisorily, which is the split that keeps it tuned: a dev-only advisory should
+  not wedge every unrelated pull request. CodeQL and Dependabot added, and `SECURITY.md`
+  records the controls that are repository settings rather than files.
 
 - **`maxSessionLifetimeSeconds` now clamps the tokens it issues**, so the ceiling is a wall
   rather than an estimate. It previously gated only the *decision* to refresh: a refresh one
