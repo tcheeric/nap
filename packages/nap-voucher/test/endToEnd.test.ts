@@ -393,14 +393,17 @@ describe('extension 0001 end to end: a voucher authorizes a real NAP login', () 
       credentials,
     });
 
-    const sessionStore = new InMemorySessionStore();
+    // Stores share the pinned clock: an eviction sweep on the wall clock would
+    // collect these fixed-timestamp records before the guard ever reads them.
+    const clock = { nowUnix: () => now };
+    const sessionStore = new InMemorySessionStore({ clock });
     const serverOptions: NapServerOptions = {
-      challengeStore: new InMemoryChallengeStore(),
+      challengeStore: new InMemoryChallengeStore({ clock }),
       sessionStore,
       aclResolver,
       auditLogger,
       minAuthResponseMillis: 0,
-      clock: { nowUnix: () => now },
+      clock,
       randomSource: {
         randomBytes: (length: number) =>
           new Uint8Array(Array.from({ length }, (_, index) => (index + 7) % 255)),
@@ -422,7 +425,7 @@ describe('extension 0001 end to end: a voucher authorizes a real NAP login', () 
         sessionStore,
         aclResolver,
         auditLogger,
-        clock: { nowUnix: () => now },
+        clock,
       }),
       (_req, res) => {
         res.status(200).json({ status: 'ok' });

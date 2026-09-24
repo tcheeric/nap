@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 All packages in this workspace share a single version.
 
-## [Unreleased]
+## [0.11.0] - 2026-09-24
+
+Minor rather than patch, and the reason is one line of behaviour: the session cookie now
+carries `Secure` by default. A browser will not send a `Secure` cookie over `http://`, so a
+deployment that terminates TLS nowhere loses its sessions on upgrade. That is a real break
+even though the change is strictly more secure, and it is the case to read before adopting.
+
+The other changes are additive or bug fixes. `InMemoryChallengeStore` and
+`InMemorySessionStore` gained an optional constructor argument, and both now drop records
+past their retention bound, so a consumer holding a `challenge_id` past its TTL sees `null`
+where it previously saw a stale record.
 
 ### Added
 
@@ -138,6 +148,85 @@ All packages in this workspace share a single version.
   `GET /v1/keys` and never issues.
 
 ### Fixed
+
+- **A malformed NIP-98 `u` tag is a mismatch, not an unhandled exception** (#33).
+  `exactUrlMatch()` called `new URL()` on the `u` tag with no guard, and that tag is
+  attacker-supplied, so a completion carrying `u: "not-a-url"` threw `TypeError` out of
+  `verifyNip98Completion()` instead of returning `NAP_COMPLETE_URL_MISMATCH`. On an
+  unauthenticated endpoint that cost three things at once: the adapter answered `500` rather
+  than the uniform `401`, the response skipped the `padAuthResponse()` floor that makes
+  failures indistinguishable (RFC §15), and the throw happened before `logFailure()` so the
+  request produced no audit record at all. A valid signature is needed to reach the check,
+  but any throwaway key will do.
+
+  Half the added tests exist to stop the fix going the other way: this is the audience
+  binding, so making the function total by loosening the comparison would be an
+  authentication bypass. A trailing slash, a different path, host, scheme or port, and
+  userinfo must all still fail. `nap-java` was unaffected, having always caught here.
+
+- **`writeNapCookieSuccess` now defaults to a protected cookie, and merges caller options
+  over those defaults** (#34). The default path emitted `session=TOKEN; Path=/`, with no
+  `HttpOnly`, `Secure` or `SameSite`, so the access token was readable by any script on the
+  page, travelled in cleartext, and rode along on cross-site requests. The helper's whole
+  stated purpose is keeping that credential away from script, and `toPublicSessionView`
+  already omits `access_token` from `GET /auth/session` on the assumption of an `HttpOnly`
+  cookie the default did not produce.
+
+  The second half was worse: partial options replaced the attributes rather than adding to
+  them, so `{ domain: '.example.com' }` (a caller setting one attribute, the case a real
+  deployment hits) silently dropped all three protections. Options are now spread over
+  `{ httpOnly: true, secure: true, sameSite: 'lax', path: '/' }`, which also leaves an
+  explicit `httpOnly: false` winning for local development. `nap-java` already defaulted
+  this way, so the divergence where one deployment was safe on the JVM and not on Node is
+  closed. Both adapters fixed, with the partial-options case covered as a regression test.
+
+- **The in-memory stores evict** (#35). `InMemoryChallengeStore` and `InMemorySessionStore`
+  never removed a record: challenges were marked expired and sessions stamped `revoked_at`,
+  and both stayed resident for the life of the process. Both maps are filled by
+  unauthenticated traffic, and the outstanding-challenge caps do not help because they count
+  only records still in `issued`, so they bound concurrency rather than memory.
+
+  The retention bounds are deliberate rather than plain expiry. A challenge is kept until
+  `result_cache_until` when it was redeemed, because that window is what makes a client
+  retry idempotent under RFC §13.3. A session is kept until `expires_at` or
+  `refresh_expires_at`, whichever is later, because `getByRefreshToken()` answers for
+  revoked sessions so a replay stays recognisable, and evicting at the access window would
+  turn a detected reuse into a merely unknown token. Both sweep on the write path as well as
+  the read path: sweeping only on reads left a server that takes logins and serves no
+  guarded requests growing without bound, which is the shape of the attack rather than an
+  edge case.
+
+- **`/auth/session` reads expiry from the server's clock** (#38). Both adapters built the
+  handler's guard options without `clock`, so a deployment on an injected clock judged
+  expiry by the wall clock on exactly that one endpoint, while `/auth/logout` two functions
+  away passed it correctly. A session live on the injected clock answered `401`. The route
+  options now come from one builder, so the call sites cannot drift apart again.
+
+### Security
+
+- **Production dependency advisories cleared, and scanning added to CI** (#36). `npm audit
+  --omit=dev` went from four high-severity findings to none. Two of them bore directly on
+  controls this repository implements: Fastify's `request.protocol` and `request.host`
+  spoofing sits underneath `createRequestDerivedBaseUrlResolver()`, and `body-parser`
+  silently disabling size enforcement on an invalid limit sits underneath the 1 kB cap
+  `createNapExpressJsonParser()` applies to an unauthenticated endpoint.
+
+  `vitest` moved 2 to 4 and `testcontainers` 10 to 12, both semver-major, clearing the
+  critical advisory on the test runner. CI now audits the production tree as a gate and the
+  full tree advisorily, which is the split that keeps it tuned: a dev-only advisory should
+  not wedge every unrelated pull request. CodeQL and Dependabot added, and `SECURITY.md`
+  records the controls that are repository settings rather than files.
+
+  **Amended after CI ran.** "None" above was true at `--audit-level=high`, which is where the
+  gate was set, and three moderate `qs` advisories were sitting under it the whole time:
+  GHSA-4mjr-xmp4-gh2g, GHSA-q8mj-m7cp-5q26 and GHSA-x5fp-wj9c-mxmx. `qs` is Express's query
+  parser, so they are on the request path of every deployment using the Express adapter, not
+  a build-time concern.
+
+  Express pins `qs` at `~6.14.0` and `~` locks the minor, so no upgrade of Express reaches
+  the fix. An `overrides` entry scoped to `express` pulls it to 6.16.0. The production gate
+  now runs at `--audit-level=moderate`, because a threshold only holds the line it is set at,
+  and the production tree is at zero rather than at "nothing above high".
 
 - **`maxSessionLifetimeSeconds` now clamps the tokens it issues**, so the ceiling is a wall
   rather than an estimate. It previously gated only the *decision* to refresh: a refresh one

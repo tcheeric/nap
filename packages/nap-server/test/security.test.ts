@@ -35,10 +35,14 @@ const OTHER_KEY_BYTES = hexToBytes(
 const PUBKEY = getPublicKey(PRIVATE_KEY_BYTES);
 const NPUB = nip19.npubEncode(PUBKEY);
 
+/** Shared by the stores too: a store sweeping on the wall clock would evict
+ * these fixed-timestamp fixtures the moment it ran. */
+const FIXED_CLOCK = { nowUnix: () => NOW };
+
 function buildOptions(overrides: Partial<NapServerOptions> = {}): NapServerOptions {
   return {
-    challengeStore: new InMemoryChallengeStore(),
-    sessionStore: new InMemorySessionStore(),
+    challengeStore: new InMemoryChallengeStore({ clock: FIXED_CLOCK }),
+    sessionStore: new InMemorySessionStore({ clock: FIXED_CLOCK }),
     aclResolver: {
       async resolve() {
         return { allowed: true, roles: ['merchant'], permissions: ['voucher:issue'] };
@@ -46,7 +50,7 @@ function buildOptions(overrides: Partial<NapServerOptions> = {}): NapServerOptio
     },
     minAuthResponseMillis: 0,
     responseJitterMillis: 0,
-    clock: { nowUnix: () => NOW },
+    clock: FIXED_CLOCK,
     randomSource: {
       // Distinct per call so challenge ids do not collide across iterations.
       randomBytes(length: number) {
@@ -128,7 +132,7 @@ describe('rate limiting (RFC §17.1)', () => {
     const options = buildOptions({
       rateLimiter: createInMemoryRateLimiter({
         maxPerWindow: 2,
-        clock: { nowUnix: () => NOW },
+        clock: FIXED_CLOCK,
       }),
     });
 
@@ -147,7 +151,7 @@ describe('rate limiting (RFC §17.1)', () => {
   it('caps a caller address independently of the principal', async () => {
     const limiter = createInMemoryRateLimiter({
       maxPerWindow: 1,
-      clock: { nowUnix: () => NOW },
+      clock: FIXED_CLOCK,
     });
     const options = buildOptions({ rateLimiter: limiter });
     const otherNpub = nip19.npubEncode(getPublicKey(OTHER_KEY_BYTES));
@@ -167,7 +171,7 @@ describe('rate limiting (RFC §17.1)', () => {
     const options = buildOptions({
       rateLimiter: createInMemoryRateLimiter({
         maxPerWindow: 1,
-        clock: { nowUnix: () => NOW },
+        clock: FIXED_CLOCK,
       }),
     });
 
@@ -190,7 +194,7 @@ describe('rate limiting (RFC §17.1)', () => {
     const options = buildOptions({
       rateLimiter: createInMemoryRateLimiter({
         maxPerWindow: 2,
-        clock: { nowUnix: () => NOW },
+        clock: FIXED_CLOCK,
       }),
     });
     const first = await issue(options, '203.0.113.7');
@@ -257,7 +261,7 @@ describe('rate limiting (RFC §17.1)', () => {
     const limiter = createInMemoryRateLimiter({
       windowSeconds: 60,
       maxPerWindow: 1,
-      clock: { nowUnix: () => NOW },
+      clock: FIXED_CLOCK,
     });
 
     limiter.check({ scope: 'init', npub: NPUB });
@@ -476,7 +480,7 @@ describe('per-request permission evaluation (RFC §15)', () => {
   });
 
   it('denies and revokes the principal once access is affirmatively removed', async () => {
-    const sessionStore = new InMemorySessionStore();
+    const sessionStore = new InMemorySessionStore({ clock: FIXED_CLOCK });
     await sessionStore.createForChallenge(session);
 
     const acl = await resolveEffectiveAcl(session, {
@@ -486,7 +490,7 @@ describe('per-request permission evaluation (RFC §15)', () => {
         },
       },
       sessionStore,
-      clock: { nowUnix: () => NOW },
+      clock: FIXED_CLOCK,
     });
 
     expect(acl).toBeNull();
@@ -495,7 +499,7 @@ describe('per-request permission evaluation (RFC §15)', () => {
   });
 
   it('denies without revoking when the resolver is not certain', async () => {
-    const sessionStore = new InMemorySessionStore();
+    const sessionStore = new InMemorySessionStore({ clock: FIXED_CLOCK });
     await sessionStore.createForChallenge(session);
 
     // A resolver that cannot read the ACL answers "denied". Revoking on that
@@ -507,7 +511,7 @@ describe('per-request permission evaluation (RFC §15)', () => {
         },
       },
       sessionStore,
-      clock: { nowUnix: () => NOW },
+      clock: FIXED_CLOCK,
     });
 
     expect(acl).toBeNull();
@@ -528,7 +532,7 @@ describe('createRevokingAclStore', () => {
   }
 
   async function seed(): Promise<{ store: ReturnType<typeof createRevokingAclStore>; sessionStore: InMemorySessionStore }> {
-    const sessionStore = new InMemorySessionStore();
+    const sessionStore = new InMemorySessionStore({ clock: FIXED_CLOCK });
     await sessionStore.createForChallenge({
       session_id: 'session-1',
       challenge_id: 'challenge-1',

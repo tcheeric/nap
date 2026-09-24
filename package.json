@@ -1,7 +1,7 @@
 {
   "name": "nap",
   "private": true,
-  "version": "0.10.1",
+  "version": "0.11.0",
   "type": "module",
   "workspaces": [
     "packages/*",
@@ -13,14 +13,30 @@
     "typecheck": "tsc --noEmit",
     "test:integration": "NAP_INTEGRATION=1 vitest run packages/nap-voucher/test/integration.test.ts"
   },
+  "comments": {
+    "overrides": [
+      "express pins qs at ~6.14.0, and ~ locks the minor, so the tree cannot reach",
+      "6.16.0 where the last of three moderate advisories is fixed:",
+      "GHSA-4mjr-xmp4-gh2g, GHSA-q8mj-m7cp-5q26 and GHSA-x5fp-wj9c-mxmx.",
+      "qs is Express's query parser, so this is on the request path of every",
+      "deployment using the Express adapter, not a build-time concern.",
+      "Scoped under express rather than applied globally so it constrains only the",
+      "dependency that needs it. Drop this once express 4.x relaxes the pin."
+    ]
+  },
+  "overrides": {
+    "express": {
+      "qs": "6.16.0"
+    }
+  },
   "devDependencies": {
     "@types/node": "^22.10.2",
     "@types/pg": "^8.20.0",
     "@types/ws": "^8.18.1",
-    "testcontainers": "^10.28.0",
+    "testcontainers": "^12.0.4",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.9",
+    "vitest": "^4.1.11",
     "ws": "^8.21.3"
   }
 }

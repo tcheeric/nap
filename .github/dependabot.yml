@@ -1,0 +1,10 @@
+version: 2
+
+updates:
+  # Weekly rather than daily: this repo has a single npm tree at the root, and a
+  # daily cadence produces more PR noise than a maintainer team this size can
+  # triage without starting to rubber stamp them.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
