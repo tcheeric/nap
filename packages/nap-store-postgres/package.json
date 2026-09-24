@@ -1,12 +1,12 @@
 {
   "name": "@imani/nap-store-postgres",
-  "version": "0.10.1",
+  "version": "0.11.0",
   "type": "module",
   "exports": "./src/index.ts",
   "types": "./src/index.ts",
   "dependencies": {
-    "@imani/nap-core": "0.10.1",
-    "@imani/nap-server": "0.10.1",
+    "@imani/nap-core": "0.11.0",
+    "@imani/nap-server": "0.11.0",
     "pg": "^8.13.1"
   },
   "peerDependencies": {

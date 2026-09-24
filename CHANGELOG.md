@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 All packages in this workspace share a single version.
 
-## [Unreleased]
+## [0.11.0] - 2026-09-24
+
+Minor rather than patch, and the reason is one line of behaviour: the session cookie now
+carries `Secure` by default. A browser will not send a `Secure` cookie over `http://`, so a
+deployment that terminates TLS nowhere loses its sessions on upgrade. That is a real break
+even though the change is strictly more secure, and it is the case to read before adopting.
+
+The other changes are additive or bug fixes. `InMemoryChallengeStore` and
+`InMemorySessionStore` gained an optional constructor argument, and both now drop records
+past their retention bound, so a consumer holding a `challenge_id` past its TTL sees `null`
+where it previously saw a stale record.
 
 ### Added
 
