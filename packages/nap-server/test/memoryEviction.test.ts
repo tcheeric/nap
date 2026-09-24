@@ -146,4 +146,46 @@ describe('InMemorySessionStore eviction', () => {
     await store.getByAccessToken('unrelated');
     expect(await store.getByRefreshToken('refresh-1')).toBeNull();
   });
+
+  /**
+   * The growth path is `createForChallenge`, not `getByAccessToken`.
+   *
+   * Sweeping only from the read path left the actual attack uncovered: a server
+   * taking logins but serving no guarded requests never calls
+   * `getByAccessToken`, so nothing swept and every expired session stayed
+   * resident. Measured at 500 logins retaining all 500 before the write path
+   * swept too.
+   *
+   * Asserting a constant rather than a threshold is what makes this meaningful.
+   * Residue is the sliding retention window (one tick plus `expires_at`), so it
+   * depends on the session TTL and not on how much traffic has been served. Ten
+   * times the logins must leave the same amount behind.
+   */
+  it('bounds growth on the write path, independent of login volume', async () => {
+    const residentAfter = async (logins: number): Promise<number> => {
+      const clock = stubClock(NOW);
+      const store = new InMemorySessionStore({ clock });
+
+      for (let index = 0; index < logins; index += 1) {
+        await store.createForChallenge(session(`s${index}`, {
+          issued_at: clock.nowUnix(),
+          expires_at: clock.nowUnix() + 60,
+        }));
+        clock.set(clock.nowUnix() + 1);
+      }
+
+      let alive = 0;
+      for (let index = 0; index < logins; index += 1) {
+        if (await store.getBySessionId(`s${index}`)) {
+          alive += 1;
+        }
+      }
+      return alive;
+    };
+
+    const tenfold = await residentAfter(5_000);
+
+    expect(tenfold).toBe(await residentAfter(500));
+    expect(tenfold).toBeLessThan(100);
+  });
 });

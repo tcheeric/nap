@@ -221,6 +221,13 @@ export class InMemorySessionStore implements SessionStore {
   }
 
   async createForChallenge(record: SessionRecord): Promise<SessionRecord> {
+    // Swept from the write path as well as the read path below. `createForChallenge`
+    // is what a login flood drives, and it was the gap: a server taking logins but
+    // serving no guarded requests never called `getByAccessToken`, so nothing swept
+    // and every expired session stayed resident. Verified at 500 logins retaining
+    // 500 dead sessions before this line existed.
+    this.sweep(this.clock.nowUnix());
+
     const existing = this.sessionsByChallengeId.get(record.challenge_id);
 
     if (existing) {
