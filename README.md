@@ -120,6 +120,9 @@ on it and version skew surfaces as confusing `verifyEvent` failures.
 
 ## Documentation
 
+- [UPGRADING.md](UPGRADING.md) — what breaks between releases and what to do about it.
+  Read this before taking 0.11.0: the session cookie now defaults to `Secure`, which ends
+  sessions on any deployment serving over plain `http`.
 - [docs/tutorials/](docs/tutorials/README.md) — the tutorial series, in order, with what each
   one gets you.
 - [docs/NAP-v2-RFC.md](docs/NAP-v2-RFC.md) — the protocol specification. The authority.
