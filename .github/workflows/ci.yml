@@ -42,3 +42,18 @@ jobs:
       - name: Test
         run: npm test
 
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22.x', cache: npm }
+      - run: npm ci
+      # Production tree gates the build; the dev tree is advisory so a vitest
+      # advisory cannot wedge every PR on an unrelated change.
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+      - name: Audit all dependencies (advisory)
+        run: npm audit --audit-level=moderate || true
+
