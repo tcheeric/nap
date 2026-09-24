@@ -26,14 +26,14 @@
     "express": "^4.21.2",
     "nostr-tools": "^2.23.0",
     "pg": "^8.13.1",
-    "react": "^19.0.0",
+    "react": "^19.3.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@imani/nap-client-http": "0.11.0",
     "@types/express": "^5.0.0",
     "@types/pg": "^8.11.10",
-    "@types/react": "^19.0.0",
+    "@types/react": "^19.3.0",
     "@types/react-dom": "^19.0.0",
     "@types/supertest": "^6.0.2",
     "@vitejs/plugin-react": "^4.3.4",
