@@ -7,6 +7,10 @@ on:
       - master
       - develop
   pull_request:
+  # Manual runs. The audit job asks npm's advisory database a question whose answer
+  # changes without this repository changing, so re-checking it should not require
+  # inventing a commit.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -16,6 +20,10 @@ jobs:
   validate:
     name: Validate (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    # Observed around 1 minute. The cap is for a hang rather than for slowness: vitest
+    # spawns workers and the voucher suite talks to a local mint, so a child that never
+    # exits would otherwise sit on GitHub's 360 minute default.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -45,6 +53,9 @@ jobs:
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
+    # Observed under a minute. The cap covers the npm advisory endpoint failing to
+    # answer rather than refusing, which no amount of waiting would improve.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
