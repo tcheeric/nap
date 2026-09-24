@@ -4,6 +4,7 @@ import {
   failure,
   isRetryableNapError,
   type AuthCompleteRequest,
+  type VoucherCredential,
   type AuthFailureResponse,
   type AuthSuccessResponse,
   type ChallengeRecord,
@@ -382,13 +383,89 @@ export function parseAuthCompleteRequest(rawBody: Uint8Array): ParsedAuthComplet
       return null;
     }
 
+    const voucher = parseVoucherCredential(parsed.voucher);
+
+    // Present but malformed is a rejection, not a silent drop. Dropping it would
+    // turn a client bug into a fall-through to the stored ACL, which for a
+    // burner key means a generic denial that looks nothing like the real cause.
+    if (parsed.voucher !== undefined && voucher === null) {
+      return null;
+    }
+
     return {
       challenge_id: parsed.challenge_id,
       ...(parsed.step_up === true ? { step_up: true as const } : {}),
+      ...(voucher ? { voucher } : {}),
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * Shape-check a presented voucher credential, or `null` when it is unusable.
+ *
+ * Structure only. Nothing here decides whether the voucher is *valid* — the
+ * mint allowlist, the DLEQ, the binding to the completion pubkey, and the
+ * liveness check all happen later, after NIP-98 verification has already
+ * proven key control. This exists so a malformed body is rejected before any of
+ * that, and in particular before anything reaches out to a mint.
+ *
+ * Deliberately does not validate the *contents* of `mint_url`: whether it is an
+ * allowed origin is the allowlist's decision, and duplicating it here would put
+ * a second, weaker copy of the highest-severity check in the codebase.
+ */
+function parseVoucherCredential(value: unknown): VoucherCredential | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const dleq = candidate.dleq;
+
+  const hasStrings = (['mint_url', 'keyset_id', 'secret', 'signature'] as const).every(
+    (key) => typeof candidate[key] === 'string' && (candidate[key] as string).length > 0
+  );
+
+  if (!hasStrings) {
+    return null;
+  }
+
+  // A non-integer or negative amount cannot select a key from a keyset, and
+  // NaN would compare false against every amount without looking wrong.
+  if (typeof candidate.amount !== 'number' || !Number.isInteger(candidate.amount)
+      || candidate.amount <= 0) {
+    return null;
+  }
+
+  if (typeof dleq !== 'object' || dleq === null || Array.isArray(dleq)) {
+    return null;
+  }
+
+  const proof = dleq as Record<string, unknown>;
+  const hasDleq = (['e', 's', 'r'] as const).every(
+    (key) => typeof proof[key] === 'string' && (proof[key] as string).length > 0
+  );
+
+  if (!hasDleq) {
+    return null;
+  }
+
+  if (candidate.witness !== undefined && typeof candidate.witness !== 'string') {
+    return null;
+  }
+
+  // Rebuilt rather than passed through, so an unexpected field in the body
+  // cannot ride along into the resolver.
+  return {
+    mint_url: candidate.mint_url as string,
+    keyset_id: candidate.keyset_id as string,
+    secret: candidate.secret as string,
+    signature: candidate.signature as string,
+    amount: candidate.amount,
+    dleq: { e: proof.e as string, s: proof.s as string, r: proof.r as string },
+    ...(typeof candidate.witness === 'string' ? { witness: candidate.witness } : {}),
+  };
 }
 
 export async function issueChallenge(
@@ -513,6 +590,11 @@ async function issueChallengeUnpadded(
         auth_method: record.auth_method,
         issued_at: record.issued_at,
         expires_at: record.expires_at,
+        // Omitted entirely when unconfigured, rather than sent as [], so
+        // "makes no claim" stays distinguishable from "supports nothing".
+        ...(options.supportedExtensions?.length
+          ? { supported_extensions: [...options.supportedExtensions] }
+          : {}),
       },
     };
   } catch {
@@ -681,7 +763,12 @@ async function verifyCompletionUnpadded(
     return createdAtWindow;
   }
 
-  const aclDecision = await options.aclResolver.resolve(challenge.npub, challenge.pubkey);
+  // The credential rides in the context rather than the signature, so a resolver
+  // that does not want it simply does not declare the parameter.
+  const aclDecision = await options.aclResolver.resolve(challenge.npub, challenge.pubkey, {
+    ...(body.voucher ? { voucher: body.voucher } : {}),
+    now,
+  });
 
   if (!aclDecision.allowed) {
     await logFailure(auditLogger, 'NAP_COMPLETE_ACL_DENIED', { challenge_id: challenge.challenge_id });
@@ -696,7 +783,12 @@ async function verifyCompletionUnpadded(
     createSessionRecord(
       challenge,
       now,
-      sessionTtlSeconds,
+      // Clamped to the resolver's bound, so a session cannot outlive what
+      // authorised it -- a voucher expiring in five minutes must not mint a
+      // fifteen-minute session. Only ever shortens: a resolver returning a
+      // distant bound gets the configured TTL, because a resolver must not be
+      // able to hand out longer sessions than the operator configured.
+      clampTtlToDecision(sessionTtlSeconds, aclDecision.expires_at, now),
       randomSource,
       aclDecision.roles,
       aclDecision.permissions,
@@ -898,9 +990,33 @@ async function refreshSessionUnpadded(
     return failure('NAP_REFRESH_EXPIRED');
   }
 
+  // The absolute ceiling, measured from the original login rather than the last
+  // refresh. Each rotation slides `refresh_expires_at` forward, so without this
+  // a session never ends and an authorization decision made at login never
+  // expires -- which for a credential the server can no longer re-read (a
+  // voucher since redeemed or revoked) means unbounded staleness.
+  //
+  // `issued_at` survives rotation, which is what makes it the right anchor;
+  // anything refreshed forward would measure the wrong interval.
+  const maxLifetime = options.maxSessionLifetimeSeconds;
+
+  if (maxLifetime !== undefined && now >= session.issued_at + maxLifetime) {
+    await logFailure(auditLogger, 'NAP_REFRESH_EXPIRED', {
+      session_id: session.session_id,
+      // Distinguishes "this refresh token aged out" from "this session has run
+      // its full life", which are the same 401 but very different operationally.
+      reason: 'max_session_lifetime',
+    });
+    return failure('NAP_REFRESH_EXPIRED');
+  }
+
+  // No voucher: a refresh sees a session, not the completion body that carried
+  // the credential. A voucher resolver must therefore answer from cached state
+  // here, and the cache TTL is what bounds how stale that answer can be.
   const aclDecision = await options.aclResolver.resolve(
     session.principal_npub,
-    session.principal_pubkey
+    session.principal_pubkey,
+    { now, session: { roles: session.roles, permissions: session.permissions } }
   );
 
   if (!aclDecision.allowed) {
@@ -919,13 +1035,30 @@ async function refreshSessionUnpadded(
     return failure('NAP_REFRESH_ACL_DENIED');
   }
 
+  // The absolute ceiling, as an instant. A resolver's own bound (extension
+  // 0001's voucher expiry) narrows it further; whichever is sooner wins.
+  const ceiling =
+    maxLifetime === undefined ? undefined : session.issued_at + maxLifetime;
+  const decisionBound =
+    ceiling === undefined
+      ? aclDecision.expires_at
+      : Math.min(ceiling, aclDecision.expires_at ?? ceiling);
+
   const rotated = await store.rotateRefreshToken(session.session_id, {
     expectedRefreshToken: presented,
     accessToken: base64Url(randomSource.randomBytes(32)),
     refreshToken: base64Url(randomSource.randomBytes(32)),
     now,
-    expiresAt: now + sessionTtlSeconds,
-    refreshExpiresAt: now + refreshTtlSeconds,
+    // Both windows are clamped to the ceiling, so it is a wall rather than an
+    // approximation. Without this a refresh one second before the cap minted a
+    // full-length access token, and the session kept working for up to another
+    // `sessionTtlSeconds` past the limit -- observed at cap+898 with a 900s TTL.
+    // For extension 0001 that overhang is time a redeemed voucher still
+    // authorises, which is the interval `maxSessionLifetimeSeconds` exists to
+    // bound, so the ceiling has to bind the token it issues and not only the
+    // decision to issue one.
+    expiresAt: clampTtlToDecision(sessionTtlSeconds, decisionBound, now) + now,
+    refreshExpiresAt: Math.min(now + refreshTtlSeconds, ceiling ?? Number.MAX_SAFE_INTEGER),
     roles: aclDecision.roles,
     permissions: aclDecision.permissions,
   });
@@ -1032,9 +1165,19 @@ export async function resolveEffectiveAcl(
     return { roles: session.roles, permissions: session.permissions };
   }
 
+  // Same as refresh: a guarded request has a session, never the credential. See
+  // `AclResolutionContext.voucher`.
+  const clock = options.clock ?? defaultClock;
   const decision = await options.aclResolver.resolve(
     session.principal_npub,
-    session.principal_pubkey
+    session.principal_pubkey,
+    {
+      now: clock.nowUnix(),
+      // Marks this as a re-check rather than a credential-free login. A
+      // resolver cannot tell the two apart from the missing voucher alone, and
+      // answering them the same way denies every guarded request.
+      session: { roles: session.roles, permissions: session.permissions },
+    }
   );
 
   if (!decision.allowed) {
@@ -1043,7 +1186,6 @@ export async function resolveEffectiveAcl(
     // lagging replica, a row mid-rewrite — denies this request and no more;
     // mass-revoking on an unreadable ACL costs everyone a fresh NIP-98 login.
     if (decision.revoke_sessions) {
-      const clock = options.clock ?? defaultClock;
       await options.sessionStore?.revokeByPrincipal(session.principal_pubkey, clock.nowUnix());
     }
 
@@ -1073,6 +1215,34 @@ export function constantTimeEquals(a: string, b: string): boolean {
   }
 
   return difference === 0;
+}
+
+/**
+ * The session TTL, shortened to a resolver's `expires_at` when it has one.
+ *
+ * Never lengthens, and never returns a non-positive TTL: a decision that has
+ * already expired yields the smallest usable session rather than one that is
+ * born expired or, worse, negative. A resolver answering `allowed: true` with a
+ * stale bound is a resolver bug, and turning it into a session whose
+ * `expires_at` precedes its `issued_at` would push that bug into every store
+ * and guard downstream.
+ */
+export function clampTtlToDecision(
+  configuredTtlSeconds: number,
+  decisionExpiresAt: number | undefined,
+  now: number
+): number {
+  if (decisionExpiresAt === undefined || !Number.isFinite(decisionExpiresAt)) {
+    return configuredTtlSeconds;
+  }
+
+  const remaining = Math.floor(decisionExpiresAt) - now;
+
+  if (remaining >= configuredTtlSeconds) {
+    return configuredTtlSeconds;
+  }
+
+  return Math.max(1, remaining);
 }
 
 export function toPublicAuthFailure(): { status: 401; body: AuthFailureResponse } {

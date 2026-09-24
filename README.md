@@ -120,6 +120,9 @@ on it and version skew surfaces as confusing `verifyEvent` failures.
 
 ## Documentation
 
+- [UPGRADING.md](UPGRADING.md) — what breaks between releases and what to do about it.
+  Read this before taking 0.11.0: the session cookie now defaults to `Secure`, which ends
+  sessions on any deployment serving over plain `http`.
 - [docs/tutorials/](docs/tutorials/README.md) — the tutorial series, in order, with what each
   one gets you.
 - [docs/NAP-v2-RFC.md](docs/NAP-v2-RFC.md) — the protocol specification. The authority.
@@ -128,6 +131,9 @@ on it and version skew surfaces as confusing `verifyEvent` failures.
   record of where each implementation diverges from the RFC.
 - [docs/NAP-IMPLEMENTATION-BEST-PRACTICES.md](docs/NAP-IMPLEMENTATION-BEST-PRACTICES.md) —
   operational guidance.
+- [docs/explanation/mint-backed-authorisation.md](docs/explanation/mint-backed-authorisation.md)
+  — how NAP uses a Cashu mint to answer *what may you do*, and why a mint is involved at
+  all. Start here before the extension spec.
 - [docs/comparisons/webauthn.md](docs/comparisons/webauthn.md) — NAP against WebAuthn.
 - [docs/comparisons/oauth.md](docs/comparisons/oauth.md) — NAP against OAuth 2.0.
 

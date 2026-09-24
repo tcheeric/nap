@@ -6,9 +6,13 @@ surface, and setup — this file only covers what that doesn't.
 ## Commands
 
 ```bash
-npm test        # vitest run
+npm test              # vitest run
 npm run typecheck
+npm run test:integration   # real Cashu mint + Nostr relay via testcontainers; needs Docker
 ```
+
+`npm test` never needs Docker: the container-backed tests skip unless
+`NAP_INTEGRATION=1`. See `docs/INTEGRATION-TESTS.md`.
 
 **There is no build step.** Every package points `exports` and `types` at `./src/index.ts`, so
 there is no `dist/` and nothing to compile. Don't go looking for a `build` script — it doesn't

@@ -399,6 +399,52 @@ describe('nap-adapter-express', () => {
     expect(logout.headers['set-cookie']?.[0]).not.toContain('Domain=');
   });
 
+  it('protects the cookie when the caller passes no options at all', async () => {
+    const app = express();
+    const write = writeNapCookieSuccess('session');
+    app.get('/x', (req, res) => {
+      void write({ req, res, body: { access_token: 'SECRET' } as never });
+    });
+
+    const setCookie = (await request(app).get('/x')).headers['set-cookie']?.[0] ?? '';
+
+    expect(setCookie).toContain('HttpOnly');
+    expect(setCookie).toContain('Secure');
+    expect(setCookie).toContain('SameSite=Lax');
+  });
+
+  it('keeps the protections when the caller sets only a domain', async () => {
+    const app = express();
+    // The case a real deployment hits: one attribute supplied, and replacing instead of
+    // merging would drop all three protections from the cookie holding the access token.
+    const write = writeNapCookieSuccess('session', { domain: '.example.com' });
+    app.get('/x', (req, res) => {
+      void write({ req, res, body: { access_token: 'SECRET' } as never });
+    });
+
+    const setCookie = (await request(app).get('/x')).headers['set-cookie']?.[0] ?? '';
+
+    expect(setCookie).toContain('Domain=.example.com');
+    expect(setCookie).toContain('HttpOnly');
+    expect(setCookie).toContain('Secure');
+    expect(setCookie).toContain('SameSite=Lax');
+  });
+
+  it('lets an explicit httpOnly: false win over the default', async () => {
+    const app = express();
+    // Plain-HTTP local development is the reason the escape hatch exists.
+    const write = writeNapCookieSuccess('session', { httpOnly: false, secure: false });
+    app.get('/x', (req, res) => {
+      void write({ req, res, body: { access_token: 'SECRET' } as never });
+    });
+
+    const setCookie = (await request(app).get('/x')).headers['set-cookie']?.[0] ?? '';
+
+    expect(setCookie).not.toContain('HttpOnly');
+    expect(setCookie).not.toContain('Secure');
+    expect(setCookie).toContain('SameSite=Lax');
+  });
+
   it('returns 204 from POST /auth/logout when no session exists', async () => {
     const app = createApp(buildServerOptions());
 

@@ -7,6 +7,555 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 All packages in this workspace share a single version.
 
+## [0.11.0] - 2026-09-24
+
+Minor rather than patch, and the reason is one line of behaviour: the session cookie now
+carries `Secure` by default. A browser will not send a `Secure` cookie over `http://`, so a
+deployment that terminates TLS nowhere loses its sessions on upgrade. That is a real break
+even though the change is strictly more secure, and it is the case to read before adopting.
+
+The other changes are additive or bug fixes. `InMemoryChallengeStore` and
+`InMemorySessionStore` gained an optional constructor argument, and both now drop records
+past their retention bound, so a consumer holding a `challenge_id` past its TTL sees `null`
+where it previously saw a stale record.
+
+### Added
+
+- **`createVoucherAclResolver`** (#23): the §6 step-13 verification procedure, composing the
+  allowlists, the mint client, DLEQ verification, and the availability policy.
+
+  End-to-end acceptance is asserted against the outcome rather than the steps: a voucher is
+  presented to the real Express endpoint and the resulting session's permissions — derived from
+  the voucher's own tags, with no ACL store wired at all — are honoured by a real guarded route
+  (200), while a permission the voucher does not carry is refused (403). The DLEQ is genuine
+  here rather than mocked, which the per-step tests could not establish.
+
+  The order of steps (a)–(i) is the security property, so each is pinned by a negative test
+  asserting its audit code — the codes are the only place the distinctions survive, since the
+  client sees an identical 401 either way. `mint_url` is allowlisted before anything reaches the
+  network (SSRF), and the binding check runs before the mint round trip, so a stolen credential
+  is refused without telling the mint that someone is probing a proof.
+
+  **`/auth/complete` is not a mint oracle.** Verified by driving the real Express endpoint and
+  asserting the mint client is untouched for unauthenticated, unknown-challenge, and
+  bad-signature completions, with a counterweight proving it *is* reached once key control is
+  proven. The credential used is deliberately valid — allowlisted, signed, correctly bound —
+  because a prober would use one that passes every local check.
+
+- **`AclDecision.expires_at`** (#27 phase 1): a resolver can bound the session it authorises, and
+  the server clamps the session TTL to it. Only ever shortens — a resolver must not hand out
+  longer sessions than the operator configured — and never yields a session born expired.
+
+  Extension 0001's voucher carries an `expires_at` inside the secret, which the server never sees
+  again after login, so without this a voucher expiring in five minutes still minted a
+  full-length session. Observed with a 900-second TTL: a voucher living 5000s gives 900s, one
+  living 300s gives 300s.
+
+- **`supported_extensions` on `/auth/init`, and `NapServerOptions.supportedExtensions`** (#16):
+  lets a client holding a credential tell "this server has no such feature" from "your
+  credential was refused" — two 401s that are deliberately identical but call for opposite
+  actions (retry without the credential, versus do not retry at all). §6.2 forbids the response
+  distinguishing them, so the signal has to precede the attempt.
+
+  Publishes nothing sensitive: it describes the server rather than a principal, names a feature
+  anyone can read about, and is sent before the client signs anything. Absence means "makes no
+  claim" rather than "supports nothing", so an older server that predates the field is not
+  locked out of an extension it supports. Extension 0001's name is `voucher-acl/1`.
+
+- **`NapServerOptions.maxSessionLifetimeSeconds`** (#15): an absolute ceiling on a session's
+  life, measured from the original login rather than the last refresh.
+
+  Found while settling the staleness question: the "cap the session TTL" the spec assumed did
+  not exist. Refresh sets `refresh_expires_at` to `now + refreshTtlSeconds` on every rotation,
+  so a regularly-refreshed session never ended and the authorization decision made at login
+  never expired. Observed: `refresh 5 at t+400000 -> 200, still alive`, against
+  `refresh 2 at t+160000 -> 401` with a 24-hour ceiling.
+
+  Harmless for a stored-ACL decision, which `resolveEffectiveAcl` re-reads per guarded request.
+  Not harmless for one the server cannot re-read, which is what a voucher is after login: a
+  credential redeemed an hour later left a session that outlived it indefinitely. Anchored on
+  `issued_at`, the one timestamp rotation preserves. Unset means no ceiling, so existing
+  behaviour is unchanged.
+
+- **`AclResolutionContext.session` and `onMissingCredential`** (#24): a voucher resolver wired
+  as a guard's `aclResolver` denied **every guarded request** — login succeeded, then the
+  session could do nothing, and nothing was logged. Re-resolution holds a session, never the
+  credential, and the credential's absence alone cannot distinguish that from a credential-free
+  login, which must still be denied. The context now carries `session` on re-resolution and
+  refresh, and `onMissingCredential: 'trust-session'` honours it while keeping login strict.
+  Verified end to end through a re-resolving guard: `login 200 -> guarded request 401` before,
+  `200` after.
+
+- **`permissionRegistry` on the voucher resolver** (#17): `grant()` output is checked against
+  the registry, and an undeclared role or permission denies the login with
+  `NAP_VOUCHER_GRANT_NOT_IN_REGISTRY` rather than issuing a session carrying a key no guard will
+  match. Roles are checked too, since an undeclared role expands to nothing downstream.
+
+  Validated at **grant time**, not wiring time, and [ADR 0004](docs/adr/0004-voucher-grant-registry-validation.md)
+  records why the wiring-time version the spec proposed is impossible rather than merely costly.
+
+- **`parseVoucherSecret` and `voucherCanonicalBytes`**: NUT-10 `P2PK_VOUCHER` parsing and the
+  bytes an issuer signs.
+
+  Byte-parity with `cashu-voucher`'s Java renderer is pinned by a golden vector generated from
+  the Java implementation, asserted on both sides. A disagreement between the two is not a
+  failed test but a signature that verifies over different content than the issuer meant, which
+  inspection cannot catch.
+
+
+- **`VoucherCredential` and the additive `voucher` field on the completion body** (#22), plus
+  the `AclResolver` widening that carries it (#14).
+
+  The credential goes in the body rather than the NIP-98 event, and that placement is
+  load-bearing: the `payload` tag is `sha256(rawBody)`, so the signature covers it and a
+  credential swapped in transit fails with `NAP_COMPLETE_PAYLOAD_MISMATCH` — the same mechanism
+  that already protects `step_up`.
+
+  A present-but-malformed credential is **rejected** rather than dropped. Dropping it would turn
+  a client bug into a fall-through to the stored ACL, which for a burner key is a generic denial
+  that looks nothing like the real cause. The credential is rebuilt from known keys rather than
+  passed through, so a body carrying extra fields cannot smuggle them to a resolver.
+
+  `AclResolver.resolve()` gains an optional third `AclResolutionContext` carrying the voucher and
+  the server's `now`. Optional and additive: existing two-parameter resolvers keep compiling and
+  behaving identically. `now` is passed rather than read because a component reading the wall
+  clock while the server ran on an injected one has been a real bug here twice.
+
+  `buildAuthCompleteRequest` accepts a `voucher`, so a client can actually present one. The event
+  must be signed by the key the voucher is P2PK-locked to.
+
+### Testing
+
+- **Integration coverage extended to a full voucher-bound login against the real mint** (16
+  cases, up from 8). The new block builds a BDHKE proof against the keyset the container
+  *actually publishes*, then drives a complete NAP login through it — so a disagreement between
+  the mint's key encoding and this package's parsing surfaces as a failed login rather than as a
+  passing test built on a shared assumption. `acceptance.test.ts` proves the same outcome, but
+  every byte in it is one I chose.
+
+  Also covers the forged-proof case (a DLEQ from a different mint key), the stolen-credential
+  case and an expired voucher, all against real mint keys; that the mint advertises NUT-07, 10,
+  11 and 12; that it deliberately does *not* advertise `P2PK_VOUCHER` (ADR 0003); that every
+  advertised keyset serves keys through the shipped client; and that a non-power-of-two amount
+  and an unallowlisted mint URL are both refused.
+
+  Mutation-checked: disabling DLEQ verification fails the forged-proof case.
+
+  `docs/INTEGRATION-TESTS.md` updated — cashu-mint#405 is fixed, so the voucher profile now
+  starts; what remains blocked is `POST /v1/checkstate` (needs the vault service) and mint-side
+  issuance (the relay list in `application-voucher.yml` is hardcoded with no placeholder, so a
+  container cannot be pointed at a private relay). Neither blocks NAP, which consumes
+  `GET /v1/keys` and never issues.
+
+### Fixed
+
+- **A malformed NIP-98 `u` tag is a mismatch, not an unhandled exception** (#33).
+  `exactUrlMatch()` called `new URL()` on the `u` tag with no guard, and that tag is
+  attacker-supplied, so a completion carrying `u: "not-a-url"` threw `TypeError` out of
+  `verifyNip98Completion()` instead of returning `NAP_COMPLETE_URL_MISMATCH`. On an
+  unauthenticated endpoint that cost three things at once: the adapter answered `500` rather
+  than the uniform `401`, the response skipped the `padAuthResponse()` floor that makes
+  failures indistinguishable (RFC §15), and the throw happened before `logFailure()` so the
+  request produced no audit record at all. A valid signature is needed to reach the check,
+  but any throwaway key will do.
+
+  Half the added tests exist to stop the fix going the other way: this is the audience
+  binding, so making the function total by loosening the comparison would be an
+  authentication bypass. A trailing slash, a different path, host, scheme or port, and
+  userinfo must all still fail. `nap-java` was unaffected, having always caught here.
+
+- **`writeNapCookieSuccess` now defaults to a protected cookie, and merges caller options
+  over those defaults** (#34). The default path emitted `session=TOKEN; Path=/`, with no
+  `HttpOnly`, `Secure` or `SameSite`, so the access token was readable by any script on the
+  page, travelled in cleartext, and rode along on cross-site requests. The helper's whole
+  stated purpose is keeping that credential away from script, and `toPublicSessionView`
+  already omits `access_token` from `GET /auth/session` on the assumption of an `HttpOnly`
+  cookie the default did not produce.
+
+  The second half was worse: partial options replaced the attributes rather than adding to
+  them, so `{ domain: '.example.com' }` (a caller setting one attribute, the case a real
+  deployment hits) silently dropped all three protections. Options are now spread over
+  `{ httpOnly: true, secure: true, sameSite: 'lax', path: '/' }`, which also leaves an
+  explicit `httpOnly: false` winning for local development. `nap-java` already defaulted
+  this way, so the divergence where one deployment was safe on the JVM and not on Node is
+  closed. Both adapters fixed, with the partial-options case covered as a regression test.
+
+- **The in-memory stores evict** (#35). `InMemoryChallengeStore` and `InMemorySessionStore`
+  never removed a record: challenges were marked expired and sessions stamped `revoked_at`,
+  and both stayed resident for the life of the process. Both maps are filled by
+  unauthenticated traffic, and the outstanding-challenge caps do not help because they count
+  only records still in `issued`, so they bound concurrency rather than memory.
+
+  The retention bounds are deliberate rather than plain expiry. A challenge is kept until
+  `result_cache_until` when it was redeemed, because that window is what makes a client
+  retry idempotent under RFC §13.3. A session is kept until `expires_at` or
+  `refresh_expires_at`, whichever is later, because `getByRefreshToken()` answers for
+  revoked sessions so a replay stays recognisable, and evicting at the access window would
+  turn a detected reuse into a merely unknown token. Both sweep on the write path as well as
+  the read path: sweeping only on reads left a server that takes logins and serves no
+  guarded requests growing without bound, which is the shape of the attack rather than an
+  edge case.
+
+- **`/auth/session` reads expiry from the server's clock** (#38). Both adapters built the
+  handler's guard options without `clock`, so a deployment on an injected clock judged
+  expiry by the wall clock on exactly that one endpoint, while `/auth/logout` two functions
+  away passed it correctly. A session live on the injected clock answered `401`. The route
+  options now come from one builder, so the call sites cannot drift apart again.
+
+### Security
+
+- **Production dependency advisories cleared, and scanning added to CI** (#36). `npm audit
+  --omit=dev` went from four high-severity findings to none. Two of them bore directly on
+  controls this repository implements: Fastify's `request.protocol` and `request.host`
+  spoofing sits underneath `createRequestDerivedBaseUrlResolver()`, and `body-parser`
+  silently disabling size enforcement on an invalid limit sits underneath the 1 kB cap
+  `createNapExpressJsonParser()` applies to an unauthenticated endpoint.
+
+  `vitest` moved 2 to 4 and `testcontainers` 10 to 12, both semver-major, clearing the
+  critical advisory on the test runner. CI now audits the production tree as a gate and the
+  full tree advisorily, which is the split that keeps it tuned: a dev-only advisory should
+  not wedge every unrelated pull request. CodeQL and Dependabot added, and `SECURITY.md`
+  records the controls that are repository settings rather than files.
+
+  **Amended after CI ran.** "None" above was true at `--audit-level=high`, which is where the
+  gate was set, and three moderate `qs` advisories were sitting under it the whole time:
+  GHSA-4mjr-xmp4-gh2g, GHSA-q8mj-m7cp-5q26 and GHSA-x5fp-wj9c-mxmx. `qs` is Express's query
+  parser, so they are on the request path of every deployment using the Express adapter, not
+  a build-time concern.
+
+  Express pins `qs` at `~6.14.0` and `~` locks the minor, so no upgrade of Express reaches
+  the fix. An `overrides` entry scoped to `express` pulls it to 6.16.0. The production gate
+  now runs at `--audit-level=moderate`, because a threshold only holds the line it is set at,
+  and the production tree is at zero rather than at "nothing above high".
+
+- **`maxSessionLifetimeSeconds` now clamps the tokens it issues**, so the ceiling is a wall
+  rather than an estimate. It previously gated only the *decision* to refresh: a refresh one
+  second before the ceiling minted a full-length access token, and guarded requests kept
+  succeeding for up to another `sessionTtlSeconds` past the limit — observed at `cap+898` with a
+  900-second TTL. That overhang is the interval extension 0001 cares about, so an approximate
+  ceiling undercut the reason it was added.
+
+- **Self-review of the extension 0001 work found six defects across two rounds**
+  (`CODE-REVIEW-EXT-0001.md`), all now closed and mutation-verified:
+
+  - **Duplicate tags were accepted** where `cashu-lib` rejects them. The issuer signature covers
+    both copies, so a doctored secret verified here while being unspendable at the mint — NAP
+    would have granted a session from a document with two answers, with `grant()` reading
+    whichever copy the parser reached first. Now rejected, matching NUT-11 and
+    `requireEachTagAtMostOnce`.
+  - **The degraded path skipped the registry check and the expiry clamp**, so a typo'd
+    `degradedGrant` sailed through the check ADR 0004 exists to enforce, and a degraded session
+    could outlive its voucher. Both now apply, and the degraded-success line is logged *after*
+    the check rather than before, so a denial no longer trails a success record for a sequence
+    that never happened.
+  - **`grant` was checked for presence but not callability**, turning a wiring mistake into a
+    runtime failure for the first user to present a voucher.
+  - **Extension spec §5.2 documented an interface that does not exist** — every field name in
+    it was wrong, since it was written before implementation and never revisited. Replaced with
+    the real one, with a note on why the shape changed, and now guarded by a test.
+
+### Fixed
+
+- **Guards now honour an injected `clock`.** `NapExpressGuardOptions.clock` and its Fastify
+  equivalent were passed to `resolveEffectiveAcl` but ignored by session-expiry and
+  step-up-expiry checks, which read `Date.now()` directly. A guard configured with the same
+  clock as the server therefore agreed about the ACL and disagreed about time: a session
+  minted at the injected `now` was rejected by the very next guarded request with
+  `NAP_GUARD_NO_SESSION`.
+
+  Only reachable when a clock is injected, so it affected tests and any deployment on a
+  controlled clock rather than production wall time. Found by running the extension-0001
+  end-to-end test, where the server clock is pinned to a fixed timestamp — no per-module test
+  could surface it, because it only appears once a login and a guarded request run against one
+  clock. `clock` is now also documented on both guard options interfaces and in guide §9.6.1,
+  since being undocumented is part of why the mismatch went unnoticed.
+
+  The same bug reached `POST /auth/logout` in both adapters, found by auditing the remaining
+  wall-clock reads rather than by a failing test: the handler loaded the session without the
+  server's clock and stamped `revoked_at` from `Date.now()`, writing a revocation timestamp
+  years away from every other timestamp in the store. Both now share
+  `NapServerOptions.clock`.
+
+- **`createMintAvailabilityPolicy` also rejects destructive *roles* in a degraded grant.**
+  Checking permissions alone left a hole: roles expand into permissions downstream
+  (`createRegistryAclResolver` returns `role.permissions`), so a `degradedGrant` listing only
+  `voucher:view` while carrying `roles: ['admin']` passed the check and would still hand a
+  degraded session everything that role grants. `destructiveRoles` closes it.
+
+- **The mint client no longer treats a 4xx as "the mint is unavailable".** Every non-2xx was
+  reported as `unavailable`, which is the one reason `onMintUnavailable: 'degrade'` (§7.3) is
+  allowed to act on — so a mint answering `400`, `403`, `404`, or `429` could trigger degraded
+  mode, exactly the confusion the reason codes exist to prevent. A 4xx is now
+  `malformed_response`; only 5xx and transport failures are `unavailable`.
+
+- **Keyset refetch on a miss is bounded per cache entry, not per request.** The retry deleted
+  the whole cache on every miss, so N unknown keyset ids cost N mint fetches — the flood the
+  retry was meant to prevent. Measured at 11 fetches for 10 unknown ids, now 2. A genuine
+  rotation is still picked up within one request.
+
+### Testing
+
+- **Integration tests against real infrastructure** (`npm run test:integration`). Boots the
+  actual `cashu-mint-rest` image and a real `nostr-rs-relay` with testcontainers and points
+  the shipped mint client at them.
+
+  The existing end-to-end test drives a full NAP login, but its mint is one this repo wrote,
+  so it can only confirm our own assumptions about the wire shape. These pin the one thing it
+  cannot: that `parseKeysets()` agrees with what the real `/v1/keys` actually sends, that every
+  published key is a point the DLEQ code can parse, and that an unroutable mint reports
+  `unavailable` against a real socket. Mutation-checked — expecting a field the mint does not
+  send fails three of them.
+
+  Opt-in via `NAP_INTEGRATION=1`, so `npm test` stays fast and needs no Docker. Documented in
+  `docs/INTEGRATION-TESTS.md`, including how to run the mint standalone (the compose stack has
+  eight services; four settings suffice) and two upstream limits found while building this: the
+  NUT-07 endpoint needs a datastore, and voucher issuance is blocked by `commons-lang3` being
+  declared `<scope>test</scope>` in `cashu-mint-rest` while the voucher ledger needs it at
+  runtime.
+
+### Fixed
+
+- **RFC §25.3's interface listing had drifted from the implementation, and nothing checked it.**
+  `AclDecision` documented three of its five fields — `reason` and `revoke_sessions` had been
+  missing for some time, and `expires_at` was added this cycle without being mirrored.
+  `AclResolver.resolve` was shown with two parameters after gaining an optional third, and
+  `AclResolutionContext` was absent entirely. An implementer building against the RFC would have
+  produced a resolver that cannot revoke sessions, bound one, or see a credential.
+
+  Widening the check from three interfaces to all thirteen found six more: `RateLimiter` had an
+  entirely wrong shape (`consume(string)` against the real `check(RateLimitKey)`), `ChallengeStore`
+  and `SessionStore` omitted their optional methods, `ChallengeRecord` and `SessionRecord` omitted
+  optional fields, `VerifyCompleteFailure` omitted `retryAfterSeconds`, and both generic
+  interfaces had wrong method names *and* wrong return types.
+
+  Now covered by `rfcParity.test.ts`, which enumerates §25's own blocks and compares each to the
+  real type. It compares **key sets**, not assignability: an interface missing an optional field
+  is still assignable in both directions, so the obvious version passed against a deliberately
+  drifted RFC. The interfaces are discovered rather than listed, and a guard asserts every
+  declared one is compared, so a new interface cannot be silently uncovered. Mutation-checked
+  against eight separate drifts.
+
+  Also re-exports `VoucherCredential` from `@imani/nap-server`, which the parity check surfaced:
+  `AclResolutionContext.voucher` is public API naming a type consumers could not import.
+
+### Documentation
+
+- **Extension 0001 §7.4 records the accepted risk of cross-server double-use** (#28). Settled as
+  out of scope for v1, with the reasoning that the `Y`-keyed record the section proposed does not
+  solve the stated problem: it is per-server state, so it delivers per-server single-use while
+  the heading says cross-server. Observed and pinned by a test — the same voucher logs in at two
+  independent servers (200, 200) while a thief holding it is refused (401), because §3.1 binds it
+  to a key. So "double-use" here is one legitimate holder opening several sessions, and the
+  extension is documented as issuing multi-use credentials (§1.2 non-goal 5).
+
+- **RFC §22.1 confirms extension 0001 stays an extension permanently** (#18), and §22.2 documents
+  capability advertisement. Confirmed after implementation rather than before: nothing in the
+  core profile changed to accommodate it, and the two core edits made along the way
+  (`AclResolutionContext`, `maxSessionLifetimeSeconds`) are general rather than voucher-specific,
+  which is the test a core edit has to pass.
+
+- **Integration guide §3.5.11, the voucher resolver wiring** (#30): the documented example is
+  type-checked against the real API *and* executed by a test that drives a real login through
+  it. Type-checking alone catches a renamed option but not a wrong one — an example that
+  constructs a resolver nobody could log in through would compile happily. Both traps found
+  while implementing are documented: guard re-resolution holding a session rather than a
+  credential, and the credential-free login that needs a `fallback`. The §3.5 status table no
+  longer claims shipped work is unstarted.
+
+
+- **Integration guide §3.5 documents mint-backed authorisation.** §3.1–§3.4 answer "what may
+  this principal do?" from a stored ACL row; §3.5 covers answering it from a Cashu voucher
+  instead. Written for an operator deciding whether to adopt it, so it leads with the tradeoff
+  (no pre-registration, at the cost of the mint becoming an availability dependency of login)
+  and is explicit that a stored ACL is simpler and strictly more available when you already
+  know your users.
+
+  Covers the P2PK binding that makes a stolen voucher useless, why the mint and both
+  allowlists are mandatory, the verification order and the three ordering constraints that are
+  security properties rather than style, deny-by-default availability handling, session
+  lifecycle, the failure codes, and the body-placement rule. Ends with an honest status table
+  and the ADR 0003 blocker.
+
+  Carries a status banner: the verification primitives ship, the resolver does not, so it is
+  an evaluation document rather than a wiring guide.
+
+  Its code blocks are extracted from the guide itself and type-checked against the real API by
+  `docsTypecheck.test.ts` (renamed from `readmeTypecheck.test.ts`, now covering both
+  documents). Verifying a snippet by copying it into a test proves the copy compiles, not the
+  document — and §3.5 is the section an integrator actually follows, so a stale call signature
+  there matters more than one in a README. Mutation-checked in three directions: the guide
+  renaming a function, the *source* renaming an option while the guide goes stale, and the
+  §3.5 headings moving so the extractor silently checks nothing.
+
+- **ADR 0003 is accepted: the voucher secret is a new composite NUT-10 kind, `P2PK_VOUCHER`**,
+  carrying both the voucher metadata and the P2PK lock and enforced by the mint as one
+  spending condition. The name follows the convention `P2PK` and `HTLC` set — naming the
+  spending mechanism rather than the use case — so a mint implementer can see a witness is
+  required, which a bare `VOUCHER` kind did not convey. `BEARER` was rejected as saying the
+  opposite of the truth: possession alone does not authorise, and since `Kind.valueOf()` makes
+  the enum name the wire string, that misreading would be permanent.
+
+  An option-2 decision (a NUT-11 `P2PK` secret carrying voucher metadata as tags) was taken
+  and reverted the same day. It was chosen for appearing to need no upstream change, but
+  `VoucherCanonicalBytes` hardcodes the `VOUCHER` kind and the voucher id into the bytes the
+  issuer signs — so under a P2PK-kind secret the issuer signature would cover a document that
+  never exists on the wire. It also collapsed two distinct meanings: `VOUCHER` says what a
+  credential is worth, `P2PK` says who may spend it.
+
+  The remaining option (an Imani `VOUCHER` kind with P2PK-shaped tags) leaves the lock
+  unenforced, since the mint dispatches first-match on kind and the voucher validator has no
+  witness check. Every option needs an upstream change, so the deciding factor became which
+  model is honest rather than which is cheapest.
+
+  **All three upstream changes are now implemented.** `cashu-lib` has the kind and
+  `P2PKVoucherSecret`; `cashu-voucher` signs and verifies it **without invalidating existing
+  signatures** (the canonical form reads the kind from the secret, which for a `VOUCHER`
+  produces byte-identical output, so the ADR's predicted migration window was not needed); and
+  `cashu-mint` enforces both conditions, matching the kind before both prior dispatch branches
+  so a locked voucher cannot fall into a path that runs half the checks.
+
+  The mint therefore backs the binding rather than NAP alone. They must still be *released*
+  before NAP's resolver ships.
+
+  The ADR also records where the new kind lives, since the question was asked twice: in
+  `cashu-lib` beside `P2PKSecret`, with its meaning in `cashu-voucher`. No sister repository
+  and no rename — `cashu-lib` owns wire formats and is organised by NUT number, while
+  `cashu-voucher`'s domain is genuinely voucher-specific (`face_value`, `backing_strategy`,
+  issuance, redemption, branded passes), so a generic name would misdescribe it.
+
+- **ADR 0003 records the voucher secret-modelling evidence** (`docs/adr/0003-voucher-secret-modelling.md`).
+  The Imani mint does **not** enforce P2PK on a VOUCHER secret:
+  `VerifyProofsTask.getSpendingCondition()` dispatches first-match on kind, so a VOUCHER
+  secret never reaches `P2PKSpendingCondition`, and `VoucherSpendingCondition` has no witness
+  check at all. Under extension 0001 §5.3 option 1 as things stand, the §3.1 binding would be
+  advisory only — checkable by the NAP server, invisible to the mint.
+
+  Status is `proposed` rather than `accepted`: what remains is an operational choice between
+  adopting option 2 now and upgrading every deployed mint first. Cross-linked from the spec's
+  review question B, its open-questions list, and its recommendation, so the answer is found
+  rather than rediscovered.
+
+- **The `@imani/nap-voucher` README is checked against the source.**
+  `readmeTypecheck.test.ts` extracts the TypeScript blocks from the README itself and
+  type-checks them against the real API, so a renamed export or a changed option name fails
+  the suite instead of silently rotting the documentation. The companion
+  `readmeExample.test.ts` executes the same wiring and pins the error messages the README
+  quotes. A hand-copied example test cannot catch drift in the document it was copied from,
+  which is the gap this closes.
+
+- **Extension 0001 is linked from RFC §22.** The RFC listed five open extensions but pointed
+  at no document, leaving the drafted extension unreachable from the spec it extends.
+
+- **`AclDecision` is re-exported from `@imani/nap-server`.** `AclResolver.resolve()` returns
+  it, so implementing that interface previously meant importing one type from
+  `@imani/nap-core` — a seam that reads as a mistake.
+
+### Added
+
+- **Mint-availability policy for `@imani/nap-voucher` (§7.3).**
+  `createMintAvailabilityPolicy()` decides what a mint failure means, and **defaults to
+  `deny`**, including when the option is omitted entirely.
+
+  That default is a security property, not a preference. Degraded mode accepts an
+  already-spent voucher: DLEQ proves the mint signed the proof but cannot tell a live one
+  from a burned one, and the NUT-07 check that could is exactly what is unavailable.
+
+  `degrade` therefore requires an explicit `degradedGrant`. There is no sensible default —
+  "the full grant" is the vulnerability, and "nothing" is a session that silently does
+  nothing while reading as though it works. The optional `destructivePermissions` list is
+  the only mechanical check that the grant is genuinely reduced, and overlap throws at
+  wiring time; without it "reduced" is a promise in a comment, and a degraded session
+  quietly carrying `voucher:redeem` is the outcome §7.3 forbids.
+
+  Only `unavailable` degrades. `mint_not_allowed`, `unknown_keyset`, and
+  `malformed_response` are a mint that answered clearly, and degrading on those would
+  treat a definite refusal as a network blip. Supplying a `degradedGrant` under `deny`
+  throws too: it means the operator believes degraded mode is on when it is not, and an
+  outage is the worst moment to discover that. The emitted grant is frozen, so a caller
+  cannot widen every subsequent degraded session.
+
+- **`@imani/nap-voucher` gains the Cashu verification client**: NUT-12 DLEQ, NUT-00
+  `hash_to_curve`, and a mint client with a keyset TTL cache and the NUT-07 state check.
+  Verified against the official NUT-12 and NUT-00 test vectors, including both DLEQ forms
+  and the deterministic-nonce vector.
+
+  `verifyProofDleq()` is the form the extension needs — a `VoucherCredential` carries a
+  `Proof` rather than a `BlindSignature`, so `B'` and `C'` are reconstructed from the
+  blinding factor `r`. DLEQ proves the mint signed the proof and says nothing about
+  whether it is still unspent, which is why the NUT-07 check is not optional (§4.2).
+
+  The client takes the `MintAllowlist` as a required constructor argument and resolves
+  through it on every call, so an unvetted `mint_url` never reaches the network (§6's SSRF
+  ordering note). `MintUnavailableError.reason` separates `unavailable` from
+  `mint_not_allowed`, `malformed_response`, and `unknown_keyset`: only the first may
+  trigger §7.3 degraded mode, and collapsing them would let degraded mode fire on a mint
+  that answered clearly and said `SPENT`.
+
+  Verification returns `false` for a failed proof and for malformed input alike, since
+  both reach the client as the same generic 401 and must not be separable by exception
+  shape or timing. Requests carry a mandatory timeout, an unknown keyset triggers exactly
+  one refetch, the state check matches on `Y` rather than trusting response order, and an
+  unrecognised state is refused rather than assumed `UNSPENT`.
+
+- **New package `@imani/nap-voucher`, carrying the mint and issuer allowlists** for
+  extension 0001 (voucher-bound authorization, §4.3). Deliberately dependency-free, per
+  the extension's build order: the verification client is built standalone and testable
+  with no NAP dependency.
+
+  Any mint can sign a voucher whose tags claim `issuer: acme` and whose metadata implies
+  `role: admin`. A valid signature says the mint signed it and nothing about whether that
+  mint has authority to make claims this server honours. Since `mint_url` arrives in the
+  request, a field choosing the mint a credential is then verified against is the same
+  vulnerability class as a header choosing the NIP-98 audience — the flaw
+  `createAudienceHostAllowlist()` exists to prevent. `resolve()` therefore matches the
+  supplied value against the list and returns the *configured* origin, so nothing
+  downstream holds a value that arrived in the request.
+
+  `createMintAllowlist()` and `createIssuerAllowlist()` both throw on an empty list at
+  wiring time: an allowlist that allows every mint is the state they exist to make
+  unrepresentable. Entries are `https` only with no opt-out — unlike the audience, this is
+  an outbound call to a third party whose answer decides an authorization, and over
+  plaintext anyone on the path can forge an `UNSPENT` state check — and wildcards are
+  refused, since these entries are third parties rather than hosts this deployment answers
+  on. `resolve()` never throws and never fetches, so a malformed `mint_url` produces the
+  same generic 401 as every other voucher failure and an unvetted URL is never reached.
+
+  Issuers are keyed on the `(mint, issuerPubkey)` pair: trusting a mint is not trusting
+  everyone who ever used it. A pair naming a mint outside the mint allowlist is refused,
+  because it is dead configuration that reads as though it grants something.
+
+  Nothing consumes this yet. The keyset cache, DLEQ, and NUT-07 check are #20; the
+  resolver is #23, blocked on the secret-modelling decision in #13.
+
+- **Guard denials now reach the `AuditLogger`.** `requirePermission()`,
+  `requireRole()`, `requireStepUp()`, and `requireSession()` in both adapters accept an
+  `auditLogger` (and an optional `metrics`) and emit one `NAP_GUARD_*` code per refusal:
+  `NAP_GUARD_NO_SESSION`, `NAP_GUARD_ACL_DENIED`, `NAP_GUARD_PERMISSION_DENIED`,
+  `NAP_GUARD_ROLE_DENIED`, `NAP_GUARD_STEP_UP_REQUIRED`.
+
+  The guards are the authorization boundary — `/auth/complete` decides who you are once,
+  the guards decide what you may do on every request after — and until now a refusal
+  there produced no record at all. An operator running the whole tutorial-06 sequence
+  against a logging server got exactly two events out, both `NAP_COMPLETE_SUCCESS`, with
+  every 401 and 403 in between invisible. CLAUDE.md's "wire an `AuditLogger` and read the
+  `code`" therefore did not help on the half of the surface that most needs it
+  (CONTEXT.md finding 12).
+
+  Three properties are deliberate. `NAP_GUARD_NO_SESSION` carries no `pubkey`, because
+  there is no principal to name, and that absence is the signal: principal-less denials
+  in bulk are unauthenticated traffic, a burst naming one principal is a permission
+  problem for that user. `NAP_GUARD_ACL_DENIED` is distinct from the existing
+  `NAP_COMPLETE_ACL_DENIED` — a denial at login and a denial at a guard have different
+  remedies, and collapsing them makes "was this user suspended mid-session?"
+  unanswerable. And a throwing audit sink costs a log line and nothing else: the denial
+  goes out byte-identical, because a 500 on exactly one branch tells an attacker which
+  branch they hit, and the guards run outside the `minAuthResponseMillis` floor that
+  smooths the auth endpoints.
+
+  Purely additive. Guards wired without an `auditLogger` behave exactly as before.
+  `GUARD_DENIAL_CODES` and `logGuardDenial()` are exported from `@imani/nap-server` for
+  anyone writing their own guard.
+
 ## [0.10.1] - 2026-08-20
 
 No behaviour change. Declares a requirement that already existed and was only discoverable by

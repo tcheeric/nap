@@ -8,9 +8,18 @@ import type {
   ChallengeRecord,
   NapErrorCode,
   SessionRecord,
+  VoucherCredential,
   VerifyCompleteFailure,
   VerifyCompleteResult,
 } from '@imani/nap-core';
+
+/**
+ * Re-exported because `AclResolver.resolve()` returns it: a consumer
+ * implementing that interface needs the type, and importing `@imani/nap-core`
+ * for one type this package's own contract names is a seam that reads as a
+ * mistake.
+ */
+export type { AclDecision } from '@imani/nap-core';
 
 export interface PermissionDefinition {
   key: string;
@@ -190,8 +199,59 @@ export interface RateLimiter {
   check(key: RateLimitKey): Promise<RateLimitDecision> | RateLimitDecision;
 }
 
+/**
+ * What the caller knows about this authorization attempt, beyond the principal.
+ *
+ * Optional at every call site, because only login has a credential to pass:
+ * guard re-resolution and refresh have a session and nothing else.
+ */
+export interface AclResolutionContext {
+  /**
+   * The voucher presented with this completion, when there was one
+   * (extension 0001).
+   *
+   * Absent on guard re-resolution and refresh, which see only a session. A
+   * resolver that needs the credential on every request cannot get it here and
+   * should cache its decision instead — see the extension's §7.2, where the
+   * cache TTL becomes the maximum staleness of an authorization decision.
+   */
+  voucher?: VoucherCredential;
+  /**
+   * The server's notion of now, in epoch seconds.
+   *
+   * Passed rather than read, so a resolver checking an expiry agrees with the
+   * clock the rest of the server is using. A component reading the wall clock
+   * while the server ran on an injected one has been a real bug here twice.
+   */
+  now: number;
+  /**
+   * The session being re-checked, on guard re-resolution and refresh.
+   *
+   * Present exactly when `voucher` is absent, and for the same reason: those
+   * callers hold a session rather than a request body. It is what lets a
+   * resolver tell "this is a re-check of an established session" from "this is
+   * a login that presented no credential" -- two situations that are identical
+   * from the credential's absence alone, and that must not be answered the same
+   * way. Extension 0001's voucher resolver denies the second and, when
+   * configured to, honours the first; without this it would deny every guarded
+   * request while login appeared to work.
+   */
+  session?: {
+    roles: string[];
+    permissions: string[];
+  };
+}
+
 export interface AclResolver {
-  resolve(npub: string, pubkey: string): Promise<AclDecision>;
+  /**
+   * Decide what this principal may do.
+   *
+   * The third parameter is **optional and additive**. Existing resolvers
+   * declaring only two parameters keep compiling and behaving identically —
+   * `createRegistryAclResolver` ignores it, which is correct: a registry
+   * resolver decides on the stored row regardless of what else was presented.
+   */
+  resolve(npub: string, pubkey: string, context?: AclResolutionContext): Promise<AclDecision>;
 }
 
 export interface AclStore {
@@ -328,6 +388,39 @@ export interface NapServerOptions {
    * at startup.
    */
   refreshTtlSeconds?: number;
+  /**
+   * Absolute ceiling on a session's lifetime, measured from the **original
+   * login** rather than from the last refresh.
+   *
+   * Without it, refresh slides the window forward every time, so a session can
+   * be kept alive indefinitely and the authorization decision made at login
+   * never expires. That is tolerable when the decision came from a stored ACL,
+   * because `resolveEffectiveAcl` re-reads it. It is not tolerable when the
+   * decision came from a credential the server can no longer see — a voucher
+   * that has since been redeemed, revoked, or expired leaves a live session
+   * behind it, and nothing in the refresh path would notice.
+   *
+   * So this is the bound on that staleness, and extension 0001 §7.1 requires
+   * setting it. Once reached, refresh fails and the holder must log in again,
+   * presenting the credential afresh.
+   *
+   * Unset means no ceiling, which preserves existing behaviour.
+   */
+  maxSessionLifetimeSeconds?: number;
+  /**
+   * Extensions this server understands, advertised on `/auth/init`.
+   *
+   * Purely declarative: setting it enables nothing, and omitting it disables
+   * nothing. It exists so a client holding a credential can tell "this server
+   * has no such feature" from "your credential was refused" — two 401s that are
+   * deliberately identical but call for opposite actions.
+   *
+   * Because it enables nothing, a stale value is a lie the server tells about
+   * itself rather than a security hole. Set it beside the wiring it describes.
+   *
+   * Extension 0001 uses `'voucher-acl/1'`.
+   */
+  supportedExtensions?: readonly string[];
   /**
    * Cap on unexpired `issued` challenges per principal (RFC §17.4). Defaults to
    * 10. Requires `ChallengeStore.countOutstanding`; skipped without it.

@@ -21,11 +21,17 @@ import {
   refreshSession,
   verifyCompletion,
   createAudienceHostAllowlist,
+  logGuardDenial,
+  GUARD_DENIAL_CODES,
   type AclResolver,
   type AudienceResolver,
+  type AuditLogger,
   type Clock,
   type EffectiveAcl,
+  type GuardDenialCode,
+  type GuardDenialDetails,
   type IssueChallengeResult,
+  type MetricsRecorder,
   type NapServerOptions,
   type PermissionRegistry,
   type RawBodyExtractor,
@@ -39,6 +45,20 @@ const REGISTERED_ROLES = new Set<string>();
 
 function currentEpochSeconds(): number {
   return Math.floor(Date.now() / 1000);
+}
+
+/**
+ * The guard's notion of now.
+ *
+ * `NapFastifyGuardOptions.clock` was previously honoured only by
+ * `resolveEffectiveAcl`, while session expiry and step-up expiry read the wall
+ * clock directly. A guard configured with an injected clock therefore agreed
+ * with the server about the ACL and disagreed about time, which is the kind of
+ * split that shows up as a session that logs in successfully and is then
+ * rejected by the very next guarded request.
+ */
+function guardNow(options: { clock?: Clock }): number {
+  return options.clock ? options.clock.nowUnix() : currentEpochSeconds();
 }
 
 export interface NapFastifyRequest extends FastifyRequest {
@@ -144,7 +164,60 @@ export interface NapFastifyGuardOptions {
    * documentation.
    */
   registry?: PermissionRegistry;
+  /**
+   * Records a `NAP_GUARD_*` code per refusal.
+   *
+   * The guards are the authorization boundary — `/auth/complete` decides who
+   * you are once, these decide what you may do on every request after — and
+   * without this a refusal is invisible: no code, no principal, no record. An
+   * operator watching the log sees an unbroken run of `NAP_COMPLETE_SUCCESS`
+   * whether or not half the traffic is being denied.
+   *
+   * Pass the same logger you gave `NapServerOptions.auditLogger`, so login and
+   * per-request authorization land in one stream.
+   */
+  auditLogger?: AuditLogger;
+  /** Pass the same recorder as `NapServerOptions.metrics` to count guard denials. */
+  metrics?: MetricsRecorder;
+  /**
+   * The guard's notion of "now", for session expiry, step-up expiry, and ACL
+   * re-resolution.
+   *
+   * Defaults to the wall clock. **Pass the same clock you gave
+   * `NapServerOptions`** if you inject one: a guard on a different clock from
+   * the server disagrees about when a session ends, and the symptom is a login
+   * that succeeds and is then refused by the very next guarded request.
+   */
   clock?: Clock;
+}
+
+/**
+ * Why a guard refused, so the denial can be audited with a code.
+ *
+ * `loadGuardContext` previously collapsed "no session" and "the ACL now denies
+ * this principal" into a single `null`, which is exactly the distinction an
+ * operator needs: the first is unauthenticated traffic, the second is a live
+ * session whose access was revoked underneath it.
+ */
+type GuardContext =
+  | { ok: true; session: SessionRecord; acl: EffectiveAcl }
+  | { ok: false; code: GuardDenialCode; session?: SessionRecord };
+
+async function denyGuard(
+  options: NapFastifyGuardOptions,
+  code: GuardDenialCode,
+  session: SessionRecord | undefined,
+  write: () => void,
+  details?: GuardDenialDetails
+): Promise<void> {
+  await logGuardDenial(code, {
+    auditLogger: options.auditLogger,
+    metrics: options.metrics,
+    session,
+    details,
+  });
+
+  write();
 }
 
 function setRawBody(req: FastifyRequest, rawBody: Uint8Array): void {
@@ -175,6 +248,26 @@ function parseCookieValue(header: string | undefined, cookieName: string): strin
   return null;
 }
 
+/**
+ * Guard options for the router's own routes, built from the server config.
+ *
+ * One builder rather than an object literal per route, for the same reason as
+ * the Express adapter: the three call sites drifted, `/auth/session` omitting
+ * `clock` while logout passed it, so a server on an injected clock judged
+ * expiry by the wall clock on exactly one endpoint.
+ *
+ * `clock` matters twice over: `loadSession` decides whether a session has
+ * expired, and `revoked_at` is a timestamp the store keeps, so a handler on the
+ * wall clock writes a revocation dated years from every other stored timestamp.
+ */
+function routeGuardOptions(options: NapFastifyOptions): NapFastifyGuardOptions {
+  return {
+    sessionStore: options.server.sessionStore,
+    cookieName: options.cookieName,
+    clock: options.server.clock,
+  };
+}
+
 async function loadSession(
   req: FastifyRequest,
   options: NapFastifyGuardOptions
@@ -199,7 +292,7 @@ async function loadSession(
     return null;
   }
 
-  if (session.revoked_at || session.expires_at <= currentEpochSeconds()) {
+  if (session.revoked_at || session.expires_at <= guardNow(options)) {
     return null;
   }
 
@@ -233,7 +326,11 @@ function rateLimited(reply: FastifyReply, retryAfterSeconds?: number): void {
   });
 }
 
-function hasValidStepUpToken(req: FastifyRequest, session: SessionRecord): boolean {
+function hasValidStepUpToken(
+  req: FastifyRequest,
+  session: SessionRecord,
+  options: NapFastifyGuardOptions
+): boolean {
   const providedToken = req.headers['x-step-up-token'];
   const stepUpToken = Array.isArray(providedToken) ? providedToken[0] : providedToken;
 
@@ -242,7 +339,7 @@ function hasValidStepUpToken(req: FastifyRequest, session: SessionRecord): boole
       session.step_up_token &&
       constantTimeEquals(session.step_up_token, stepUpToken) &&
       session.step_up_expires_at &&
-      session.step_up_expires_at > currentEpochSeconds()
+      session.step_up_expires_at > guardNow(options)
   );
 }
 
@@ -259,11 +356,11 @@ function requiresStepUp(permission: string, registry: PermissionRegistry | undef
 async function loadGuardContext(
   req: FastifyRequest,
   options: NapFastifyGuardOptions
-): Promise<{ session: SessionRecord; acl: EffectiveAcl } | null> {
+): Promise<GuardContext> {
   const session = await loadSession(req, options);
 
   if (!session) {
-    return null;
+    return { ok: false, code: GUARD_DENIAL_CODES.NO_SESSION };
   }
 
   const acl = await resolveEffectiveAcl(session, {
@@ -272,7 +369,11 @@ async function loadGuardContext(
     clock: options.clock,
   });
 
-  return acl ? { session, acl } : null;
+  // The session was valid, so the principal is nameable even though the ACL
+  // just refused them — which is the whole value of auditing this branch apart.
+  return acl
+    ? { ok: true, session, acl }
+    : { ok: false, code: GUARD_DENIAL_CODES.ACL_DENIED, session };
 }
 
 function authCompleteUrl(req: FastifyRequest, options: NapFastifyOptions): string {
@@ -457,15 +558,35 @@ export function createRequestDerivedBaseUrlResolver(
   return (req) => allow(req.headers.host, req.protocol);
 }
 
+/**
+ * What the cookie gets unless the caller says otherwise.
+ *
+ * The shortest call that compiles has to be the safe one: this cookie carries the access
+ * token, so an unset `httpOnly` hands it to any script on the page, an unset `secure` puts
+ * it on the wire in cleartext, and an unset `sameSite` attaches it to cross-site requests.
+ * `nap-java` defaults the same way, so the same deployment behaves alike on both runtimes.
+ */
+const SECURE_COOKIE_DEFAULTS = {
+  httpOnly: true,
+  secure: true,
+  sameSite: 'lax',
+  path: '/',
+} as const;
+
 export function writeNapCookieSuccess(
   cookieName: string,
   cookieOptions?: SerializeOptions,
   transformBody?: (body: ReturnType<typeof toPublicAuthSuccess>) => unknown
-): NapFastifyOptions['writeSuccess'] {
-  // Snapshotted here, and used by both the set below and the logout clear that reads the
-  // stamp. Holding the caller's object instead would let a mutation after wiring move one
-  // of the two without the other — the drift this whole pairing exists to prevent.
-  const attrs = cookieOptions ? { ...cookieOptions } : undefined;
+): NonNullable<NapFastifyOptions['writeSuccess']> {
+  // Merged over the secure defaults, not replacing them: a caller passing
+  // `{ domain: '.example.com' }` means to add a domain, not to drop HttpOnly, Secure and
+  // SameSite from the one cookie that carries the access token. Spreading last still lets
+  // an explicit `httpOnly: false` win, which is the local-development escape hatch.
+  //
+  // Snapshotted here too, and used by both the set below and the logout clear that reads
+  // the stamp. Holding the caller's object instead would let a mutation after wiring move
+  // one of the two without the other — the drift this whole pairing exists to prevent.
+  const attrs: SerializeOptions = { ...SECURE_COOKIE_DEFAULTS, ...cookieOptions };
 
   const write: NonNullable<NapFastifyOptions['writeSuccess']> = ({ reply, body }) => {
     reply.header('set-cookie', serialize(cookieName, body.access_token, attrs));
@@ -478,9 +599,7 @@ export function writeNapCookieSuccess(
   }
 
   // So the logout handler can clear with what the set used, instead of guessing `path: '/'`.
-  if (attrs) {
-    Object.defineProperty(write, COOKIE_ATTRS, { value: attrs });
-  }
+  Object.defineProperty(write, COOKIE_ATTRS, { value: attrs });
 
   Object.defineProperty(write, COOKIE_NAME, { value: cookieName });
 
@@ -646,10 +765,7 @@ export function createNapFastifyRefreshHandler(options: NapFastifyOptions): Rout
  */
 export function createNapFastifySessionHandler(options: NapFastifyOptions): RouteHandlerMethod {
   return async (req, reply) => {
-    const session = await loadSession(req, {
-      sessionStore: options.server.sessionStore,
-      cookieName: options.cookieName,
-    });
+    const session = await loadSession(req, routeGuardOptions(options));
 
     if (!session) {
       unauthorized(reply);
@@ -669,15 +785,13 @@ export function createNapFastifySessionHandler(options: NapFastifyOptions): Rout
  */
 export function createNapFastifyLogoutHandler(options: NapFastifyOptions): RouteHandlerMethod {
   return async (req, reply) => {
-    const session = await loadSession(req, {
-      sessionStore: options.server.sessionStore,
-      cookieName: options.cookieName,
-    });
+    const guardOptions = routeGuardOptions(options);
+    const session = await loadSession(req, guardOptions);
 
     if (session) {
       await options.server.sessionStore.revokeBySessionId(
         session.session_id,
-        currentEpochSeconds()
+        guardNow(guardOptions)
       );
     }
 
@@ -717,13 +831,21 @@ export function requirePermission(
   return async (req, reply) => {
     const context = await loadGuardContext(req, options);
 
-    if (!context) {
-      unauthorized(reply);
+    if (!context.ok) {
+      await denyGuard(options, context.code, context.session, () => unauthorized(reply), {
+        permission,
+      });
       return;
     }
 
     if (!context.acl.permissions.includes(permission)) {
-      forbidden(reply);
+      await denyGuard(
+        options,
+        GUARD_DENIAL_CODES.PERMISSION_DENIED,
+        context.session,
+        () => forbidden(reply),
+        { permission }
+      );
       return;
     }
 
@@ -732,9 +854,15 @@ export function requirePermission(
     // is silent.
     if (
       requiresStepUp(permission, options.registry) &&
-      !hasValidStepUpToken(req, context.session)
+      !hasValidStepUpToken(req, context.session, options)
     ) {
-      forbidden(reply, 'step-up required');
+      await denyGuard(
+        options,
+        GUARD_DENIAL_CODES.STEP_UP_REQUIRED,
+        context.session,
+        () => forbidden(reply, 'step-up required'),
+        { permission }
+      );
       return;
     }
   };
@@ -776,13 +904,21 @@ export function requireRole(
   return async (req, reply) => {
     const context = await loadGuardContext(req, options);
 
-    if (!context) {
-      unauthorized(reply);
+    if (!context.ok) {
+      await denyGuard(options, context.code, context.session, () => unauthorized(reply), {
+        roles: accepted,
+      });
       return;
     }
 
     if (!accepted.some((entry) => context.acl.roles.includes(entry))) {
-      forbidden(reply);
+      await denyGuard(
+        options,
+        GUARD_DENIAL_CODES.ROLE_DENIED,
+        context.session,
+        () => forbidden(reply),
+        { roles: accepted }
+      );
       return;
     }
   };
@@ -793,12 +929,16 @@ export function requireStepUp(options: NapFastifyGuardOptions): preHandlerHookHa
     const session = await loadSession(req, options);
 
     if (!session) {
-      unauthorized(reply);
+      await denyGuard(options, GUARD_DENIAL_CODES.NO_SESSION, undefined, () =>
+        unauthorized(reply)
+      );
       return;
     }
 
-    if (!hasValidStepUpToken(req, session)) {
-      forbidden(reply, 'step-up required');
+    if (!hasValidStepUpToken(req, session, options)) {
+      await denyGuard(options, GUARD_DENIAL_CODES.STEP_UP_REQUIRED, session, () =>
+        forbidden(reply, 'step-up required')
+      );
       return;
     }
   };
@@ -823,8 +963,8 @@ export function requireSession(options: NapFastifyGuardOptions): preHandlerHookH
   return async (req, reply) => {
     const context = await loadGuardContext(req, options);
 
-    if (!context) {
-      unauthorized(reply);
+    if (!context.ok) {
+      await denyGuard(options, context.code, context.session, () => unauthorized(reply));
       return;
     }
   };

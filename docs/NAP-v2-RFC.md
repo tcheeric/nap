@@ -871,6 +871,48 @@ The following are intentionally left out of the core RFC:
 
 Each of those should be specified as an extension, not implied by the core profile.
 
+### 22.1 Drafted extensions
+
+| Extension | Status | Relates to |
+| --- | --- | --- |
+| [0001 — Voucher-Bound Authorization](./extensions/0001-voucher-bound-authorization.md) | Draft, partially implemented | §15, and items 1 and 5 above |
+
+Extension 0001 lets an Imani-issued Cashu voucher supply a session's roles and
+permissions in place of a stored ACL row. It changes **authorization only** —
+the challenge-bound NIP-98 authentication of §11 and §12 is untouched, byte for
+byte — and it remains an extension permanently rather than folding into the core
+profile.
+
+**Confirmed 2026-09-01**, after implementation rather than before it, which is
+what makes it worth stating: nothing in the core profile changed to accommodate
+extension 0001. Authentication is byte-identical, and the extension's demands —
+a mint, two allowlists, a Cashu dependency, an availability policy — are exactly
+the kind of thing §22 exists to keep out of a profile whose whole claim is that
+it is small enough to implement correctly. A deployment that never uses vouchers
+carries none of it.
+
+The two core-surface changes made while building it are both **general** rather
+than voucher-specific, which is the test a core edit has to pass:
+`AclResolutionContext` (§25.3) carries whatever a caller knows about a
+resolution, and `maxSessionLifetimeSeconds` bounds session lifetime for any
+credential the server cannot re-read. Neither mentions vouchers, and both would
+be defensible had the extension never existed.
+
+### 22.2 Extension capability advertisement
+
+A server MAY advertise the extensions it understands in `supported_extensions`
+on `AuthInitResponse` (§24.3), using the extension's registered name — extension
+0001 is `voucher-acl/1`.
+
+The field describes the **server**, not the principal, and is sent before the
+client has signed anything: it names a publicly documented feature and reveals
+nothing about any principal or credential. It therefore does not weaken the
+uniform-failure rule of §19, which governs what a *failure* may disclose.
+
+A client MUST treat an absent field as **"makes no claim"** rather than as a
+denial. Every server predating this field omits it, including servers that
+support an extension, so treating absence as refusal would lock those out.
+
 ---
 
 ## 23. Final Recommendations
@@ -918,6 +960,8 @@ export interface AuthInitResponse {
   auth_method: 'POST';
   issued_at: number;
   expires_at: number;
+  /** Optional; see §22.2. */
+  supported_extensions?: string[];
 }
 ```
 
@@ -1011,6 +1055,10 @@ export interface ChallengeRecord {
   redeemed_event_id?: string;
   redeemed_session_id?: string;
   result_cache_until?: number;
+  /** Caller address, when the deployment records it for rate limiting (§18). */
+  client_ip?: string;
+  /** Consecutive failed completions, when the store tracks them (§18). */
+  failure_count?: number;
 }
 ```
 
@@ -1027,8 +1075,13 @@ export interface SessionRecord {
   permissions: string[];
   issued_at: number;
   expires_at: number;
+  /** Step-up token and its expiry, when the completion requested one (§16). */
+  step_up_token?: string;
+  step_up_expires_at?: number;
   refresh_token?: string;
   refresh_expires_at?: number;
+  /** The token this one replaced, retained so one replay is detectable (§14.1). */
+  previous_refresh_token?: string;
   revoked_at?: number;
 }
 ```
@@ -1049,6 +1102,13 @@ export interface ChallengeStore {
     | { status: 'expired' }
   >;
   markExpired(now: number): Promise<number>;
+  /** Outstanding-challenge cap (§18). Optional; the cap is skipped without it. */
+  countOutstanding?(filter: OutstandingChallengeFilter): Promise<number>;
+  /** Per-challenge failure tracking (§18). Optional. */
+  recordFailure?(
+    challengeId: string,
+    params: { now: number; maxFailures: number }
+  ): Promise<RecordChallengeFailureResult | null>;
 }
 
 export interface SessionStore {
@@ -1057,28 +1117,89 @@ export interface SessionStore {
   getByAccessToken(token: string): Promise<SessionRecord | null>;
   revokeBySessionId(sessionId: string, now: number): Promise<void>;
   revokeByPrincipal(pubkey: string, now: number): Promise<number>;
+  /**
+   * Refresh support (§14.1). Optional as a pair: a server configuring
+   * `refreshTtlSeconds` without a store implementing both fails at wiring time
+   * rather than on the first refresh.
+   */
+  getByRefreshToken?(token: string): Promise<SessionRecord | null>;
+  rotateRefreshToken?(
+    sessionId: string,
+    params: RotateRefreshTokenParams
+  ): Promise<SessionRecord | null>;
 }
 
 export interface AclDecision {
   allowed: boolean;
   roles: string[];
   permissions: string[];
+  /** Audit-facing explanation. Never surfaced to the client (§19). */
+  reason?: string;
+  /**
+   * Set only on a denial the resolver is certain about, which revokes every
+   * session the principal holds. Omitting it denies one request and leaves
+   * sessions intact — the safe default, since a resolver that could not *read*
+   * the ACL would otherwise log the principal out everywhere.
+   */
+  revoke_sessions?: boolean;
+  /**
+   * Latest instant this decision remains valid. The session expiry is clamped
+   * to it, so a session cannot outlive what authorised it. Only ever shortens:
+   * a resolver MUST NOT be able to issue longer sessions than the operator
+   * configured.
+   */
+  expires_at?: number;
+}
+
+/**
+ * What the caller knows about this resolution beyond the principal.
+ *
+ * Every field is optional and additive; a resolver declaring only two
+ * parameters is conformant and behaves identically.
+ */
+export interface AclResolutionContext {
+  /** The server's notion of now, passed rather than read from the wall clock. */
+  now: number;
+  /**
+   * A credential presented with this completion, when an extension defines one
+   * — extension 0001 puts a voucher here. Absent on re-resolution and refresh,
+   * which hold a session rather than a request body.
+   */
+  voucher?: VoucherCredential;
+  /**
+   * The session being re-checked, present on guard re-resolution and refresh
+   * and absent at login.
+   *
+   * It is what lets a resolver distinguish "a re-check of an established
+   * session" from "a login that presented no credential" — indistinguishable
+   * from a missing credential alone, and answering them alike denies every
+   * guarded request.
+   */
+  session?: { roles: string[]; permissions: string[] };
 }
 
 export interface AclResolver {
-  resolve(npub: string, pubkey: string): Promise<AclDecision>;
+  resolve(
+    npub: string,
+    pubkey: string,
+    context?: AclResolutionContext
+  ): Promise<AclDecision>;
 }
 
 export interface RateLimiter {
-  consume(key: string): Promise<{ allowed: boolean; retry_after_seconds?: number }>;
+  check(key: RateLimitKey): Promise<RateLimitDecision> | RateLimitDecision;
 }
 
-export interface AudienceResolver<RequestLike = unknown> {
-  getExternalUrl(request: RequestLike): string;
+export interface AudienceResolver<TRequest = unknown> {
+  resolve(request: TRequest): string;
 }
 
-export interface RawBodyExtractor<RequestLike = unknown> {
-  getRawBody(request: RequestLike): Promise<Uint8Array> | Uint8Array;
+export interface RawBodyExtractor<TRequest = unknown> {
+  /**
+   * The exact bytes received, or `null` when they are unavailable — which MUST
+   * be treated as a failure, never as an empty body (§12 step 4).
+   */
+  extract(request: TRequest): Uint8Array | null;
 }
 
 export interface Clock {
@@ -1117,6 +1238,8 @@ export interface VerifyCompleteFailure {
   ok: false;
   code: NapErrorCode;
   retryable: boolean;
+  /** Set on `NAP_COMPLETE_RATE_LIMITED`, for the adapter's `Retry-After` header. */
+  retryAfterSeconds?: number;
 }
 
 export type VerifyCompleteResult =

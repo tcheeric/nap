@@ -1,0 +1,401 @@
+import Fastify from 'fastify';
+import { getPublicKey, nip19 } from 'nostr-tools';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { hexToBytes, type SessionRecord } from '@imani/nap-core';
+import {
+  GUARD_DENIAL_CODES,
+  InMemorySessionStore,
+  type AclResolver,
+  type AuditLogger,
+  type NapServerOptions,
+  type PermissionRegistry,
+} from '@imani/nap-server';
+import {
+  createNapFastifySessionHandler,
+  requirePermission,
+  requireRole,
+  requireSession,
+  requireStepUp,
+  resetPermissionValidationState,
+  type NapFastifyGuardOptions,
+} from '../src/index.js';
+
+const PRIVATE_KEY_HEX = '1111111111111111111111111111111111111111111111111111111111111111';
+const PRIVATE_KEY_BYTES = hexToBytes(PRIVATE_KEY_HEX);
+const PUBKEY = getPublicKey(PRIVATE_KEY_BYTES);
+const NPUB = nip19.npubEncode(PUBKEY);
+const HEADERS = { cookie: 'session=token-1' };
+
+const REGISTRY: PermissionRegistry = {
+  appId: 'possa-merchant',
+  permissions: [
+    { key: 'voucher:issue', description: 'Issue vouchers', stepUp: false },
+    { key: 'stripe:manage', description: 'Manage Stripe', stepUp: true },
+  ],
+  roles: [
+    {
+      key: 'merchant',
+      description: 'Merchant access',
+      permissions: ['voucher:issue', 'stripe:manage'],
+    },
+  ],
+  defaultRole: 'merchant',
+};
+
+type Recorded = Parameters<AuditLogger['log']>[0];
+
+function recordingAuditLogger(): { logger: AuditLogger; events: Recorded[] } {
+  const events: Recorded[] = [];
+
+  return {
+    events,
+    logger: {
+      log(event) {
+        events.push(event);
+      },
+    },
+  };
+}
+
+async function seedSession(
+  sessionStore: InMemorySessionStore,
+  overrides: Record<string, unknown> = {}
+) {
+  const now = Math.floor(Date.now() / 1000);
+
+  return sessionStore.createForChallenge({
+    session_id: 'session-1',
+    challenge_id: 'challenge-1',
+    access_token: 'token-1',
+    principal_npub: NPUB,
+    principal_pubkey: PUBKEY,
+    roles: ['merchant'],
+    permissions: ['voucher:issue'],
+    issued_at: now,
+    expires_at: now + 900,
+    ...overrides,
+  } as Parameters<InMemorySessionStore['createForChallenge']>[0]);
+}
+
+const DENYING_RESOLVER: AclResolver = {
+  async resolve() {
+    return { allowed: false, roles: [], permissions: [], revoke_sessions: false };
+  },
+};
+
+describe('fastify guard audit logging (CONTEXT.md finding 12)', () => {
+  beforeEach(() => {
+    resetPermissionValidationState();
+  });
+
+  it('records NAP_GUARD_NO_SESSION with no principal', async () => {
+    const sessionStore = new InMemorySessionStore();
+    const { logger, events } = recordingAuditLogger();
+    const app = Fastify();
+    app.get('/protected', {
+      preHandler: requirePermission('voucher:issue', { sessionStore, auditLogger: logger }),
+      handler: async () => ({ status: 'ok' }),
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/protected' });
+
+    expect(response.statusCode).toBe(401);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.code).toBe(GUARD_DENIAL_CODES.NO_SESSION);
+    expect(events[0]?.pubkey).toBeUndefined();
+  });
+
+  it('records NAP_GUARD_PERMISSION_DENIED naming the principal', async () => {
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore);
+    const { logger, events } = recordingAuditLogger();
+    const app = Fastify();
+    app.get('/protected', {
+      preHandler: requirePermission('stripe:manage', { sessionStore, auditLogger: logger }),
+      handler: async () => ({ status: 'ok' }),
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/protected', headers: HEADERS });
+
+    expect(response.statusCode).toBe(403);
+    expect(events[0]?.code).toBe(GUARD_DENIAL_CODES.PERMISSION_DENIED);
+    expect(events[0]?.pubkey).toBe(PUBKEY);
+    expect(events[0]?.details?.permission).toBe('stripe:manage');
+  });
+
+  it('distinguishes an ACL denial from an absent session', async () => {
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore);
+    const { logger, events } = recordingAuditLogger();
+    const app = Fastify();
+    app.get('/protected', {
+      preHandler: requirePermission('voucher:issue', {
+        sessionStore,
+        auditLogger: logger,
+        aclResolver: DENYING_RESOLVER,
+      }),
+      handler: async () => ({ status: 'ok' }),
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/protected', headers: HEADERS });
+
+    expect(response.statusCode).toBe(401);
+    expect(events[0]?.code).toBe(GUARD_DENIAL_CODES.ACL_DENIED);
+    expect(events[0]?.pubkey).toBe(PUBKEY);
+  });
+
+  it('records NAP_GUARD_ROLE_DENIED with the accepted roles', async () => {
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore, { roles: ['customer'] });
+    const { logger, events } = recordingAuditLogger();
+    const app = Fastify();
+    app.get('/staff', {
+      preHandler: requireRole(['admin', 'owner'], { sessionStore, auditLogger: logger }),
+      handler: async () => ({ status: 'ok' }),
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/staff', headers: HEADERS });
+
+    expect(response.statusCode).toBe(403);
+    expect(events[0]?.code).toBe(GUARD_DENIAL_CODES.ROLE_DENIED);
+    expect(events[0]?.details?.roles).toEqual(['admin', 'owner']);
+  });
+
+  it('records step-up denials from both requireStepUp and requirePermission', async () => {
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore, { permissions: ['stripe:manage'] });
+    const { logger, events } = recordingAuditLogger();
+    const app = Fastify();
+    app.get('/danger', {
+      preHandler: requireStepUp({ sessionStore, auditLogger: logger }),
+      handler: async () => ({ status: 'ok' }),
+    });
+    app.get('/managed', {
+      preHandler: requirePermission('stripe:manage', {
+        sessionStore,
+        auditLogger: logger,
+        registry: REGISTRY,
+      }),
+      handler: async () => ({ status: 'ok' }),
+    });
+
+    expect(
+      (await app.inject({ method: 'GET', url: '/danger', headers: HEADERS })).statusCode
+    ).toBe(403);
+    expect(
+      (await app.inject({ method: 'GET', url: '/managed', headers: HEADERS })).statusCode
+    ).toBe(403);
+
+    expect(events.map((event) => event.code)).toEqual([
+      GUARD_DENIAL_CODES.STEP_UP_REQUIRED,
+      GUARD_DENIAL_CODES.STEP_UP_REQUIRED,
+    ]);
+  });
+
+  it('records a denial from requireSession and nothing on success', async () => {
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore);
+    const { logger, events } = recordingAuditLogger();
+    const app = Fastify();
+    app.get('/me', {
+      preHandler: requireSession({ sessionStore, auditLogger: logger }),
+      handler: async () => ({ status: 'ok' }),
+    });
+
+    expect((await app.inject({ method: 'GET', url: '/me', headers: HEADERS })).statusCode).toBe(200);
+    expect(events).toEqual([]);
+
+    expect((await app.inject({ method: 'GET', url: '/me' })).statusCode).toBe(401);
+    expect(events.map((event) => event.code)).toEqual([GUARD_DENIAL_CODES.NO_SESSION]);
+  });
+
+  it('honours an injected clock for session expiry', async () => {
+    // Same regression as the Express adapter: `clock` reached
+    // resolveEffectiveAcl but session expiry read the wall clock.
+    const now = 1_710_000_000;
+    // The store shares the clock too: its eviction sweep would otherwise read
+    // the wall clock and collect this fixture as long expired.
+    const clock = { nowUnix: () => now };
+    const sessionStore = new InMemorySessionStore({ clock });
+    await seedSession(sessionStore, { issued_at: now, expires_at: now + 900 });
+    const { logger, events } = recordingAuditLogger();
+    const app = Fastify();
+    app.get('/protected', {
+      preHandler: requirePermission('voucher:issue', {
+        sessionStore,
+        auditLogger: logger,
+        clock,
+      }),
+      handler: async () => ({ status: 'ok' }),
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/protected', headers: HEADERS });
+
+    expect(response.statusCode).toBe(200);
+    expect(events).toEqual([]);
+  });
+
+  it('treats a session as expired when the injected clock has moved past it', async () => {
+    const now = 1_710_000_000;
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore, { issued_at: now, expires_at: now + 900 });
+    const { logger, events } = recordingAuditLogger();
+    const app = Fastify();
+    app.get('/protected', {
+      preHandler: requirePermission('voucher:issue', {
+        sessionStore,
+        auditLogger: logger,
+        clock: { nowUnix: () => now + 901 },
+      }),
+      handler: async () => ({ status: 'ok' }),
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/protected', headers: HEADERS });
+
+    expect(response.statusCode).toBe(401);
+    expect(events[0]?.code).toBe(GUARD_DENIAL_CODES.NO_SESSION);
+  });
+
+  it('still denies when the audit sink throws', async () => {
+    const sessionStore = new InMemorySessionStore();
+    await seedSession(sessionStore);
+    const app = Fastify();
+    app.get('/protected', {
+      preHandler: requirePermission('stripe:manage', {
+        sessionStore,
+        auditLogger: {
+          log() {
+            throw new Error('audit sink down');
+          },
+        },
+      }),
+      handler: async () => ({ status: 'ok' }),
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/protected', headers: HEADERS });
+
+    // A 500 on exactly one branch is a side channel; a broken sink costs a log
+    // line and nothing else.
+    expect(response.statusCode).toBe(403);
+  });
+});
+
+/**
+ * Parity with the Express adapter on the re-resolution context (#24).
+ *
+ * The session snapshot that stops a voucher resolver denying every guarded
+ * request is added in `resolveEffectiveAcl`, which both adapters call. That
+ * makes parity likely rather than certain, and "both call the same function" is
+ * an argument, not evidence — an adapter could route one guard differently.
+ *
+ * `requireStepUp` is deliberately absent: it checks the token and never
+ * re-resolves the ACL, in either adapter. Asserting a context there would be
+ * asserting a behaviour neither has.
+ */
+describe('guards pass the session to the resolver', () => {
+  const NOW = 1_710_000_000;
+
+  const clock = { nowUnix: () => NOW };
+
+  const seed = async () => {
+    const sessionStore = new InMemorySessionStore({ clock });
+    await sessionStore.createForChallenge({
+      challenge_id: 'c1',
+      session_id: 's1',
+      access_token: 'tok',
+      principal_npub: 'npub1x',
+      principal_pubkey: 'ff'.repeat(32),
+      app_id: 'app',
+      roles: ['holder'],
+      permissions: ['thing:read'],
+      issued_at: NOW,
+      expires_at: NOW + 900,
+    } as SessionRecord);
+
+    return sessionStore;
+  };
+
+  const run = async (guard: (options: NapFastifyGuardOptions) => never) => {
+    let seen: { session?: { roles: string[]; permissions: string[] } } | undefined;
+    const options = {
+      sessionStore: await seed(),
+      clock,
+      aclResolver: {
+        async resolve(_npub: string, _pubkey: string, context?: typeof seen) {
+          seen = context;
+          return { allowed: true, roles: ['holder'], permissions: ['thing:read'] };
+        },
+      },
+    } as unknown as NapFastifyGuardOptions;
+
+    const app = Fastify();
+    app.get('/x', { preHandler: guard(options) }, async () => ({ ok: true }));
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/x',
+      headers: { authorization: 'Bearer tok' },
+    });
+
+    return { status: response.statusCode, seen };
+  };
+
+  it.each([
+    ['requirePermission', (o: NapFastifyGuardOptions) => requirePermission('thing:read', o)],
+    ['requireRole', (o: NapFastifyGuardOptions) => requireRole(['holder'], o)],
+    ['requireSession', (o: NapFastifyGuardOptions) => requireSession(o)],
+  ])('%s carries the session snapshot', async (_label, guard) => {
+    const { status, seen } = await run(guard as never);
+
+    expect(status).toBe(200);
+    expect(seen?.session).toEqual({ roles: ['holder'], permissions: ['thing:read'] });
+  });
+});
+
+/**
+ * `GET /auth/session` used to build its guard options without `clock`, so a
+ * server with an injected clock had exactly one endpoint judging expiry by the
+ * wall clock. The pair of tests is the point: the first alone could be passed
+ * by simply not checking expiry at all.
+ */
+describe('/auth/session honours the server clock (#38)', () => {
+  const now = 1_710_000_000;
+
+  async function buildApp(
+    sessionStore: InMemorySessionStore,
+    clock: { nowUnix(): number }
+  ) {
+    const app = Fastify();
+    app.get(
+      '/auth/session',
+      createNapFastifySessionHandler({
+        server: { sessionStore, clock } as unknown as NapServerOptions,
+        getExternalBaseUrl: () => 'https://api.example.com',
+      })
+    );
+
+    return app;
+  }
+
+  it('returns the session when the injected clock says it is live', async () => {
+    const clock = { nowUnix: () => now };
+    const sessionStore = new InMemorySessionStore({ clock });
+    await seedSession(sessionStore, { issued_at: now, expires_at: now + 900 });
+    const app = await buildApp(sessionStore, clock);
+
+    const response = await app.inject({ method: 'GET', url: '/auth/session', headers: HEADERS });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().expires_at).toBe(now + 900);
+  });
+
+  it('still refuses a session the injected clock has moved past', async () => {
+    const sessionStore = new InMemorySessionStore({ clock: { nowUnix: () => now } });
+    await seedSession(sessionStore, { issued_at: now, expires_at: now + 900 });
+    const app = await buildApp(sessionStore, { nowUnix: () => now + 901 });
+
+    const response = await app.inject({ method: 'GET', url: '/auth/session', headers: HEADERS });
+
+    expect(response.statusCode).toBe(401);
+  });
+});

@@ -19,7 +19,7 @@ reference underneath it; sections that a tutorial walks say so.
 0. [Before you start](#0-before-you-start)
 1. [What NAP is and the problem it solves](#1-what-nap-is-and-the-problem-it-solves)
 2. [Protocol walkthrough](#2-protocol-walkthrough)
-3. [Authorisation model](#3-authorisation-model)
+3. [Authorisation model](#3-authorisation-model) — including [mint-backed authorisation](#35-mint-backed-authorisation)
 4. [TypeScript package map](#4-typescript-package-map)
 5. [Integration guide — TypeScript backend](#5-integration-guide--typescript-backend)
 6. [Integration guide — frontend](#6-integration-guide--frontend)
@@ -740,6 +740,485 @@ access. What it does not buy you is protection from a hostile page that already 
 signer access, which just calls `stepUp()` itself. Mark destructive permissions
 `stepUp: true` to cap blast radius, and do not tell users it means they approved
 something. RFC §7.1 and §10.3 spell this out.
+
+### 3.5 Mint-backed authorisation
+
+> For *why* a mint is involved at all — the problem it solves, the naive design it
+> replaces, and what it costs — see
+> [how NAP uses a Cashu mint for authorisation](./explanation/mint-backed-authorisation.md).
+> This section is the operator-facing account: what to wire, in what order, and what fails.
+
+
+> **Status: partially implemented, not shippable yet.** The verification
+> primitives below are built, tested, and released in `@imani/nap-voucher`. The
+> resolver that joins them to a login is not, because it is blocked on an
+> unsettled modelling question ([ADR 0003](./adr/0003-voucher-secret-modelling.md)).
+> Read this to evaluate the approach; do not read it as a wiring guide for
+> production. The full design is
+> [extension 0001](./extensions/0001-voucher-bound-authorization.md).
+>
+> The code blocks below are extracted from this file and type-checked against
+> the real API by `packages/nap-voucher/test/docsTypecheck.test.ts`, so a
+> renamed export or a changed option name fails the suite rather than rotting
+> here.
+
+Everything in §3.1–§3.4 answers "what may this principal do?" from a **stored ACL
+row**, provisioned in advance against a pubkey you already know. Mint-backed
+authorisation answers the same question from a **Cashu voucher** the caller
+presents, signed by an issuer you trust.
+
+It changes authorisation only. NIP-98 authentication (§2) is untouched, byte for
+byte: the client still signs, the server still verifies identically. What changes
+is the *meaning* of the key that signs.
+
+#### 3.5.1 What it buys, and what it costs
+
+| Property | Stored ACL (§3.1–3.4) | Mint-backed |
+| --- | --- | --- |
+| Pre-registration | Required — you need the npub in advance | **None** — the credential is bearer-issued |
+| Long-term identity | The user's real npub | A per-voucher burner key |
+| Where authority lives | Your database | The voucher, signed by its issuer |
+| Cross-session linkability | High — same npub every time | Low — a key per voucher |
+| Login availability | Your store only | **Also the mint** (§3.5.5) |
+| Revocation latency | Immediate on ACL write | Bounded by cache TTL, or a ledger watcher |
+
+The practical driver is the first row. A merchant can hand out a voucher granting
+`voucher:redeem` to whoever holds it, without ever learning a customer's npub or
+writing an ACL row. If you already know your users, the stored ACL is simpler and
+strictly more available — **use it.** This is for the case where you deliberately
+do not.
+
+#### 3.5.2 The binding is the whole design
+
+A voucher alone authenticates nothing. The proof carries a NUT-11 P2PK lock
+naming a public key `K`, and the completion's NIP-98 event must be signed by `K`:
+
+```
+voucher proof --P2PK--> K <--signs-- NIP-98 completion event
+```
+
+That equality is the design; everything else is plumbing.
+
+- **Holding the voucher without `K`** proves nothing: the completion cannot be
+  signed.
+- **Holding `K` without the voucher** proves nothing: there is no authorisation
+  to resolve, and the resolver denies.
+- **Replaying a captured completion** is already prevented by the core profile —
+  the challenge is single-use and atomically redeemed (§2).
+
+`K` should be freshly generated per voucher by the issuing wallet and should not
+be the holder's personal identity key. Nothing enforces this: a holder who locks
+a voucher to their long-term npub simply gets today's linkability back.
+
+Note what this rules out. "Just send the voucher instead of signing" fails on
+four counts: no freshness (a voucher carries no challenge binding, so replay is
+unbounded in time), bearer-over-the-wire (anything that sees the request — a
+TLS-terminating proxy, an access log, an APM trace — can reuse it), verification
+by spending (proving a proof live by swapping it burns the voucher on every login
+and races the retry-safe completion path), and no principal to key a session on.
+
+#### 3.5.3 The mint is mandatory, and so are two allowlists
+
+Three independent reasons, each sufficient alone:
+
+1. **A keyset id is not a locator.** A Cashu proof carries `id`, not a mint URL.
+   Without `mint_url` the server cannot fetch `/v1/keys` and so cannot verify
+   anything at all.
+2. **Liveness is mint-local state.** NUT-12 DLEQ proves *the mint signed this
+   proof*. It says nothing about whether the proof is still unspent — a burned
+   voucher carries a perfectly valid DLEQ. Only a NUT-07 state check
+   distinguishes them.
+3. **Trust is per-mint.** Any mint can sign a voucher whose tags claim
+   `issuer: acme` and whose metadata implies `role: admin`. **Signature validity
+   says nothing about issuer authority.**
+
+That third point is why the allowlist is not optional, and it is the
+highest-severity surface in this design. `mint_url` arrives *in the request*. A
+request field choosing the mint a credential is then verified against is the same
+vulnerability class as a request header choosing the NIP-98 audience — the flaw
+`createRequestDerivedBaseUrlResolver`'s mandatory allowlist exists to prevent
+(§9.4, WebAuthn L3 §13.5.9). **Treat any relaxation here as the single most
+dangerous change you can make in this area.**
+
+```ts
+import { createMintAllowlist, createIssuerAllowlist } from '@imani/nap-voucher';
+
+const mints = createMintAllowlist(['https://mint.example.com']);
+const issuers = createIssuerAllowlist(
+  [{ mint: 'https://mint.example.com', issuerPubkey: '<64 hex chars>' }],
+  mints,
+);
+
+// Matched against the list; never trusted to select from it. Returns the
+// *configured* origin, so nothing downstream holds a request-supplied value.
+const mint = mints.resolve(credential.mint_url);   // string | null
+```
+
+Built the same way as the audience allowlist (§9.4): no default, no implicit "any
+mint", and an empty array throws at wiring time rather than failing per request.
+Two deliberate divergences from that precedent:
+
+- **`https` only, with no opt-out.** The audience allowlist permits `http`
+  because a deployment may terminate TLS elsewhere and speak plaintext on a
+  trusted internal hop. Nothing analogous applies here: this is an outbound call
+  to a third party, carrying a credential, whose answer decides an
+  authorisation. Over plaintext anyone on the path forges `UNSPENT`.
+- **No wildcards.** A wildcard would mean "trust any subdomain to mint
+  authorisation claims". Unlike the audience case — where a wildcard names hosts
+  *your* deployment answers on — these entries are third parties.
+
+Issuers are a second, narrower allowlist keyed on the **`(mint, issuerPubkey)`
+pair**, because trusting a mint is not trusting everyone who ever used it, and an
+issuer trusted on one mint should not thereby be trusted on another.
+
+Everything that can be wrong is refused at construction, so a wiring mistake is a
+startup failure rather than a uniform 401 in production:
+
+| Wiring mistake | Message |
+| --- | --- |
+| `createMintAllowlist([])` | `requires a non-empty mint allowlist` |
+| `'http://mint.example.com'` | `must use https` |
+| `'https://*.example.com'` | `must be an exact origin` |
+| `'https://mint.example.com/v1'` | `must be a bare origin with no path, query, or fragment` |
+| Two entries equal after normalisation | `contains duplicate origins after normalization` |
+| `createIssuerAllowlist([], mints)` | `requires a non-empty issuer allowlist` |
+| Issuer naming a mint not in the mint allowlist | `is not in the mint allowlist` |
+| Issuer pubkey that is not 32 bytes of lowercase hex | `is not 32 bytes of lowercase hex` |
+
+#### 3.5.4 Verification order is a security property
+
+The procedure inserts at the end of the completion checks (§2), **after** the
+NIP-98 verification has already succeeded:
+
+1. `mint_url` **must** match the allowlist exactly. Reject otherwise.
+2. Verify the NUT-12 DLEQ against the cached keyset for `keyset_id`.
+3. Parse the NUT-10 secret; extract voucher tags and the P2PK lock key `K`.
+4. **`K` must equal the completion event's `pubkey`.** This is §3.5.2.
+5. Verify the issuer signature over the voucher's canonical bytes.
+6. `(mint_url, issuer_pubkey)` must be in the issuer allowlist.
+7. `expires_at` must be in the future relative to the server clock.
+8. The NUT-07 state check must return `UNSPENT`.
+9. Grant the resulting roles and permissions.
+
+Three ordering constraints are load-bearing, not stylistic:
+
+- **All of it happens after the NIP-98 checks**, so a request that has not proven
+  key control never reaches the mint. Otherwise `/auth/complete` becomes a free
+  oracle for state-checking arbitrary proofs.
+- **Step 4 before step 8**: reject a mismatched binding locally, before spending
+  a network round trip and before telling the mint anything.
+- **Step 1 before everything**: never make an outbound request to an unvetted
+  URL. SSRF.
+
+```ts
+import { createMintClient, verifyProofDleq } from '@imani/nap-voucher';
+
+// Takes the allowlist as a required argument and resolves through it on every
+// call, so step 1 cannot be skipped by accident.
+const mint = createMintClient({ allowlist: mints, keysetCacheTtlSeconds: 3600 });
+
+const A = await mint.getKey(credential.mint_url, credential.keyset_id, credential.amount);
+
+if (!verifyProofDleq({ A, secret, C, dleq })) { /* NAP_VOUCHER_DLEQ_INVALID */ }
+if ((await mint.checkState(credential.mint_url, secret)) !== 'UNSPENT') { /* NAP_VOUCHER_SPENT */ }
+```
+
+Defaults: keyset cache TTL 3600s, request timeout 5000ms. The timeout is not
+optional — without one an unresponsive mint holds the login path open until the
+platform's socket timeout, turning a slow third party into a resource-exhaustion
+vector.
+
+**Login must never spend.** The state check is read-only. Redemption is a
+business action — in this repo's own example it is the destructive operation
+behind `requireStepUp` (tutorial 06). Conflating the two would burn a voucher on
+every login and make the retry-safe completion path destructive on retry, where a
+duplicate submission must return the same session.
+
+#### 3.5.5 The mint becomes an availability dependency of login
+
+This is the sharpest operational cost, and it is a real regression against
+§3.1–§3.4, where login depends only on your own store. **If the mint is down,
+nobody logs in.**
+
+```ts
+import { createMintAvailabilityPolicy } from '@imani/nap-voucher';
+
+const strict = createMintAvailabilityPolicy();          // deny — the default
+
+const lenient = createMintAvailabilityPolicy({
+  onMintUnavailable: 'degrade',
+  degradedGrant: { roles: ['voucher-holder'], permissions: ['voucher:view'] },
+  destructivePermissions: ['voucher:redeem'],
+  destructiveRoles: ['admin', 'merchant'],
+});
+```
+
+`degrade` issues a session on DLEQ alone — which does prove the mint signed the
+proof — with a reduced permission set.
+
+**The default is `deny`, and that is a security property rather than a
+preference: degraded mode accepts an already-spent voucher.** DLEQ cannot tell a
+live proof from a burned one, and the check that could is precisely the one that
+is unavailable. So `degrade` trades a real security property for availability,
+and that trade must be made deliberately, in writing, by an operator.
+
+Three consequences follow:
+
+- **There is no default `degradedGrant`.** "The full grant" is the vulnerability;
+  "nothing" is a session that silently does nothing while reading as though it
+  works. You must state what a login is worth when liveness is unknown.
+- **Both `destructivePermissions` and `destructiveRoles` matter.** They are the
+  only mechanical check that the grant really is reduced, and overlap throws at
+  wiring time. Roles are checked too because roles expand into permissions
+  downstream (§3.1) — a grant naming only `voucher:view` while carrying
+  `roles: ['admin']` would otherwise hand a degraded session everything that role
+  grants.
+- **Only a genuinely unreachable mint degrades.** `MintUnavailableError.reason`
+  distinguishes `unavailable` from `mint_not_allowed`, `unknown_keyset`, and
+  `malformed_response`. A 4xx is a mint answering clearly, and degrading on a
+  definite refusal would be treating a "no" as silence.
+
+Supplying a `degradedGrant` while in `deny` mode also throws: it means you
+believe degraded mode is on when it is not, and an outage is the worst moment to
+discover that.
+
+#### 3.5.6 A session can outlive its credential
+
+A voucher redeemed, revoked, or expired mid-session leaves a live NAP session
+backed by a dead credential. RFC §15 rule 1 already requires per-request
+evaluation, and §3.4's per-request resolver is the mechanism — but each such
+check is a mint round trip unless results are cached, which makes **cache TTL a
+security parameter: it is the maximum staleness of an authorisation decision.**
+
+Three options, in increasing order of how well they work:
+
+1. **Cap the session TTL** well below the voucher's remaining life, and cap it
+   absolutely. Cheap, coarse, no mint dependency.
+2. **Re-check on every guarded request.** Honours the rule exactly, but makes the
+   mint a hard dependency of every authenticated request rather than only of
+   login. A trap at any real request rate.
+3. **Watch the Nostr voucher ledger** and revoke by principal on a terminal
+   transition. The right shape, and it adds no per-request cost.
+
+Short TTL now, ledger watcher later, is the recommended path.
+
+**Option 1 needed building first, because the cap did not exist.** Refresh sets
+`refresh_expires_at` to `now + refreshTtlSeconds` on every rotation, so a
+regularly-refreshed session never ended on its own:
+
+```
+no cap (today)                : refresh 5 at t+400000 -> 200, still alive
+maxSessionLifetimeSeconds 24h : refresh 2 at t+160000 -> 401 (session ended)
+```
+
+Staleness was therefore unbounded, not merely long. That is fine for a
+stored-ACL decision, which is re-read per guarded request; it is not fine for a
+decision the server cannot re-read, which is what a voucher becomes once login
+is over.
+
+```ts
+const server = {
+  refreshTtlSeconds: 86_400,
+  // Absolute ceiling from the original login. `issued_at` survives rotation,
+  // so this is the one clock refresh cannot push forward.
+  maxSessionLifetimeSeconds: 86_400,
+};
+```
+
+**Set it to 24 hours at most, and lower if your users will tolerate it.** The
+ceiling *is* the worst-case window in which a redeemed or revoked voucher still
+authorises a session. It bounds staleness rather than detecting anything — a
+ledger watcher would cut the window from hours to seconds — but it turns
+"unbounded" into a number you can defend.
+
+Note also that nothing stops one live voucher authenticating at several servers
+at once; making a voucher single-use requires a server-side record keyed on the
+proof's `Y`, since actually spending it is forbidden above.
+
+#### 3.5.7 Failure codes
+
+Every failure is an identical generic 401 to the client, exactly as elsewhere in
+NAP (§9.6). The distinctions exist only in the `AuditLogger`:
+
+| Code | Cause |
+| --- | --- |
+| `NAP_VOUCHER_MINT_NOT_ALLOWED` | `mint_url` not in the allowlist |
+| `NAP_VOUCHER_DLEQ_INVALID` | NUT-12 verification failed |
+| `NAP_VOUCHER_BINDING_MISMATCH` | P2PK key ≠ completion pubkey (§3.5.2) |
+| `NAP_VOUCHER_ISSUER_UNTRUSTED` | Issuer signature invalid, or pair not allowlisted |
+| `NAP_VOUCHER_EXPIRED` | `expires_at` in the past |
+| `NAP_VOUCHER_SPENT` | NUT-07 returned `SPENT` or `PENDING` |
+| `NAP_VOUCHER_MINT_UNAVAILABLE` | Mint unreachable and the mode is `deny` |
+
+Wire the same `AuditLogger` into your guards (§9.6.1). Without it, per-request
+re-resolution denials are invisible on exactly the surface that matters most.
+
+#### 3.5.8 Transport: the credential goes in the body
+
+The credential travels in the `/auth/complete` **request body**, not in the
+NIP-98 event. That placement is
+load-bearing: the `payload` tag is `sha256(rawBody)` (§2), so putting the
+credential in the body means **the signature covers it**. A credential swapped in
+transit changes the hash and fails with `NAP_COMPLETE_PAYLOAD_MISMATCH` — the
+same mechanism that already protects `step_up`.
+
+The consequence for adapters is that the raw-body trap (§9.4, CLAUDE.md) applies
+unchanged and with more at stake. Previously a middleware that reparsed and
+re-stringified JSON broke logins; here the same bug would break the integrity of
+an authorisation credential. It fails closed and loudly — but for every user at
+once, so verify it before rollout rather than after.
+
+#### 3.5.9 Current state and what is missing
+
+| Piece | Status |
+| --- | --- |
+| Mint + issuer allowlists | **Shipped** (`@imani/nap-voucher`) |
+| NUT-12 DLEQ, NUT-00 `hash_to_curve` | **Shipped**, verified against the official spec vectors |
+| Keyset cache, NUT-07 state check | **Shipped** |
+| Mint availability policy | **Shipped** |
+| Guard-level audit logging | **Shipped** (§9.6.1) |
+| `VoucherCredential` type and body field | **Shipped** (§3.5.8) |
+| `createVoucherAclResolver` and its call site | **Shipped** (§3.5.11) |
+| `grant()` registry validation | **Shipped** ([ADR 0004](./adr/0004-voucher-grant-registry-validation.md)) |
+| Session lifecycle / ledger watcher | Not started |
+| `nap-java` mirror | Not started — and it must ship *with* the TypeScript side, never after |
+
+#### 3.5.10 The secret is a new composite NUT-10 kind
+
+A Cashu proof carries exactly one NUT-10 kind, so the voucher metadata and the
+P2PK lock must share one secret. Settled 2026-09-01
+([ADR 0003](./adr/0003-voucher-secret-modelling.md)): **a new composite kind,
+`P2PK_VOUCHER`**, carrying both and enforced by the mint as a single spending
+condition. The exact placement of `K` is being settled in `cashu-lib`.
+
+The name follows the convention `P2PK` and `HTLC` already set — naming the
+spending *mechanism*, not the use case — so a mint implementer reading it knows
+a witness is required. That is precisely what a bare `VOUCHER` kind failed to
+convey. `BEARER` was considered and rejected: a bearer instrument is one where
+possession alone authorises, and here possession is useless without the key for
+`K`. The credential is bearer-*issued*, not bearer-*redeemable*, and the kind
+string is a permanent wire format that would carry the wrong claim forever.
+
+The two alternatives were rejected, and why is worth knowing because the naive
+reading favours both:
+
+- **An Imani `VOUCHER` kind carrying P2PK-shaped tags.** The Imani mint's
+  spending-condition dispatch is first-match on kind, so a voucher secret never
+  reaches the P2PK validator, and the voucher validator has no witness check at
+  all. The §3.5.2 binding would be checkable by NAP but invisible to the mint,
+  and a thief could still swap the proof.
+- **A NUT-11 `P2PK` secret carrying voucher metadata as tags.** Superficially
+  free — every conformant mint enforces P2PK today. But the issuer signature is
+  computed over canonical bytes that hardcode the `VOUCHER` kind and the voucher
+  id, so under this shape the signature would cover a document that never exists
+  on the wire. It also collapses two distinct meanings: `data` would become "the
+  lock key", demoting the voucher id to a tag, and a reader would see a plain
+  P2PK secret with no signal that its tags carry issuer-signed authorisation.
+
+The kinds answer different questions — `VOUCHER` says what a credential *is
+worth*, `P2PK` says who may *spend* it — and a composite kind is the only shape
+that keeps both first-class and both enforced.
+
+**The cost is real and it is upstream.** A new kind needs `cashu-lib`
+(deserialiser and secret class — landed), `cashu-voucher` (canonical bytes and
+issuer signing — landed, and without invalidating existing signatures: the
+canonical form now reads the kind from the secret, which for a `VOUCHER` yields
+the byte-identical result), and `cashu-mint` (dispatch — landed;
+`/v1/info` deliberately does not advertise the kind, because the mint only
+claims NUTs backed by published vectors and this is a private extension). The
+mint now enforces the binding, so it no longer rests on NAP alone — but all
+three upstream changes must be **released** before NAP's resolver ships.
+
+The kind itself belongs in `cashu-lib` beside `P2PKSecret` and `VoucherSecret` —
+that package is organised by NUT number and is where wire formats live — while
+its meaning stays in `cashu-voucher`. Neither a new repository nor a rename of
+`cashu-voucher` was needed; ADR 0003 records why, since the question came up
+twice.
+
+This choice is expensive to reverse — the shapes differ on the wire, so vouchers
+issued under one are not verifiable under another, and there is no in-place
+migration for a bearer credential already in circulation. It is settled now
+precisely because nothing has issued a voucher yet.
+
+#### 3.5.11 Wiring it up
+
+The resolver composes the pieces above. Everything is injected rather than
+constructed inside, because each part fails at wiring time when it is wrong, and
+that failure belongs to the operator starting the server rather than to the first
+login that happens to present a voucher.
+
+```ts
+import {
+  createIssuerAllowlist,
+  createMintAllowlist,
+  createMintAvailabilityPolicy,
+  createMintClient,
+  createVoucherAclResolver,
+} from '@imani/nap-voucher';
+import type { PermissionRegistry } from '@imani/nap-server';
+
+declare const registry: PermissionRegistry;
+declare const ISSUER_PUBKEY: string;
+
+const mints = createMintAllowlist(['https://mint.example.com']);
+const issuers = createIssuerAllowlist(
+  [{ mint: 'https://mint.example.com', issuerPubkey: ISSUER_PUBKEY }],
+  mints,
+);
+
+const aclResolver = createVoucherAclResolver({
+  mintAllowlist: mints,
+  issuerAllowlist: issuers,
+  mintClient: createMintClient({ allowlist: mints, keysetCacheTtlSeconds: 3600 }),
+  availability: createMintAvailabilityPolicy(),   // defaults to 'deny'
+  permissionRegistry: registry,                   // see below
+  grant: (voucher) => ({
+    roles: ['voucher-holder'],
+    permissions: [`voucher:view:${voucher.unit}`],
+  }),
+});
+```
+
+**`grant()` is your policy, and it stays outside the library.** What a
+`unit: 'sat'` voucher of face value 1000 is *worth* is not something a protocol
+library can know. It receives a `VerifiedVoucher` — every check in §3.5.4 has
+already passed — and returns roles and permissions.
+
+Pass `permissionRegistry` and the result is checked against it: a role or
+permission the registry does not declare denies the login with
+`NAP_VOUCHER_GRANT_NOT_IN_REGISTRY`. This is **not** the wiring-time guarantee
+`validatePermissions()` gives for guards, and cannot be: `grant()` takes a
+verified voucher, so a policy deriving keys from the voucher's own tags has no
+output until a real voucher arrives. Probing it at construction with a synthetic
+voucher would enumerate `voucher:view:PROBE` and validate a set you never grant.
+What the check does buy is turning a silent failure into an audited one — without
+it, a typo'd key issues a session that quietly matches no guard, and the denial
+surfaces later somewhere unrelated. [ADR 0004](./adr/0004-voucher-grant-registry-validation.md)
+records the reasoning.
+
+**Two traps worth knowing before you deploy.**
+
+*The guard trap.* If you also pass this resolver to a guard for per-request
+re-resolution (§9.6), be aware that re-resolution holds a **session, not the
+credential** — that lived in the login body and is gone. The default
+`onMissingCredential: 'deny'` therefore denies every guarded request, and the
+symptom is a login that succeeds followed by a session that can do nothing:
+
+```
+re-resolving guard, default      : login 200 -> guarded request 401
+re-resolving guard, trust-session: login 200 -> guarded request 200
+```
+
+Pass `onMissingCredential: 'trust-session'` to honour the session's snapshot on
+re-resolution. It does not weaken login: a credential-free *login* carries no
+session and is still refused. What it does mean is that a session's authorisation
+is only as fresh as its TTL (§3.5.6), which is why it is an explicit choice.
+
+*The fallback trap.* Without a `fallback`, this resolver denies any login that
+presents no voucher — which is usually what you want, since a resolver wired for
+voucher authorisation that quietly allowed credential-free logins would make the
+credential optional. If your app also supports stored-ACL logins, pass the
+existing resolver as `fallback` rather than wiring two servers.
 
 ---
 
@@ -2826,6 +3305,61 @@ tokens, which matches the RFC's do-not-log list (`docs/NAP-v2-RFC.md:607`).
 None of the RFC's recommended metrics (`:573`) are emitted. Derive them from the
 audit logger — the `code` field maps cleanly onto `auth_failure_total{code=…}`,
 and `details.retry === true` gives you `challenge_retry_hit_total`.
+
+#### 9.6.1 The guards need their own logger
+
+The `/auth/*` endpoints are only half the surface. The guards —
+`requirePermission()`, `requireRole()`, `requireStepUp()`, `requireSession()` —
+are the *actual* authorization boundary: `/auth/complete` decides who you are
+once, the guards decide what you may do on every request after. They take their
+own `auditLogger`, and **without it a refusal is invisible**: no code, no
+principal, no record. Wire the same logger you gave `NapServerOptions`:
+
+```ts
+const guard = {
+  sessionStore,
+  registry,
+  aclResolver,
+  auditLogger,   // the same one from napServerOptions
+  metrics,       // optional, counts denials alongside auth failures
+};
+
+app.get('/vouchers', requirePermission('voucher:issue', guard), handler);
+```
+
+The codes, all with `outcome: 'failure'`:
+
+| Code | Cause |
+|---|---|
+| `NAP_GUARD_NO_SESSION` | No token, or one that is unknown, expired, or revoked. |
+| `NAP_GUARD_ACL_DENIED` | The session is valid but the `aclResolver` now denies the principal. |
+| `NAP_GUARD_PERMISSION_DENIED` | Authenticated, but lacking the required permission. |
+| `NAP_GUARD_ROLE_DENIED` | Authenticated, but holding none of the accepted roles. |
+| `NAP_GUARD_STEP_UP_REQUIRED` | Permission held, but the step-up token is missing, wrong, or expired. |
+
+Two properties worth knowing:
+
+- **`NAP_GUARD_NO_SESSION` carries no `pubkey`**, because there is no principal
+  to name. That absence is the signal: principal-less denials in bulk are
+  unauthenticated traffic, whereas a burst naming one principal is a permission
+  problem for that user. Every other code names the principal.
+- **`NAP_GUARD_ACL_DENIED` is deliberately not `NAP_COMPLETE_ACL_DENIED`.** A
+  denial at login and a denial at a guard are different events with different
+  remedies — the first means they never got in, the second means their access
+  changed underneath a live session. Collapsing them makes "was this user
+  suspended mid-session?" unanswerable from the log.
+
+If you inject a `clock` into `NapServerOptions`, **pass the same one to the
+guards**. They use it for session expiry, step-up expiry, and ACL
+re-resolution, and a guard on a different clock from the server disagrees about
+when a session ends — the symptom is a login that succeeds and is then refused
+by the very next guarded request with `NAP_GUARD_NO_SESSION`. The default is
+the wall clock, so this only matters if you inject one.
+
+A logger that throws costs a log line and nothing else; the denial still goes
+out unchanged. A 500 on exactly one branch would tell an attacker which branch
+they hit, and the guards run outside the auth endpoints' `minAuthResponseMillis`
+floor, so nothing else is smoothing that difference out.
 
 ### 9.7 Threats NAP does not address
 

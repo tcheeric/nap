@@ -3,12 +3,19 @@ export {
   InMemoryChallengeStore,
   InMemorySessionStore,
 } from './memory.js';
+export type { InMemoryStoreOptions } from './memory.js';
 export {
   createRegistryAclResolver,
   createRevokingAclStore,
   validatePermissionRegistry,
 } from './acl.js';
 export { createAudienceHostAllowlist } from './audience.js';
+export { GUARD_DENIAL_CODES, logGuardDenial } from './guard.js';
+export type {
+  GuardDenialCode,
+  GuardDenialDetails,
+  LogGuardDenialOptions,
+} from './guard.js';
 export { createNoopMetricsRecorder, withMetrics } from './metrics.js';
 export { createInMemoryRateLimiter } from './rateLimit.js';
 export type { InMemoryRateLimiterOptions } from './rateLimit.js';
@@ -22,6 +29,7 @@ export {
   refreshSession,
   constantTimeEquals,
   resolveEffectiveAcl,
+  clampTtlToDecision,
   toPublicAuthFailure,
   toPublicAuthSuccess,
   toPublicSessionView,
@@ -35,7 +43,9 @@ export type {
   ResolveEffectiveAclOptions,
 } from './server.js';
 export type {
+  AclDecision,
   AclRecord,
+  AclResolutionContext,
   AclStore,
   AclResolver,
   AudienceResolver,
@@ -70,6 +80,12 @@ export type {
   VerifyCompletionInput,
   VerifyCompletionOutcome,
 } from './types.js';
+/**
+ * Re-exported so a consumer implementing an `AclResolver` can name the type
+ * `AclResolutionContext.voucher` carries without depending on `@imani/nap-core`
+ * directly.
+ */
+export type { VoucherCredential } from '@imani/nap-core';
 export {
   isMalformedRequestFailure,
   isVerifyFailure,

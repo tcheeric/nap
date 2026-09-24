@@ -1,0 +1,55 @@
+name: CodeQL
+
+# Separate from ci.yml deliberately. CodeQL takes minutes rather than seconds, and
+# a weekly schedule only makes sense on its own workflow; folding it into the PR
+# job would make every pull request wait on an analysis that rarely changes its
+# answer between commits.
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+  schedule:
+    # Monday 07:00 UTC. The scheduled run is the one that matters: it re-analyses
+    # unchanged code against updated queries, which is how a newly published
+    # vulnerability class gets found in code nobody has touched.
+    - cron: '0 7 * * 1'
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      # Least privilege: the analysis needs to read the tree and write findings,
+      # and nothing else.
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ['javascript-typescript']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # security-extended over the default pack. The default set is tuned to
+          # keep false positives near zero on any repository; this one is an
+          # authentication library, so a quieter scan is the wrong trade.
+          queries: security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.language }}
