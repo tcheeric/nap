@@ -7,9 +7,11 @@ import {
   InMemorySessionStore,
   type AclResolver,
   type AuditLogger,
+  type NapServerOptions,
   type PermissionRegistry,
 } from '@imani/nap-server';
 import {
+  createNapFastifySessionHandler,
   requirePermission,
   requireRole,
   requireSession,
@@ -347,5 +349,53 @@ describe('guards pass the session to the resolver', () => {
 
     expect(status).toBe(200);
     expect(seen?.session).toEqual({ roles: ['holder'], permissions: ['thing:read'] });
+  });
+});
+
+/**
+ * `GET /auth/session` used to build its guard options without `clock`, so a
+ * server with an injected clock had exactly one endpoint judging expiry by the
+ * wall clock. The pair of tests is the point: the first alone could be passed
+ * by simply not checking expiry at all.
+ */
+describe('/auth/session honours the server clock (#38)', () => {
+  const now = 1_710_000_000;
+
+  async function buildApp(
+    sessionStore: InMemorySessionStore,
+    clock: { nowUnix(): number }
+  ) {
+    const app = Fastify();
+    app.get(
+      '/auth/session',
+      createNapFastifySessionHandler({
+        server: { sessionStore, clock } as unknown as NapServerOptions,
+        getExternalBaseUrl: () => 'https://api.example.com',
+      })
+    );
+
+    return app;
+  }
+
+  it('returns the session when the injected clock says it is live', async () => {
+    const clock = { nowUnix: () => now };
+    const sessionStore = new InMemorySessionStore({ clock });
+    await seedSession(sessionStore, { issued_at: now, expires_at: now + 900 });
+    const app = await buildApp(sessionStore, clock);
+
+    const response = await app.inject({ method: 'GET', url: '/auth/session', headers: HEADERS });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().expires_at).toBe(now + 900);
+  });
+
+  it('still refuses a session the injected clock has moved past', async () => {
+    const sessionStore = new InMemorySessionStore({ clock: { nowUnix: () => now } });
+    await seedSession(sessionStore, { issued_at: now, expires_at: now + 900 });
+    const app = await buildApp(sessionStore, { nowUnix: () => now + 901 });
+
+    const response = await app.inject({ method: 'GET', url: '/auth/session', headers: HEADERS });
+
+    expect(response.statusCode).toBe(401);
   });
 });

@@ -248,6 +248,26 @@ function parseCookieValue(header: string | undefined, cookieName: string): strin
   return null;
 }
 
+/**
+ * Guard options for the router's own routes, built from the server config.
+ *
+ * One builder rather than an object literal per route, for the same reason as
+ * the Express adapter: the three call sites drifted, `/auth/session` omitting
+ * `clock` while logout passed it, so a server on an injected clock judged
+ * expiry by the wall clock on exactly one endpoint.
+ *
+ * `clock` matters twice over: `loadSession` decides whether a session has
+ * expired, and `revoked_at` is a timestamp the store keeps, so a handler on the
+ * wall clock writes a revocation dated years from every other stored timestamp.
+ */
+function routeGuardOptions(options: NapFastifyOptions): NapFastifyGuardOptions {
+  return {
+    sessionStore: options.server.sessionStore,
+    cookieName: options.cookieName,
+    clock: options.server.clock,
+  };
+}
+
 async function loadSession(
   req: FastifyRequest,
   options: NapFastifyGuardOptions
@@ -745,10 +765,7 @@ export function createNapFastifyRefreshHandler(options: NapFastifyOptions): Rout
  */
 export function createNapFastifySessionHandler(options: NapFastifyOptions): RouteHandlerMethod {
   return async (req, reply) => {
-    const session = await loadSession(req, {
-      sessionStore: options.server.sessionStore,
-      cookieName: options.cookieName,
-    });
+    const session = await loadSession(req, routeGuardOptions(options));
 
     if (!session) {
       unauthorized(reply);
@@ -768,15 +785,7 @@ export function createNapFastifySessionHandler(options: NapFastifyOptions): Rout
  */
 export function createNapFastifyLogoutHandler(options: NapFastifyOptions): RouteHandlerMethod {
   return async (req, reply) => {
-    // Shares the server's clock, for the same reason as the Express adapter:
-    // `revoked_at` is a stored timestamp, and a logout stamping wall-clock time
-    // into a store the server reads on an injected clock writes a revocation
-    // dated in the future or the past.
-    const guardOptions = {
-      sessionStore: options.server.sessionStore,
-      cookieName: options.cookieName,
-      clock: options.server.clock,
-    };
+    const guardOptions = routeGuardOptions(options);
     const session = await loadSession(req, guardOptions);
 
     if (session) {

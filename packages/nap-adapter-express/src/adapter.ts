@@ -319,6 +319,27 @@ function parseCookieValue(header: string | undefined, cookieName: string): strin
   return null;
 }
 
+/**
+ * Guard options for the router's own routes, built from the server config.
+ *
+ * One builder rather than an object literal per route because the three call
+ * sites drifted: `/auth/session` omitted `clock` while logout passed it, so a
+ * server on an injected clock judged expiry by the wall clock on exactly one
+ * endpoint. Every field a route needs belongs here, so adding one cannot reach
+ * some routes and miss others.
+ *
+ * `clock` matters twice over: `loadSession` decides whether a session has
+ * expired, and `revoked_at` is a timestamp the store keeps, so a handler on the
+ * wall clock writes a revocation dated years from every other stored timestamp.
+ */
+function routeGuardOptions(options: NapExpressOptions): NapExpressGuardOptions {
+  return {
+    sessionStore: options.server.sessionStore,
+    cookieName: options.cookieName,
+    clock: options.server.clock,
+  };
+}
+
 async function loadSession(
   req: Request,
   options: NapExpressGuardOptions
@@ -622,10 +643,7 @@ export function createNapExpressCompleteHandler(options: NapExpressOptions): Req
 export function createNapExpressSessionHandler(options: NapExpressOptions): RequestHandler {
   return async (req, res, next) => {
     try {
-      const session = await loadSession(req, {
-        sessionStore: options.server.sessionStore,
-        cookieName: options.cookieName,
-      });
+      const session = await loadSession(req, routeGuardOptions(options));
 
       if (!session) {
         unauthorized(res);
@@ -649,15 +667,7 @@ export function createNapExpressSessionHandler(options: NapExpressOptions): Requ
 export function createNapExpressLogoutHandler(options: NapExpressOptions): RequestHandler {
   return async (req, res, next) => {
     try {
-      // Shares the server's clock: `loadSession` decides whether the session is
-      // already expired, and `revoked_at` is a timestamp the store keeps. A
-      // logout stamping wall-clock time into a store the server reads on an
-      // injected clock writes a revocation dated in the future or the past.
-      const guardOptions = {
-        sessionStore: options.server.sessionStore,
-        cookieName: options.cookieName,
-        clock: options.server.clock,
-      };
+      const guardOptions = routeGuardOptions(options);
       const session = await loadSession(req, guardOptions);
 
       if (session) {
