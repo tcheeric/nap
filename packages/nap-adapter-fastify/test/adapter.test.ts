@@ -16,6 +16,7 @@ import {
 import {
   createRequestDerivedBaseUrlResolver,
   napFastifyPlugin,
+  type NapFastifyOptions,
   permissionsFastifyPlugin,
   requirePermission,
   requireRole,
@@ -94,6 +95,21 @@ async function createApp(options: NapServerOptions) {
   });
 
   return app;
+}
+
+/** Drives a cookie writer on a bare route, so the attributes it sets can be read back. */
+async function setCookieFrom(
+  write: NonNullable<NapFastifyOptions['writeSuccess']>
+): Promise<string> {
+  const app = Fastify();
+  app.get('/x', async (req, reply) => {
+    await write({ req, reply, body: { access_token: 'SECRET' } as never });
+  });
+
+  const response = await app.inject({ method: 'GET', url: '/x' });
+  await app.close();
+
+  return response.headers['set-cookie'] as string;
 }
 
 describe('nap-adapter-fastify', () => {
@@ -651,6 +667,38 @@ describe('nap-adapter-fastify', () => {
     expect(logout.headers['set-cookie'] as string).not.toContain('Domain=');
 
     await app.close();
+  });
+
+  it('protects the cookie when the caller passes no options at all', async () => {
+    const setCookie = await setCookieFrom(writeNapCookieSuccess('session'));
+
+    expect(setCookie).toContain('HttpOnly');
+    expect(setCookie).toContain('Secure');
+    expect(setCookie).toContain('SameSite=Lax');
+  });
+
+  it('keeps the protections when the caller sets only a domain', async () => {
+    // The case a real deployment hits: one attribute supplied, and replacing instead of
+    // merging would drop all three protections from the cookie holding the access token.
+    const setCookie = await setCookieFrom(
+      writeNapCookieSuccess('session', { domain: '.example.com' })
+    );
+
+    expect(setCookie).toContain('Domain=.example.com');
+    expect(setCookie).toContain('HttpOnly');
+    expect(setCookie).toContain('Secure');
+    expect(setCookie).toContain('SameSite=Lax');
+  });
+
+  it('lets an explicit httpOnly: false win over the default', async () => {
+    // Plain-HTTP local development is the reason the escape hatch exists.
+    const setCookie = await setCookieFrom(
+      writeNapCookieSuccess('session', { httpOnly: false, secure: false })
+    );
+
+    expect(setCookie).not.toContain('HttpOnly');
+    expect(setCookie).not.toContain('Secure');
+    expect(setCookie).toContain('SameSite=Lax');
   });
 
   it('returns 204 from POST /auth/logout when no session exists', async () => {

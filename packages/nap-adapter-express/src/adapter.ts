@@ -947,6 +947,21 @@ export function createPermissionsRouter(registry: PermissionRegistry): Router {
 }
 
 /**
+ * What the cookie gets unless the caller says otherwise.
+ *
+ * The shortest call that compiles has to be the safe one: this cookie carries the access
+ * token, so an unset `httpOnly` hands it to any script on the page, an unset `secure` puts
+ * it on the wire in cleartext, and an unset `sameSite` attaches it to cross-site requests.
+ * `nap-java` defaults the same way, so the same deployment behaves alike on both runtimes.
+ */
+const SECURE_COOKIE_DEFAULTS = {
+  httpOnly: true,
+  secure: true,
+  sameSite: 'lax',
+  path: '/',
+} as const;
+
+/**
  * Puts the access token in a cookie and replies `{ status: 'ok' }`, so no credential
  * reaches script.
  *
@@ -961,18 +976,19 @@ export function writeNapCookieSuccess(
   cookieName: string,
   cookieOptions?: CookieOptions,
   transformBody?: (body: ReturnType<typeof toPublicAuthSuccess>) => unknown
-): NapExpressOptions['writeSuccess'] {
-  // Snapshotted here, and used by both the set below and the logout clear that reads the
-  // stamp. Holding the caller's object instead would let a mutation after wiring move one
-  // of the two without the other — the drift this whole pairing exists to prevent.
-  const attrs = cookieOptions ? { ...cookieOptions } : undefined;
+): NonNullable<NapExpressOptions['writeSuccess']> {
+  // Merged over the secure defaults, not replacing them: a caller passing
+  // `{ domain: '.example.com' }` means to add a domain, not to drop HttpOnly, Secure and
+  // SameSite from the one cookie that carries the access token. Spreading last still lets
+  // an explicit `httpOnly: false` win, which is the local-development escape hatch.
+  //
+  // Snapshotted here too, and used by both the set below and the logout clear that reads
+  // the stamp. Holding the caller's object instead would let a mutation after wiring move
+  // one of the two without the other — the drift this whole pairing exists to prevent.
+  const attrs: CookieOptions = { ...SECURE_COOKIE_DEFAULTS, ...cookieOptions };
 
   const write: NonNullable<NapExpressOptions['writeSuccess']> = ({ res, body }) => {
-    if (attrs) {
-      res.cookie(cookieName, body.access_token, attrs);
-    } else {
-      res.cookie(cookieName, body.access_token);
-    }
+    res.cookie(cookieName, body.access_token, attrs);
     res.status(200).json(transformBody ? transformBody(body) : { status: 'ok' });
   };
 
@@ -982,9 +998,7 @@ export function writeNapCookieSuccess(
   }
 
   // So the logout handler can clear with what the set used, instead of guessing `path: '/'`.
-  if (attrs) {
-    Object.defineProperty(write, COOKIE_ATTRS, { value: attrs });
-  }
+  Object.defineProperty(write, COOKIE_ATTRS, { value: attrs });
 
   Object.defineProperty(write, COOKIE_NAME, { value: cookieName });
 

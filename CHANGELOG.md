@@ -139,6 +139,22 @@ All packages in this workspace share a single version.
 
 ### Fixed
 
+- **`writeNapCookieSuccess` now defaults to a protected cookie, and merges caller options
+  over those defaults** (#34). The default path emitted `session=TOKEN; Path=/`, with no
+  `HttpOnly`, `Secure` or `SameSite`, so the access token was readable by any script on the
+  page, travelled in cleartext, and rode along on cross-site requests. The helper's whole
+  stated purpose is keeping that credential away from script, and `toPublicSessionView`
+  already omits `access_token` from `GET /auth/session` on the assumption of an `HttpOnly`
+  cookie the default did not produce.
+
+  The second half was worse: partial options replaced the attributes rather than adding to
+  them, so `{ domain: '.example.com' }` (a caller setting one attribute, the case a real
+  deployment hits) silently dropped all three protections. Options are now spread over
+  `{ httpOnly: true, secure: true, sameSite: 'lax', path: '/' }`, which also leaves an
+  explicit `httpOnly: false` winning for local development. `nap-java` already defaulted
+  this way, so the divergence where one deployment was safe on the JVM and not on Node is
+  closed. Both adapters fixed, with the partial-options case covered as a regression test.
+
 - **`maxSessionLifetimeSeconds` now clamps the tokens it issues**, so the ceiling is a wall
   rather than an estimate. It previously gated only the *decision* to refresh: a refresh one
   second before the ceiling minted a full-length access token, and guarded requests kept
