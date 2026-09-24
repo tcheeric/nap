@@ -52,8 +52,13 @@ jobs:
       - run: npm ci
       # Production tree gates the build; the dev tree is advisory so a vitest
       # advisory cannot wedge every PR on an unrelated change.
+      #
+      # Moderate rather than high, since the production tree is now at zero and a
+      # threshold only holds the line it is set at. It was `high`, and that is exactly
+      # how three moderate `qs` advisories sat in the shipped tree while this job
+      # reported green: reachable through Express's query parser, so on the request path
+      # of every deployment using the Express adapter.
       - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
+        run: npm audit --omit=dev --audit-level=moderate
       - name: Audit all dependencies (advisory)
         run: npm audit --audit-level=moderate || true
-

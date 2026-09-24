@@ -217,6 +217,17 @@ where it previously saw a stale record.
   not wedge every unrelated pull request. CodeQL and Dependabot added, and `SECURITY.md`
   records the controls that are repository settings rather than files.
 
+  **Amended after CI ran.** "None" above was true at `--audit-level=high`, which is where the
+  gate was set, and three moderate `qs` advisories were sitting under it the whole time:
+  GHSA-4mjr-xmp4-gh2g, GHSA-q8mj-m7cp-5q26 and GHSA-x5fp-wj9c-mxmx. `qs` is Express's query
+  parser, so they are on the request path of every deployment using the Express adapter, not
+  a build-time concern.
+
+  Express pins `qs` at `~6.14.0` and `~` locks the minor, so no upgrade of Express reaches
+  the fix. An `overrides` entry scoped to `express` pulls it to 6.16.0. The production gate
+  now runs at `--audit-level=moderate`, because a threshold only holds the line it is set at,
+  and the production tree is at zero rather than at "nothing above high".
+
 - **`maxSessionLifetimeSeconds` now clamps the tokens it issues**, so the ceiling is a wall
   rather than an estimate. It previously gated only the *decision* to refresh: a refresh one
   second before the ceiling minted a full-length access token, and guarded requests kept
