@@ -37,7 +37,8 @@ interface Harness {
 
 function buildHarness(overrides: Partial<NapServerOptions> = {}): Harness {
   let now = NOW;
-  const sessionStore = new InMemorySessionStore();
+  const clock = { nowUnix: () => now };
+  const sessionStore = new InMemorySessionStore({ clock });
   const harness: Harness = {
     sessionStore,
     setNow(value) {
@@ -45,7 +46,7 @@ function buildHarness(overrides: Partial<NapServerOptions> = {}): Harness {
     },
     acl: { allowed: true, roles: ['user'], permissions: ['read'] },
     options: {
-      challengeStore: new InMemoryChallengeStore(),
+      challengeStore: new InMemoryChallengeStore({ clock }),
       sessionStore,
       aclResolver: {
         async resolve() {
@@ -55,7 +56,7 @@ function buildHarness(overrides: Partial<NapServerOptions> = {}): Harness {
       refreshTtlSeconds: REFRESH_TTL,
       minAuthResponseMillis: 0,
       responseJitterMillis: 0,
-      clock: { nowUnix: () => now },
+      clock,
       randomSource: {
         randomBytes(length: number) {
           const seed = counter++;

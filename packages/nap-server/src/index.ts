@@ -3,6 +3,7 @@ export {
   InMemoryChallengeStore,
   InMemorySessionStore,
 } from './memory.js';
+export type { InMemoryStoreOptions } from './memory.js';
 export {
   createRegistryAclResolver,
   createRevokingAclStore,

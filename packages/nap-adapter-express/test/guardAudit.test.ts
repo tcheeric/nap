@@ -235,7 +235,10 @@ describe('guard audit logging (CONTEXT.md finding 12)', () => {
     // next guarded request. Found by the extension-0001 end-to-end test, where
     // the server clock is pinned to a fixed timestamp.
     const now = 1_710_000_000;
-    const sessionStore = new InMemorySessionStore();
+    // The store shares the clock too: its eviction sweep would otherwise read
+    // the wall clock and collect this fixture as long expired.
+    const clock = { nowUnix: () => now };
+    const sessionStore = new InMemorySessionStore({ clock });
     await seedSession(sessionStore, { issued_at: now, expires_at: now + 900 });
     const { logger, events } = recordingAuditLogger();
     const app = express();
@@ -244,7 +247,7 @@ describe('guard audit logging (CONTEXT.md finding 12)', () => {
       requirePermission('voucher:issue', {
         sessionStore,
         auditLogger: logger,
-        clock: { nowUnix: () => now },
+        clock,
       }),
       (_req, res) => res.status(200).json({ status: 'ok' })
     );
@@ -284,16 +287,17 @@ describe('guard audit logging (CONTEXT.md finding 12)', () => {
     // store. Found by auditing the remaining currentEpochSeconds() calls after
     // fixing the guard paths.
     const now = 1_710_000_000;
-    const sessionStore = new InMemorySessionStore();
+    const clock = { nowUnix: () => now };
+    const sessionStore = new InMemorySessionStore({ clock });
     await seedSession(sessionStore, { issued_at: now, expires_at: now + 900 });
     const app = express();
     app.use(
       '/auth',
       createNapExpressRouter({
         server: {
-          challengeStore: new InMemoryChallengeStore(),
+          challengeStore: new InMemoryChallengeStore({ clock }),
           sessionStore,
-          clock: { nowUnix: () => now },
+          clock,
         } as unknown as NapServerOptions,
         getExternalBaseUrl: () => 'https://api.example.com',
       })

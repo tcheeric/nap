@@ -105,10 +105,13 @@ describe('a voucher-bound login, end to end', () => {
     const secret = issueVoucher(HOLDER);
     const minted = mintProof(secret);
     const audit: Array<{ code: string }> = [];
-    const sessionStore = new InMemorySessionStore();
+    // Stores share the pinned clock: an eviction sweep on the wall clock would
+    // collect these fixed-timestamp records before the guard ever reads them.
+    const clock = { nowUnix: () => NOW };
+    const sessionStore = new InMemorySessionStore({ clock });
 
     const options: NapServerOptions = {
-      challengeStore: new InMemoryChallengeStore(),
+      challengeStore: new InMemoryChallengeStore({ clock }),
       sessionStore,
       auditLogger: { log: (event) => void audit.push({ code: event.code }) },
       aclResolver: createVoucherAclResolver({
@@ -133,7 +136,7 @@ describe('a voucher-bound login, end to end', () => {
         }),
       }),
       minAuthResponseMillis: 0,
-      clock: { nowUnix: () => NOW },
+      clock,
     };
 
     const app = express();
@@ -145,7 +148,7 @@ describe('a voucher-bound login, end to end', () => {
         getExternalBaseUrl: createRequestDerivedBaseUrlResolver(['api.example.com']),
       })
     );
-    const guard = { sessionStore, clock: { nowUnix: () => NOW } };
+    const guard = { sessionStore, clock };
     app.get('/data', requirePermission('voucher:view:sat:1000', guard), (_req, res) =>
       res.json({ ok: true })
     );
