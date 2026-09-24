@@ -47,8 +47,11 @@ reporter's only options are a public issue or nothing, and the first is worse.
 updates; alerts are the separate switch that surfaces a CVE between scheduled runs.
 
 **Branch protection on the default branch**
-Require the `Validate` and `Dependency audit` checks to pass before merge. Without this
-the CI jobs are advisory in practice no matter what they return.
+Require the build and audit checks to pass before merge. Without this the CI jobs are
+advisory in practice no matter what they return. Note that `validate` is a matrix job, so
+it reports one check per Node version (`Validate (Node 20.19.0)` and `Validate (Node 22.x)`
+today) rather than a single `Validate`; select the ones the UI actually lists rather than
+typing a name. `Dependency audit` is a single check.
 
 ## Scope notes for anyone auditing this repository
 
