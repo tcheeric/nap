@@ -2,6 +2,7 @@
   "name": "@imani/nap-react",
   "version": "0.12.0",
   "description": "React bindings for the NAP browser client.",
+  "license": "MIT",
   "keywords": [
     "nostr",
     "nap",

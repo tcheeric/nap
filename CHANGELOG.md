@@ -36,6 +36,8 @@ No runtime behaviour changes. See [UPGRADING.md](UPGRADING.md).
   (`nap-core`, `nap-client-http`, `nap-client-web`, `nap-client-nip46`, `nap-react`) import no
   Node built-in. Release staging re-checks the compiled `dist/` for the same.
 - CI builds and packs every package on each PR.
+- **MIT licence**: a root `LICENSE`, `"license": "MIT"` in every manifest, and a copy of the
+  `LICENSE` in every published tarball.
 
 ### Changed
 

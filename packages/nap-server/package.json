@@ -2,6 +2,7 @@
   "name": "@imani/nap-server",
   "version": "0.12.0",
   "description": "Stateful server-side NAP flow: challenges, completion, sessions, ACL.",
+  "license": "MIT",
   "keywords": [
     "nostr",
     "nap",

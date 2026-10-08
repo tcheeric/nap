@@ -2,6 +2,7 @@
   "name": "@imani/nap-voucher",
   "version": "0.12.0",
   "description": "Mint-backed (Cashu voucher) authorisation for NAP.",
+  "license": "MIT",
   "keywords": [
     "nostr",
     "nap",

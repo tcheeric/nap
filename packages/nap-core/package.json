@@ -2,6 +2,7 @@
   "name": "@imani/nap-core",
   "version": "0.12.0",
   "description": "Pure protocol helpers for the NAP (Nostr Authentication Protocol) HTTP profile. Browser and server.",
+  "license": "MIT",
   "keywords": [
     "nostr",
     "nap",

@@ -196,6 +196,10 @@ function stage(pkg, scope) {
   cpSync(dist, join(out, 'dist'), { recursive: true });
   // README is always packed by npm; anything else would be dropped by `files: ["dist"]`.
   if (existsSync(join(pkg.dir, 'README.md'))) cpSync(join(pkg.dir, 'README.md'), join(out, 'README.md'));
+  // npm packs a LICENSE at the package root whatever `files` says. The licence lives once,
+  // at the repo root, so every staged package gets a copy of it.
+  if (pkg.manifest.license !== 'MIT') throw new Error(`${pkg.name}: license is ${pkg.manifest.license}, expected MIT`);
+  cpSync(join(ROOT, 'LICENSE'), join(out, 'LICENSE'));
   writeFileSync(join(out, 'package.json'), `${JSON.stringify(publishManifest(pkg.manifest, scope), null, 2)}\n`);
   return out;
 }

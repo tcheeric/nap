@@ -2,6 +2,7 @@
   "name": "@imani/nap-adapter-fastify",
   "version": "0.12.0",
   "description": "Fastify adapter for @imani/nap-server.",
+  "license": "MIT",
   "keywords": [
     "nostr",
     "nap",

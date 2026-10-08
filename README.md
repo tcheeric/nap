@@ -155,3 +155,7 @@ implemented but incomplete. Beyond that:
 - scheme trust for `createRequestDerivedBaseUrlResolver()` — the host is allowlisted, the
   scheme is still the framework's `trust proxy` decision unless the entry pins it
 - no sliding idle window or `absolute_expiry_at`; the Java implementation has both
+
+## License
+
+MIT. See [LICENSE](LICENSE).

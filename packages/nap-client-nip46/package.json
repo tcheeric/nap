@@ -2,6 +2,7 @@
   "name": "@imani/nap-client-nip46",
   "version": "0.12.0",
   "description": "NIP-46 remote signer (bunker://, nostrconnect://) for NAP.",
+  "license": "MIT",
   "keywords": [
     "nostr",
     "nap",

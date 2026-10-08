@@ -2,6 +2,7 @@
   "name": "@imani/nap-client-http",
   "version": "0.12.0",
   "description": "HTTP request helpers for the NAP login flow. Runtime-agnostic.",
+  "license": "MIT",
   "keywords": [
     "nostr",
     "nap",

@@ -2,6 +2,7 @@
   "name": "@imani/nap-store-postgres",
   "version": "0.12.0",
   "description": "Postgres stores for @imani/nap-server.",
+  "license": "MIT",
   "keywords": [
     "nostr",
     "nap",

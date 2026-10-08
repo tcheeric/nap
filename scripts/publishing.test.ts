@@ -175,6 +175,14 @@ describe('publishManifest', () => {
     expect(() => publishManifest(linked, '@398ja')).toThrow(/not a version range/);
   });
 
+  it('keeps the MIT licence field', () => {
+    for (const pkg of workspacePackages()) {
+      expect(pkg.manifest.license, pkg.name).toBe('MIT');
+      expect(publishManifest(pkg.manifest, '@398ja').license, pkg.name).toBe('MIT');
+    }
+    expect(readFileSync(join(ROOT, 'LICENSE'), 'utf8')).toMatch(/^MIT License\n/);
+  });
+
   it('maps only nap packages', () => {
     expect(publishedName('@imani/nap-react', '@398ja')).toBe('@398ja/nap-react');
     expect(publishedName('nostr-tools', '@398ja')).toBe('nostr-tools');
