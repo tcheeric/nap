@@ -5,6 +5,10 @@ const API = process.env.MERCHANT_API ?? 'http://localhost:3000';
 
 export default defineConfig({
   plugins: [react()],
+  // Read the workspace packages from source (their `nap-source` export condition)
+  // rather than from dist/, which exists only after `npm run build`. An app
+  // installing the published packages needs nothing here.
+  resolve: { conditions: ['nap-source'] },
   server: {
     port: 5173,
     // Same-origin from the browser's point of view. Which matters twice over:

@@ -10,11 +10,17 @@ implementation of the same protocol; the two are wire-compatible and must stay t
 npm workspace. Every package shares one version — a release bumps all of them together, so
 the root `package.json` is the single place to read it.
 
-> **There is no build step.** Every package points `exports` and `types` at `./src/index.ts`,
-> so there is no `dist/` and nothing to compile — and these are **not npm-publishable as-is**.
-> Consume them from the workspace: `examples/merchant-app` is a workspace package that
-> depends on them at the shared version and npm links them from `packages/`. That is the
-> arrangement the tutorials assume.
+> **Install from npm.** Each package compiles to ESM plus `.d.ts` in `dist/` (`npm run build`)
+> and is published under the `@398ja` scope while keeping its `@imani/nap-*` import name, via an
+> npm alias:
+>
+> ```bash
+> npm install @imani/nap-client-web@npm:@398ja/nap-client-web@^0.12.0 nostr-tools
+> ```
+>
+> See [RELEASING.md](RELEASING.md) for the scope and the release command. Inside this
+> repository the packages resolve to their sources; `examples/merchant-app` is a workspace
+> package and is what the tutorials build.
 
 ## Start here
 
@@ -103,20 +109,23 @@ previously a silent, mute failure.
 npm install
 npm run typecheck
 npm test          # vitest run
+npm run build     # packages/*/dist: ESM + .d.ts
+npm run release:dry-run   # build, then npm publish --dry-run for every package (RELEASING.md)
 ```
 
 ## Requirements
 
-**TypeScript >= 5.7 in the consuming project.** There is no build step — every package points
-`exports` and `types` at `./src/index.ts`, so it is *your* compiler that compiles NAP's source,
-and NAP's source uses the generic `Uint8Array<ArrayBuffer>` that TypeScript models only from 5.7
+**TypeScript >= 5.7 in the consuming project**, when it type-checks NAP's declarations (no
+`skipLibCheck`). The shipped `.d.ts` files use the generic `Uint8Array<ArrayBuffer>` that TypeScript models only from 5.7
 (`webCryptoSecretStore.ts`, where WebCrypto refuses a possibly-`SharedArrayBuffer`-backed view).
 On an older compiler this surfaces as `TS2315: Type 'Uint8Array' is not generic` pointing into
 `node_modules`, which reads as a bug in NAP rather than a compiler floor. Each package declares
 it as an optional peer dependency, so npm says so at install time instead.
 
-CI tests Node 20.19.0 and 22.x. `nostr-tools` is `^2.23.0` — dedupe it, four packages depend
-on it and version skew surfaces as confusing `verifyEvent` failures.
+CI tests Node 20.19.0 and 22.x. `nostr-tools` (`^2.23.0`), `@noble/hashes`, `@noble/curves` and
+`react` are **peer dependencies**: install them yourself, once, so NAP and your app share one
+copy. Version skew in `nostr-tools` surfaces as confusing `verifyEvent` failures, and two
+copies of React as a blank page.
 
 ## Documentation
 
@@ -142,7 +151,6 @@ on it and version skew surfaces as confusing `verifyEvent` failures.
 §11 of the integration guide catalogues what is RFC-specified but unimplemented, and what is
 implemented but incomplete. Beyond that:
 
-- packaging — no build step, so nothing is publishable (see the note above)
 - more store adapters (Redis, etc.)
 - scheme trust for `createRequestDerivedBaseUrlResolver()` — the host is allowlisted, the
   scheme is still the framework's `trust proxy` decision unless the entry pins it

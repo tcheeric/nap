@@ -1,0 +1,21 @@
+{
+  "$comment": "Emit settings shared by every packages/*/tsconfig.build.json. Unlike the root tsconfig.json (typecheck only, sources resolved through the nap-source condition), a package build resolves its siblings through their published `exports`, i.e. their dist/ declarations, which is exactly what a consumer sees.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "jsx": "react-jsx",
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "lib": ["ES2022", "DOM"],
+    "declaration": true,
+    "noEmit": false,
+    "rootDir": "${configDir}/src",
+    "outDir": "${configDir}/dist",
+    "types": []
+  },
+  "include": ["${configDir}/src/**/*.ts", "${configDir}/src/**/*.tsx"],
+  "exclude": ["${configDir}/src/**/*.test.ts", "${configDir}/src/**/*.test.tsx"]
+}

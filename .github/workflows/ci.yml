@@ -50,6 +50,13 @@ jobs:
       - name: Test
         run: npm test
 
+      # What a consumer installs is dist/, not src/, so the PR has to prove it compiles
+      # and packs. --pack stages every package exactly as `npm run release` would
+      # (scope-renamed manifest, sibling aliases, browser-package Node built-in check)
+      # and runs `npm pack`, which needs no registry credentials.
+      - name: Build and pack
+        run: npm run release:pack -- --skip-checks
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest

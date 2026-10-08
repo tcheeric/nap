@@ -1,7 +1,7 @@
 {
   "name": "nap",
   "private": true,
-  "version": "0.11.0",
+  "version": "0.12.0",
   "type": "module",
   "workspaces": [
     "packages/*",
@@ -11,7 +11,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "test:integration": "NAP_INTEGRATION=1 vitest run packages/nap-voucher/test/integration.test.ts"
+    "test:integration": "NAP_INTEGRATION=1 vitest run packages/nap-voucher/test/integration.test.ts",
+    "build": "node scripts/build.mjs",
+    "release": "node scripts/release.mjs",
+    "release:dry-run": "node scripts/release.mjs --dry-run",
+    "release:pack": "node scripts/release.mjs --pack"
   },
   "comments": {
     "overrides": [

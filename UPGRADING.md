@@ -1,5 +1,29 @@
 # Upgrading
 
+## 0.11.0 to 0.12.0
+
+No runtime behaviour changes. What changes is how you get the packages.
+
+**1. Install from npm instead of aliasing a sibling checkout.** The packages are published as
+`@398ja/nap-*` and keep their `@imani/nap-*` import names through npm aliases, so no import
+changes:
+
+```json
+"@imani/nap-client-web": "npm:@398ja/nap-client-web@^0.12.0",
+"@imani/nap-react": "npm:@398ja/nap-react@^0.12.0"
+```
+
+Drop any bundler or `tsconfig` `paths` alias to `../nap/packages/*/src`, and any second
+Docker build context for nap.
+
+**2. Install the peers yourself.** `nostr-tools` (`^2.23.0`), `@noble/hashes`, `@noble/curves`
+(nap-voucher only) and `react` (nap-react) are peer dependencies now. npm 7+ installs a missing
+peer, but declaring them is what guarantees one shared copy.
+
+**3. You no longer compile NAP's TypeScript.** The packages ship ESM and `.d.ts`. A bundler
+needs no TypeScript handling for `node_modules`, and a plain Node service can import the
+server packages directly.
+
 ## 0.10.1 to 0.11.0
 
 One change breaks a working deployment, and it is the one that sounds harmless: the session
