@@ -58,7 +58,7 @@
     "express": "^4.21.2",
     "nostr-tools": "^2.23.0",
     "supertest": "^7.1.0",
-    "testcontainers": "^10.28.0",
+    "testcontainers": "^12.2.0",
     "undici": "^6.21.0",
     "ws": "^8.18.0"
   },
