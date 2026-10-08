@@ -1,12 +1,43 @@
 {
   "name": "@imani/nap-store-postgres",
-  "version": "0.11.0",
+  "version": "0.12.0",
+  "description": "Postgres stores for @imani/nap-server.",
+  "license": "MIT",
+  "keywords": [
+    "nostr",
+    "nap",
+    "authentication",
+    "nip-98"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tcheeric/nap.git",
+    "directory": "packages/nap-store-postgres"
+  },
+  "homepage": "https://github.com/tcheeric/nap/tree/master/packages/nap-store-postgres#readme",
+  "bugs": {
+    "url": "https://github.com/tcheeric/nap/issues"
+  },
   "type": "module",
-  "exports": "./src/index.ts",
-  "types": "./src/index.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "nap-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "dependencies": {
-    "@imani/nap-core": "0.11.0",
-    "@imani/nap-server": "0.11.0",
+    "@imani/nap-core": "^0.12.0",
+    "@imani/nap-server": "^0.12.0",
     "pg": "^8.13.1"
   },
   "peerDependencies": {
@@ -16,5 +47,8 @@
     "typescript": {
       "optional": true
     }
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

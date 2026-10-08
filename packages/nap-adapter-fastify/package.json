@@ -1,11 +1,43 @@
 {
   "name": "@imani/nap-adapter-fastify",
-  "version": "0.11.0",
+  "version": "0.12.0",
+  "description": "Fastify adapter for @imani/nap-server.",
+  "license": "MIT",
+  "keywords": [
+    "nostr",
+    "nap",
+    "authentication",
+    "nip-98"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tcheeric/nap.git",
+    "directory": "packages/nap-adapter-fastify"
+  },
+  "homepage": "https://github.com/tcheeric/nap/tree/master/packages/nap-adapter-fastify#readme",
+  "bugs": {
+    "url": "https://github.com/tcheeric/nap/issues"
+  },
   "type": "module",
-  "exports": "./src/index.ts",
-  "types": "./src/index.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "nap-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "dependencies": {
-    "@imani/nap-server": "0.11.0",
+    "@imani/nap-core": "^0.12.0",
+    "@imani/nap-server": "^0.12.0",
     "cookie": "^1.0.2",
     "fastify": "^5.2.1"
   },
@@ -16,5 +48,8 @@
     "typescript": {
       "optional": true
     }
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

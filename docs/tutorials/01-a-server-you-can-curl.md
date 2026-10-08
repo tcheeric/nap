@@ -21,10 +21,10 @@ an npub is and what NIP-98 signs.
 The example lives in this repository, at `examples/merchant-app`. It is a real npm
 workspace package, so it resolves `@imani/nap-*` straight from `packages/`.
 
-> **Why not `npm install @imani/nap-server`?** Because you can't yet. Every package points
-> `exports` at `./src/index.ts` and there is no build step, so nothing here is publishable
-> as it stands. You consume NAP from the monorepo, or you vendor it. This is a known
-> limitation, not something you are doing wrong — see §11.4 of the integration guide.
+> **Starting your own app instead?** Install the published packages under their import
+> names: `npm install @imani/nap-server@npm:@398ja/nap-server@^0.12.0`, and likewise for the
+> others you need (see `RELEASING.md`). The tutorials use the workspace copy so that what
+> you read is what CI tests.
 
 ```bash
 git clone <this repo> && cd nap

@@ -1,28 +1,28 @@
 {
   "name": "@imani/nap-example-merchant-app",
   "private": true,
-  "version": "0.11.0",
+  "version": "0.12.0",
   "type": "module",
   "description": "The runnable example that docs/tutorials/ is built around.",
   "exports": {
     ".": "./src/app.ts"
   },
   "scripts": {
-    "dev": "tsx watch src/server.ts",
-    "start": "tsx src/server.ts",
+    "dev": "tsx watch --conditions=nap-source src/server.ts",
+    "start": "tsx --conditions=nap-source src/server.ts",
     "dev:web": "vite",
     "build:web": "vite build",
     "db:up": "docker compose up -d --wait",
     "db:down": "docker compose down -v"
   },
   "dependencies": {
-    "@imani/nap-adapter-express": "0.11.0",
-    "@imani/nap-client-nip46": "0.11.0",
-    "@imani/nap-client-web": "0.11.0",
-    "@imani/nap-core": "0.11.0",
-    "@imani/nap-react": "0.11.0",
-    "@imani/nap-server": "0.11.0",
-    "@imani/nap-store-postgres": "0.11.0",
+    "@imani/nap-adapter-express": "^0.12.0",
+    "@imani/nap-client-nip46": "^0.12.0",
+    "@imani/nap-client-web": "^0.12.0",
+    "@imani/nap-core": "^0.12.0",
+    "@imani/nap-react": "^0.12.0",
+    "@imani/nap-server": "^0.12.0",
+    "@imani/nap-store-postgres": "^0.12.0",
     "express": "^4.21.2",
     "nostr-tools": "^2.23.0",
     "pg": "^8.13.1",
@@ -30,7 +30,7 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@imani/nap-client-http": "0.11.0",
+    "@imani/nap-client-http": "^0.12.0",
     "@types/express": "^5.0.0",
     "@types/pg": "^8.11.10",
     "@types/react": "^19.0.0",

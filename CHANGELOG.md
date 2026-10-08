@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 All packages in this workspace share a single version.
 
+## [Unreleased]
+
+## [0.12.0] - 2026-10-08
+
+The packages are publishable. Each compiles to ESM plus `.d.ts` in `dist/` and is released to
+npm under `@398ja/nap-*`, keeping its `@imani/nap-*` import name through npm aliases. The
+first consumer is imani-wallet, which until now could only build with a `../nap` checkout
+beside it (imani-wallet#212).
+
+Minor rather than patch because the manifests change what a consumer installs: `nostr-tools`,
+`@noble/*` and `react` move to peer dependencies, and `exports` now points at compiled output.
+No runtime behaviour changes. See [UPGRADING.md](UPGRADING.md).
+
+### Added
+
+- **`npm run build`**: every package to `packages/*/dist` (ESM + `.d.ts`) with `tsc`, in
+  dependency order.
+- **`npm run release`** (`scripts/release.mjs`): typecheck, test, build, then publish all ten
+  packages in dependency order. `--dry-run` runs `npm publish --dry-run` for each; `--pack`
+  writes the tarballs to `.release/tarballs` with no credentials. The registry scope is one
+  setting, `NAP_SCOPE` (default `@398ja`); sibling dependencies are written as
+  `"@imani/nap-core": "npm:@398ja/nap-core@^0.12.0"` so import names survive. It refuses to
+  publish without `npm whoami` or from a dirty tree, and resumes past packages already
+  published. See [RELEASING.md](RELEASING.md).
+- **`scripts/publishing.test.ts`**, in `npm test`: every manifest's `files`, `exports`, `types`,
+  `sideEffects` and `publishConfig`, sibling ranges, peers, and that the browser packages
+  (`nap-core`, `nap-client-http`, `nap-client-web`, `nap-client-nip46`, `nap-react`) import no
+  Node built-in. Release staging re-checks the compiled `dist/` for the same.
+- CI builds and packs every package on each PR.
+- **MIT licence**: a root `LICENSE`, `"license": "MIT"` in every manifest, and a copy of the
+  `LICENSE` in every published tarball.
+
+### Changed
+
+- Every package: `exports` points at `dist/` (`types`, `import`, `default`), plus `main`,
+  `module`, `types`, `files: ["dist"]`, `sideEffects: false`, `publishConfig.access: public`,
+  and `repository`, `homepage` and `bugs`. A `nap-source` condition keeps the workspace's own
+  typecheck, tests and example app on `src/`. It is stripped from the published manifest.
+- **Peer dependencies.** `nostr-tools` (nap-core, nap-server, nap-client-http, nap-client-web,
+  nap-client-nip46), `@noble/hashes` (nap-core: `^1.8.0 || ^2.0.0`, nap-voucher),
+  `@noble/curves` (nap-voucher) and `react` (nap-react, which never declared it) are now peers,
+  so an app gets one copy shared with NAP instead of a private one.
+- Sibling dependencies are `^0.12.0` ranges rather than exact pins.
+- `@imani/nap-adapter-express` and `@imani/nap-adapter-fastify` declare `@imani/nap-core`, which
+  they import and previously received only transitively.
+- `@imani/nap-core` imports `@noble/hashes/sha2.js`, the subpath both 1.x and 2.x export.
+
 ## [0.11.0] - 2026-09-24
 
 Minor rather than patch, and the reason is one line of behaviour: the session cookie now

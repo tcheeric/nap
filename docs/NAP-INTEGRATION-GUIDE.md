@@ -155,9 +155,8 @@ refresh tokens ([05](./tutorials/05-refresh-tokens.md)), step-up
   the refresh call yourself (§11.3).
 - **Permissions are a login-time snapshot.** An ACL revocation takes up to one
   session TTL to take effect (§3.4).
-- **Packages are not npm-publishable as they stand** — `exports` points at
-  `./src/index.ts` and there is no build step, so you consume from the monorepo or
-  vendor them (§11.4).
+- **Packages publish under `@398ja`** while keeping their `@imani/nap-*` import
+  names through npm aliases (§11.4, `RELEASING.md`).
 
 ---
 
@@ -1224,11 +1223,11 @@ existing resolver as `fallback` rather than wiring two servers.
 
 ## 4. TypeScript package map
 
-Eight npm-workspace packages, all published under the `@imani/` scope at version
-`0.2.0`. Note that every `package.json` points `exports` and `types` at
-`./src/index.ts` — **these packages ship TypeScript source, not compiled
-JavaScript.** Your build must transpile them; a plain `node dist/server.js`
-against a `tsc`-emitted app will not resolve them as-is.
+Ten npm-workspace packages sharing one version. Each ships compiled ESM and
+`.d.ts` from `dist/`; imported as `@imani/nap-*`, published as `@398ja/nap-*`
+(install with an alias, e.g. `"@imani/nap-core": "npm:@398ja/nap-core@^0.12.0"`;
+see `RELEASING.md`). `nostr-tools`, `@noble/*` and `react` are peer
+dependencies.
 
 | Package | Purpose | Key exports | Dependencies | When you'd use it |
 |---|---|---|---|---|
@@ -3752,15 +3751,15 @@ Closed in 0.4.0, kept here so the diff against an older deployment is visible:
 
 ### 11.4 Packaging and build
 
-- **No compiled output.** `exports`/`types` → `./src/index.ts` everywhere. Your
-  bundler or runtime must handle TypeScript from `node_modules`. Fine inside
-  this monorepo (`tsx`, `vitest`); a problem the moment you `npm install
-  @imani/nap-core` into a plain Node service.
-- **Only two scripts:** `npm test` (`vitest run`) and `npm run typecheck`
-  (`tsc --noEmit`) (`package.json:9`). There is no `build`.
+- **Compiled output since 0.12.0.** `npm run build` emits ESM + `.d.ts` to each
+  `packages/*/dist`; `exports` points consumers there. The workspace itself reads
+  `src/` through the `nap-source` export condition, so tests never need a build.
+- **Publish scope.** Published as `@398ja/nap-*`, imported as `@imani/nap-*`
+  through npm aliases. `npm run release` (see `RELEASING.md`) builds, tests and
+  publishes in dependency order; the scope is the single `NAP_SCOPE` setting.
 - **Express is pinned to v4** (`express ^4.21.2`) while `@types/express` is `^5`.
   If your app is on Express 5, expect type friction.
-- **`nostr-tools ^2.23.0`** is a peer-in-practice across five packages
+- **`nostr-tools ^2.23.0`** is a peer dependency of five packages
   (`nap-core`, `nap-client-http`, `nap-client-web`, `nap-client-nip46`,
   `nap-server`). The floor is `^2.23.0` rather than the older `^2.10.4` because
   `BunkerSigner.fromBunker` / `fromURI` do not exist below it — pin lower and

@@ -1,26 +1,61 @@
 {
   "name": "@imani/nap-react",
-  "version": "0.11.0",
+  "version": "0.12.0",
+  "description": "React bindings for the NAP browser client.",
+  "license": "MIT",
+  "keywords": [
+    "nostr",
+    "nap",
+    "authentication",
+    "nip-98"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tcheeric/nap.git",
+    "directory": "packages/nap-react"
+  },
+  "homepage": "https://github.com/tcheeric/nap/tree/master/packages/nap-react#readme",
+  "bugs": {
+    "url": "https://github.com/tcheeric/nap/issues"
+  },
   "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "default": "./src/index.ts"
-    }
+      "nap-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
   },
-  "types": "./src/index.ts",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "dependencies": {
-    "@imani/nap-client-web": "0.11.0"
+    "@imani/nap-client-web": "^0.12.0"
   },
   "peerDependencies": {
+    "react": "^19.0.0",
+    "@types/react": "^19.0.0",
     "typescript": ">=5.7"
   },
-  "devDependencies": {
-    "@types/react": "^19.0.0"
-  },
   "peerDependenciesMeta": {
+    "@types/react": {
+      "optional": true
+    },
     "typescript": {
       "optional": true
     }
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "react": "^19.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

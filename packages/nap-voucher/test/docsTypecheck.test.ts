@@ -120,6 +120,9 @@ function typeCheck(source: string): ts.Diagnostic[] {
       target: ts.ScriptTarget.ES2022,
       module: ts.ModuleKind.ESNext,
       moduleResolution: ts.ModuleResolutionKind.Bundler,
+      // Sibling packages resolve to their sources, as in tsconfig.json, not to a
+      // dist/ that exists only after `npm run build`.
+      customConditions: ['nap-source'],
       skipLibCheck: true,
       // The fragments are illustrative: an unused `strict` binding or a
       // top-level await is not drift. Missing names and wrong argument types

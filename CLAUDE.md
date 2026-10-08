@@ -8,21 +8,33 @@ surface, and setup — this file only covers what that doesn't.
 ```bash
 npm test              # vitest run
 npm run typecheck
+npm run build         # every package to packages/*/dist (ESM + .d.ts), dependency order
+npm run release:pack  # build + stage + npm pack into .release/tarballs, no credentials needed
+npm run release:dry-run   # typecheck, test, build, npm publish --dry-run per package
 npm run test:integration   # real Cashu mint + Nostr relay via testcontainers; needs Docker
 ```
 
 `npm test` never needs Docker: the container-backed tests skip unless
 `NAP_INTEGRATION=1`. See `docs/INTEGRATION-TESTS.md`.
 
-**There is no build step.** Every package points `exports` and `types` at `./src/index.ts`, so
-there is no `dist/` and nothing to compile. Don't go looking for a `build` script — it doesn't
-exist, and the packages are not npm-publishable in this state.
+**Published packages ship `dist/`; the workspace reads `src/`.** Each package's `exports`
+has a `nap-source` condition pointing at `./src/index.ts` ahead of the `dist/` entries. The
+root `tsconfig.json` (`customConditions`), `vitest.config.ts` (alias) and the example app
+(`--conditions=nap-source`, vite `resolve.conditions`) select it, so typecheck and tests never
+need a build and never test a stale one. `scripts/release.mjs` strips the condition from the
+published manifest. A new consumer of a sibling inside this repo must select it too.
+
+**The registry scope is one variable.** Code imports `@imani/nap-*` everywhere. `npm run
+release` publishes as `NAP_SCOPE` (default `@398ja`), writing sibling dependencies as npm
+aliases (`"@imani/nap-core": "npm:@398ja/nap-core@^0.12.0"`) so the import names survive.
+Never hand-edit a package name to change scope. See `RELEASING.md`.
 
 ## Repository structure
 
 ```text
 nap/
-├── packages/*      9 npm workspaces, all on one shared version
+├── packages/*      10 npm workspaces, all on one shared version
+├── scripts/        build.mjs, release.mjs (+ publishing.test.ts, in `npm test`)
 ├── docs/           RFC, integration guide, best practices
 └── specs/          feature specs (untracked)
 ```
@@ -77,8 +89,8 @@ These have each cost real debugging time. Check them before changing the relevan
   entry pins it. A pinned constant is still simplest for a single-host deployment. See §9.4 of
   the integration guide.
 - **The consumer's compiler compiles this repo, so the TypeScript floor is theirs, not ours.**
-  There is no build step, so a consumer on TypeScript 5.6 compiling
-  `webCryptoSecretStore.ts`'s `Uint8Array<ArrayBuffer>` gets `TS2315: Type 'Uint8Array' is
+  The shipped `.d.ts` files carry `webCryptoSecretStore.ts`'s `Uint8Array<ArrayBuffer>`, so a
+  consumer on TypeScript 5.6 without `skipLibCheck` gets `TS2315: Type 'Uint8Array' is
   not generic` pointing into `node_modules` — a compiler floor that reads like a bug in NAP.
   Local `npm run typecheck` can never catch it: this repo devDepends `typescript ^5.7.2`.
   Every package declares `typescript >=5.7` as an *optional* peer dependency, so npm reports

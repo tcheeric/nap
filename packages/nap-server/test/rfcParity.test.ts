@@ -106,6 +106,9 @@ function typeCheck(source: string): string[] {
     target: ts.ScriptTarget.ES2022,
     module: ts.ModuleKind.ESNext,
     moduleResolution: ts.ModuleResolutionKind.Bundler,
+    // Sibling packages resolve to their sources, as in tsconfig.json, not to a
+    // dist/ that exists only after `npm run build`.
+    customConditions: ['nap-source'],
   }, host);
 
   return ts

@@ -1,20 +1,57 @@
 {
   "name": "@imani/nap-client-web",
-  "version": "0.11.0",
+  "version": "0.12.0",
+  "description": "Browser session client for NAP: NIP-07 signers, session lifecycle, idle lock, re-unlock.",
+  "license": "MIT",
+  "keywords": [
+    "nostr",
+    "nap",
+    "authentication",
+    "nip-98"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tcheeric/nap.git",
+    "directory": "packages/nap-client-web"
+  },
+  "homepage": "https://github.com/tcheeric/nap/tree/master/packages/nap-client-web#readme",
+  "bugs": {
+    "url": "https://github.com/tcheeric/nap/issues"
+  },
   "type": "module",
-  "exports": "./src/index.ts",
-  "types": "./src/index.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "nap-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "dependencies": {
-    "@imani/nap-client-http": "0.11.0",
-    "@imani/nap-core": "0.11.0",
-    "nostr-tools": "^2.23.0"
+    "@imani/nap-client-http": "^0.12.0",
+    "@imani/nap-core": "^0.12.0"
   },
   "peerDependencies": {
+    "nostr-tools": "^2.23.0",
     "typescript": ">=5.7"
   },
   "peerDependenciesMeta": {
     "typescript": {
       "optional": true
     }
+  },
+  "devDependencies": {
+    "nostr-tools": "^2.23.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

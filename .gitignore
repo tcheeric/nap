@@ -7,3 +7,5 @@ coverage/
 /.specify/
 specs/001-nip46-signer-support/
 dist/
+# npm run release stages each package here before publishing or packing it.
+.release/
