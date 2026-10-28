@@ -1225,7 +1225,7 @@ existing resolver as `fallback` rather than wiring two servers.
 
 Ten npm-workspace packages sharing one version. Each ships compiled ESM and
 `.d.ts` from `dist/`; imported as `@imani/nap-*`, published as `@398ja/nap-*`
-(install with an alias, e.g. `"@imani/nap-core": "npm:@398ja/nap-core@^0.12.0"`;
+(install with an alias, e.g. `"@imani/nap-core": "npm:@398ja/nap-core@^0.13.0"`;
 see `RELEASING.md`). `nostr-tools`, `@noble/*` and `react` are peer
 dependencies.
 

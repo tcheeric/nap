@@ -15,7 +15,7 @@ the root `package.json` is the single place to read it.
 > npm alias:
 >
 > ```bash
-> npm install @imani/nap-client-web@npm:@398ja/nap-client-web@^0.12.0 nostr-tools
+> npm install @imani/nap-client-web@npm:@398ja/nap-client-web@^0.13.0 nostr-tools
 > ```
 >
 > See [RELEASING.md](RELEASING.md) for the scope and the release command. Inside this

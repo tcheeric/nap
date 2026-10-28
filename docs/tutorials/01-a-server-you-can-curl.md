@@ -22,7 +22,7 @@ The example lives in this repository, at `examples/merchant-app`. It is a real n
 workspace package, so it resolves `@imani/nap-*` straight from `packages/`.
 
 > **Starting your own app instead?** Install the published packages under their import
-> names: `npm install @imani/nap-server@npm:@398ja/nap-server@^0.12.0`, and likewise for the
+> names: `npm install @imani/nap-server@npm:@398ja/nap-server@^0.13.0`, and likewise for the
 > others you need (see `RELEASING.md`). The tutorials use the workspace copy so that what
 > you read is what CI tests.
 

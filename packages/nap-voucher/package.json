@@ -1,6 +1,6 @@
 {
   "name": "@imani/nap-voucher",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Mint-backed (Cashu voucher) authorisation for NAP.",
   "license": "MIT",
   "keywords": [
@@ -47,10 +47,10 @@
     }
   },
   "devDependencies": {
-    "@imani/nap-adapter-express": "^0.12.0",
-    "@imani/nap-client-http": "^0.12.0",
-    "@imani/nap-core": "^0.12.0",
-    "@imani/nap-server": "^0.12.0",
+    "@imani/nap-adapter-express": "^0.13.0",
+    "@imani/nap-client-http": "^0.13.0",
+    "@imani/nap-core": "^0.13.0",
+    "@imani/nap-server": "^0.13.0",
     "@noble/curves": "^2.0.1",
     "@noble/hashes": "^2.0.1",
     "@types/supertest": "^6.0.3",

@@ -1,6 +1,6 @@
 {
   "name": "@imani/nap-server",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Stateful server-side NAP flow: challenges, completion, sessions, ACL.",
   "license": "MIT",
   "keywords": [
@@ -36,7 +36,7 @@
     "dist"
   ],
   "dependencies": {
-    "@imani/nap-core": "^0.12.0"
+    "@imani/nap-core": "^0.13.0"
   },
   "peerDependencies": {
     "nostr-tools": "^2.23.0",

@@ -9,6 +9,13 @@ All packages in this workspace share a single version.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-28
+
+Minor: one additive feature, no behaviour change for existing integrations. Every package
+moves to 0.13.0 together, because the workspace shares one version, but only
+`@imani/nap-client-web` has new code. In 0.x a caret range does not cross a minor, so a
+consumer on `^0.12.0` must change it to `^0.13.0` to get this release.
+
 ### Added
 
 - **Extension 0002, cross-origin signer** (`@imani/nap-client-web`, tcheeric/nap#54). With

@@ -26,7 +26,7 @@ published manifest. A new consumer of a sibling inside this repo must select it 
 
 **The registry scope is one variable.** Code imports `@imani/nap-*` everywhere. `npm run
 release` publishes as `NAP_SCOPE` (default `@398ja`), writing sibling dependencies as npm
-aliases (`"@imani/nap-core": "npm:@398ja/nap-core@^0.12.0"`) so the import names survive.
+aliases (`"@imani/nap-core": "npm:@398ja/nap-core@^0.13.0"`) so the import names survive.
 Never hand-edit a package name to change scope. See `RELEASING.md`.
 
 ## Repository structure
