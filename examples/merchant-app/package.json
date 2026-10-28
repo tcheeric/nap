@@ -24,7 +24,7 @@
     "@imani/nap-server": "^0.13.0",
     "@imani/nap-store-postgres": "^0.13.0",
     "express": "^4.21.2",
-    "nostr-tools": "^2.23.0",
+    "nostr-tools": "^2.25.2",
     "pg": "^8.13.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
