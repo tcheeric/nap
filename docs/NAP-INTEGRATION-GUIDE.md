@@ -1979,6 +1979,44 @@ path whose prompt is **your own DOM**. An extension or bunker prompt is browser 
 OS chrome and cannot be overlaid or mimicked by a framing attacker; a passphrase
 field can. Serve the pages that render it with `frame-ancestors 'none'`.
 
+**Cross-origin signer (extension 0002)** (`packages/nap-client-web/src/crossOriginClient.ts`,
+`crossOriginSigner.ts`).
+
+Use it when a sister site should sign in with a key that lives on another origin, e.g. a shop
+on `shop.example` and a wallet on `wallet.example`. The wallet mounts a signer page, and the shop
+opens it as a popup. The wallet checks the shop's real origin (from the browser) and the `u`
+tag of every event before signing. The key never reaches the shop.
+
+```ts
+// wallet.example/nap/signer
+const handle = mountCrossOriginSigner({
+  policy: { 'https://shop.example': { kinds: [27235], audiences: ['https://shop.example'] } },
+  signer,
+  ensureUnlocked: () => ui.unlock(),
+  onConsent: (request) => ui.confirm(request),
+  onSign: (request) => (request.reason === 'completion' ? ui.confirmStepUp(request) : Promise.resolve(true)),
+  consentStore: createStorageConsentStore(),
+});
+
+// shop.example, inside a click handler (window.open needs the gesture)
+const grant = await connectCrossOrigin({ keyOrigin: 'https://wallet.example', kinds: [27235], audiences: [location.origin] });
+const session = createNapSession({ baseUrl: location.origin, signer: grant.signer });
+await session.login();
+```
+
+Three things bite:
+
+- **COOP.** The signer page must not send `Cross-Origin-Opener-Policy: same-origin` (or
+  `same-origin-allow-popups`), and the relying page must not send `same-origin`: either one
+  severs `window.opener` and the popup never answers (`NOT_AVAILABLE`).
+- **User gesture.** Call `connectCrossOrigin` directly from a click, before any `await`, or the
+  popup is blocked (`POPUP_BLOCKED`).
+- **Step-up prompts.** The first completion proof rides the connection consent. Later ones
+  (step-up, re-login) go through `onSign`, and are refused without it.
+
+The full rules and threat model are in
+[extension 0002](./extensions/0002-cross-origin-signer.md).
+
 ### 6.3 Idle lock, shutdown, and cross-tab sync
 
 > **Walk it:** [tutorial 08 §5–§7](./tutorials/08-in-page-keys.md) drives the lock, the passphrase re-unlock, and the cross-tab broadcast in a browser.

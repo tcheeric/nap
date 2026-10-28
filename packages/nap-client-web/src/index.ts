@@ -23,6 +23,28 @@ export type {
   ReunlockOptions,
   ReunlockResult,
 } from './reunlock.js';
+export {
+  CROSS_ORIGIN_PROTOCOL,
+  CrossOriginSignerError,
+  DEFAULT_SIGNER_PATH,
+  MAX_GRANT_TTL_SECONDS,
+} from './crossOriginProtocol.js';
+export type { CrossOriginErrorCode, GrantInfo } from './crossOriginProtocol.js';
+export { connectCrossOrigin } from './crossOriginClient.js';
+export type { ConnectCrossOriginOptions, CrossOriginGrant } from './crossOriginClient.js';
+export { createStorageConsentStore, mountCrossOriginSigner } from './crossOriginSigner.js';
+export type {
+  ConsentRecord,
+  ConsentRequest,
+  ConsentStore,
+  CrossOriginPolicy,
+  CrossOriginPolicyEntry,
+  CrossOriginSignerHandle,
+  CrossOriginSignerOptions,
+  LiveGrant,
+  RevocationReason,
+  SignRequest,
+} from './crossOriginSigner.js';
 export { IdentityMismatchError, isEvictableSigner } from './types.js';
 export type { EvictableSigner } from './types.js';
 export type { KeyStore, KeyHolder } from './keyStore.js';
