@@ -1,5 +1,23 @@
 # Upgrading
 
+## 0.12.0 to 0.13.0
+
+Nothing to change in your code. 0.13.0 adds the cross-origin signer (extension 0002) to
+`@imani/nap-client-web`. Existing sessions, signers and servers behave exactly as before.
+
+**Bump the range.** In 0.x, `^0.12.0` does not match 0.13.0, so update every `@398ja/nap-*`
+alias together (the packages share one version):
+
+```json
+"@imani/nap-client-web": "npm:@398ja/nap-client-web@^0.13.0",
+"@imani/nap-react": "npm:@398ja/nap-react@^0.13.0"
+```
+
+**Only if you adopt the cross-origin signer:** follow
+[extension 0002](./docs/extensions/0002-cross-origin-signer.md) §8 for the signer page headers.
+The signer page must not send `Cross-Origin-Opener-Policy: same-origin`, and the relying page
+must not send `same-origin`.
+
 ## 0.11.0 to 0.12.0
 
 No runtime behaviour changes. What changes is how you get the packages.

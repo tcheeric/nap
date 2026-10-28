@@ -1,6 +1,6 @@
 {
   "name": "@imani/nap-adapter-express",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Express adapter for @imani/nap-server.",
   "license": "MIT",
   "keywords": [
@@ -36,8 +36,8 @@
     "dist"
   ],
   "dependencies": {
-    "@imani/nap-core": "^0.12.0",
-    "@imani/nap-server": "^0.12.0",
+    "@imani/nap-core": "^0.13.0",
+    "@imani/nap-server": "^0.13.0",
     "express": "^4.21.2"
   },
   "peerDependencies": {

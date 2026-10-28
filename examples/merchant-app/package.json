@@ -1,7 +1,7 @@
 {
   "name": "@imani/nap-example-merchant-app",
   "private": true,
-  "version": "0.12.0",
+  "version": "0.13.0",
   "type": "module",
   "description": "The runnable example that docs/tutorials/ is built around.",
   "exports": {
@@ -16,13 +16,13 @@
     "db:down": "docker compose down -v"
   },
   "dependencies": {
-    "@imani/nap-adapter-express": "^0.12.0",
-    "@imani/nap-client-nip46": "^0.12.0",
-    "@imani/nap-client-web": "^0.12.0",
-    "@imani/nap-core": "^0.12.0",
-    "@imani/nap-react": "^0.12.0",
-    "@imani/nap-server": "^0.12.0",
-    "@imani/nap-store-postgres": "^0.12.0",
+    "@imani/nap-adapter-express": "^0.13.0",
+    "@imani/nap-client-nip46": "^0.13.0",
+    "@imani/nap-client-web": "^0.13.0",
+    "@imani/nap-core": "^0.13.0",
+    "@imani/nap-react": "^0.13.0",
+    "@imani/nap-server": "^0.13.0",
+    "@imani/nap-store-postgres": "^0.13.0",
     "express": "^4.21.2",
     "nostr-tools": "^2.23.0",
     "pg": "^8.13.1",
@@ -30,7 +30,7 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@imani/nap-client-http": "^0.12.0",
+    "@imani/nap-client-http": "^0.13.0",
     "@types/express": "^5.0.0",
     "@types/pg": "^8.11.10",
     "@types/react": "^19.0.0",

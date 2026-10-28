@@ -1,6 +1,6 @@
 {
   "name": "@imani/nap-client-http",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "HTTP request helpers for the NAP login flow. Runtime-agnostic.",
   "license": "MIT",
   "keywords": [
@@ -36,7 +36,7 @@
     "dist"
   ],
   "dependencies": {
-    "@imani/nap-core": "^0.12.0"
+    "@imani/nap-core": "^0.13.0"
   },
   "peerDependencies": {
     "nostr-tools": "^2.23.0",

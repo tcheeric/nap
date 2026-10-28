@@ -19,7 +19,7 @@
 // published as `<scope>/nap-*`, and its dependencies on sibling packages are written
 // as npm aliases that KEEP the import name:
 //
-//     "@imani/nap-core": "npm:@398ja/nap-core@^0.12.0"
+//     "@imani/nap-core": "npm:@398ja/nap-core@^0.13.0"
 //
 // so the published JavaScript needs no rewriting, and a consumer that declares the
 // same aliases gets exactly one copy of each package: its own alias and the

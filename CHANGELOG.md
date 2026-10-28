@@ -9,6 +9,29 @@ All packages in this workspace share a single version.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-28
+
+Minor: one additive feature, no behaviour change for existing integrations. Every package
+moves to 0.13.0 together, because the workspace shares one version, but only
+`@imani/nap-client-web` has new code. In 0.x a caret range does not cross a minor, so a
+consumer on `^0.12.0` must change it to `^0.13.0` to get this release.
+
+### Added
+
+- **Extension 0002, cross-origin signer** (`@imani/nap-client-web`, tcheeric/nap#54). With
+  `connectCrossOrigin()`, a sister origin opens the key origin's signer page as a popup and
+  gets a scoped, short-lived signing grant. The returned `grant.signer` is an ordinary
+  `SessionSigner` for `createNapSession`. On the key origin, `mountCrossOriginSigner()`:
+  - answers only its opener, and only for origins in an explicit policy, using the
+    browser-reported origin;
+  - signs only kinds and `u`-tag audiences inside the grant, with `created_at` near now;
+  - prompts through `onSign` for every completion proof after the first (step-up);
+  - revokes every grant on lock, logout or identity change.
+
+  `createStorageConsentStore()` remembers approvals. Client-only: servers and `nap-java` are
+  unchanged. Spec: `docs/extensions/0002-cross-origin-signer.md`. An opt-in Chromium e2e runs
+  with `NAP_BROWSER=1`.
+
 ## [0.12.0] - 2026-10-08
 
 The packages are publishable. Each compiles to ESM plus `.d.ts` in `dist/` and is released to

@@ -15,7 +15,7 @@ the root `package.json` is the single place to read it.
 > npm alias:
 >
 > ```bash
-> npm install @imani/nap-client-web@npm:@398ja/nap-client-web@^0.12.0 nostr-tools
+> npm install @imani/nap-client-web@npm:@398ja/nap-client-web@^0.13.0 nostr-tools
 > ```
 >
 > See [RELEASING.md](RELEASING.md) for the scope and the release command. Inside this
@@ -40,7 +40,7 @@ Already know Nostr and want the reference instead? Start at
 | `@imani/nap-core` | Protocol types, hashing, base64/hex codecs, header parsing, NIP-98 completion validation. Runs in browser and server. |
 | `@imani/nap-server` | `createNapServer()` — challenge issuance, retry-safe completion verification, refresh rotation, ACL resolution, in-memory stores, rate limiter, metrics. |
 | `@imani/nap-client-http` | Request building for `/auth/init` and `/auth/complete`. |
-| `@imani/nap-client-web` | Browser session lifecycle: `createNapSession()`, NIP-07 detection and signers, identity guard, idle lock, re-unlock, cross-tab sync. |
+| `@imani/nap-client-web` | Browser session lifecycle: `createNapSession()`, NIP-07 detection and signers, the cross-origin signer (extension 0002), identity guard, idle lock, re-unlock, cross-tab sync. |
 | `@imani/nap-client-nip46` | NIP-46 remote-signer (`bunker://` / `nostrconnect://`) `SessionSigner`, with encrypted reconnection. **Opt-in** — install it only if you want remote signers; it is the only package that talks to relays. |
 | `@imani/nap-react` | `NapProvider`, `useNapSession()`, `useReunlock()` over `nap-client-web`. |
 | `@imani/nap-adapter-express` | `createNapExpressRouter()`, guards, raw-body-safe JSON parser. |

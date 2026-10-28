@@ -876,6 +876,13 @@ Each of those should be specified as an extension, not implied by the core profi
 | Extension | Status | Relates to |
 | --- | --- | --- |
 | [0001 — Voucher-Bound Authorization](./extensions/0001-voucher-bound-authorization.md) | Draft, partially implemented | §15, and items 1 and 5 above |
+| [0002 — Cross-Origin Signer](./extensions/0002-cross-origin-signer.md) | Draft, implemented (`nap-client-web`) | §7.1, §10.3, §28.2; client-only |
+
+Extension 0002 lets a sister origin get a session from a key held on another origin,
+through a popup that checks the browser-reported caller origin and the `u` audience before
+signing. That is the signer-enforced audience binding §7.1 asks for, reached without a
+bunker. It is client-only: the server receives an ordinary §11 proof, so nothing in the core
+profile or in `nap-java` changes.
 
 Extension 0001 lets an Imani-issued Cashu voucher supply a session's roles and
 permissions in place of a stored ACL row. It changes **authorization only** —

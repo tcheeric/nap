@@ -11,16 +11,16 @@ The scope the packages are **published** under is a separate choice, made in one
 
 | `NAP_SCOPE` | Published as | Sibling dependency in the published manifest |
 | --- | --- | --- |
-| `@398ja` (default) | `@398ja/nap-core`, ... | `"@imani/nap-core": "npm:@398ja/nap-core@^0.12.0"` |
-| `@imani` | `@imani/nap-core`, ... | `"@imani/nap-core": "^0.12.0"` |
+| `@398ja` (default) | `@398ja/nap-core`, ... | `"@imani/nap-core": "npm:@398ja/nap-core@^0.13.0"` |
+| `@imani` | `@imani/nap-core`, ... | `"@imani/nap-core": "^0.13.0"` |
 
 With `@398ja` the published packages depend on each other through npm aliases, so the
 `@imani/nap-*` import names keep working with no rewrite of the JavaScript. A consumer
 declares the same aliases:
 
 ```json
-"@imani/nap-client-web": "npm:@398ja/nap-client-web@^0.12.0",
-"@imani/nap-react": "npm:@398ja/nap-react@^0.12.0"
+"@imani/nap-client-web": "npm:@398ja/nap-client-web@^0.13.0",
+"@imani/nap-react": "npm:@398ja/nap-react@^0.13.0"
 ```
 
 and npm installs one copy of each: the consumer's alias and the transitive one resolve to the
